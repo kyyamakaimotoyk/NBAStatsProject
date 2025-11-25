@@ -23,6 +23,8 @@ class ImportedGamesVerifier:
         self.connection = None
         self.table_config = self._get_table_config()
         self.discrepancies = []
+        self.game_data_cache = {}  # Cache for game data per table
+        self.game_metadata_cache = {}  # Cache for game metadata
 
     def _get_table_config(self):
         """Return table configuration for boxscore endpoints"""
@@ -71,29 +73,70 @@ class ImportedGamesVerifier:
             logger.error(f"Failed to connect to database: {e}")
             raise
 
-    def check_game_data_status(self, game_id):
-        """Check the actual status of game data for each table"""
-        status = {}
+    def load_all_game_data_into_memory(self):
+        """Load all game data from all tables into memory for fast lookup"""
+        logger.info("Loading all game data into memory...")
+        logger.info("=" * 80)
 
         for table_name, config in self.table_config.items():
             column1, column2, expected_count = config
 
             try:
-                # Simply check if any entries exist for this game
-                stmt = f"""SELECT 1 FROM {table_name}
-                          WHERE {column1} = {game_id}
-                          LIMIT 1"""
-                result = self.connection.execute(sql.text(stmt))
-                row = result.fetchone()
+                # Get all unique game_ids from this table
+                query = f"SELECT DISTINCT {column1} FROM {table_name}"
+                result = self.connection.execute(sql.text(query))
 
-                if row:
-                    status[table_name] = 1  # Data exists
-                else:
-                    status[table_name] = 0  # No data exists
+                # Store as a set for O(1) lookup
+                game_ids = set(row[0] for row in result)
+                self.game_data_cache[table_name] = game_ids
+
+                logger.info(f"  Loaded {len(game_ids)} games from {table_name.split('.')[-1]}")
 
             except Exception as e:
-                logger.error(f"Error checking {table_name} for game {game_id}: {e}")
-                status[table_name] = 0  # Treat errors as no data
+                logger.error(f"  Error loading data from {table_name}: {e}")
+                self.game_data_cache[table_name] = set()  # Empty set on error
+
+        logger.info("=" * 80)
+        logger.info(f"Finished loading data from {len(self.table_config)} tables into memory")
+        logger.info("=" * 80)
+
+    def load_all_game_metadata_into_memory(self):
+        """Load all game metadata (dates and matchups) into memory"""
+        logger.info("Loading all game metadata into memory...")
+
+        try:
+            # Get all game metadata in one query
+            query = """
+                SELECT GAME_ID, GAME_DATE, MATCHUP
+                FROM nba_data.game_list
+            """
+            result = self.connection.execute(sql.text(query))
+
+            # Store in dictionary, taking first occurrence of each game_id
+            for row in result:
+                game_id = row[0]
+                if game_id not in self.game_metadata_cache:
+                    self.game_metadata_cache[game_id] = {
+                        'game_date': row[1],
+                        'matchup': row[2]
+                    }
+
+            logger.info(f"Loaded metadata for {len(self.game_metadata_cache)} unique games")
+            logger.info("=" * 80)
+
+        except Exception as e:
+            logger.error(f"Failed to load game metadata: {e}")
+
+    def check_game_data_status(self, game_id):
+        """Check the actual status of game data for each table using in-memory cache"""
+        status = {}
+
+        for table_name in self.table_config.keys():
+            # Check if game_id exists in the cached set for this table
+            if game_id in self.game_data_cache.get(table_name, set()):
+                status[table_name] = 1  # Data exists
+            else:
+                status[table_name] = 0  # No data exists
 
         return status
 
@@ -109,34 +152,12 @@ class ImportedGamesVerifier:
             raise
 
     def get_game_metadata(self, game_id):
-        """Get game date and matchup from game_list table"""
-        try:
-            # Get first entry for this game_id (there are 2 entries per game)
-            query = f"""
-                SELECT GAME_DATE, MATCHUP
-                FROM nba_data.game_list
-                WHERE GAME_ID = {game_id}
-                LIMIT 1
-            """
-            result = self.connection.execute(sql.text(query))
-            row = result.fetchone()
-
-            if row:
-                return {
-                    'game_date': row[0],
-                    'matchup': row[1]
-                }
-            else:
-                return {
-                    'game_date': 'Unknown',
-                    'matchup': 'Unknown'
-                }
-        except Exception as e:
-            logger.error(f"Failed to get metadata for game {game_id}: {e}")
-            return {
-                'game_date': 'Error',
-                'matchup': 'Error'
-            }
+        """Get game date and matchup from in-memory cache"""
+        # Return cached metadata or default values if not found
+        return self.game_metadata_cache.get(game_id, {
+            'game_date': 'Unknown',
+            'matchup': 'Unknown'
+        })
 
     def verify_single_game(self, game_id, recorded_status):
         """Verify a single game's data against what's recorded in importedGamesMemory"""
@@ -184,6 +205,10 @@ class ImportedGamesVerifier:
         """Verify all games in importedGamesMemory"""
         logger.info("Starting verification of all imported games...")
         logger.info("=" * 80)
+
+        # Load all data into memory first (batch approach)
+        self.load_all_game_data_into_memory()
+        self.load_all_game_metadata_into_memory()
 
         imported_games_df = self.get_all_imported_games()
 

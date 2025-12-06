@@ -47,6 +47,18 @@ class NBADataImporter:
     def connect_to_database(self):
         """Establish database connection"""
         try:
+            # Close existing connection and engine to prevent leaks
+            if self.connection:
+                try:
+                    self.connection.close()
+                except Exception:
+                    pass
+            if self.db_engine:
+                try:
+                    self.db_engine.dispose()
+                except Exception:
+                    pass
+
             host = 'localhost'
             user = 'kaiyamamoto'
             password = 'KN!yoWMhiH8cBvD'
@@ -206,7 +218,7 @@ class NBADataImporter:
             self.logger.info("Players table doesn't exist, creating it")
             nba_players_df.to_sql(name='nba_players', con=self.db_engine, if_exists='replace', index=False)
 
-    def get_games_to_process(self, date_from='07/02/2025', date_to='07/01/2026'):
+    def get_games_to_process(self, date_from='11/22/2025', date_to='07/01/2026'):
         """Get list of games to process from the API"""
         self.logger.info(f"Fetching games from {date_from} to {date_to}")
 
@@ -382,6 +394,7 @@ class NBADataImporter:
 
         # First, check importedGamesMemory for status=2 (empty API responses)
         # These should be skipped in future imports since we know API has no data
+        memory_status = {}  # Initialize to empty dict
         try:
             query = f"SELECT * FROM nba_data.importedGamesMemory WHERE gameId = {game_id}"
             result = self.connection.execute(sql.text(query))
@@ -473,9 +486,41 @@ class NBADataImporter:
 
         except KeyError as e:
             # KeyError means API response is missing expected keys (resultSet, boxScoreSummary, etc.)
-            # This typically means the API has no data for this game (old games, future games, etc.)
-            self.logger.warning(f"⚠️  API has no data for {table_name}, game {game_id}: Missing key {e}")
-            return 2  # API call succeeded but no data available
+            # For recent games (within 5 days), this might be temporary - retry
+            # For old games, this means data doesn't exist - don't retry
+
+            try:
+                # Try to get game date from existing data to determine if game is recent
+                game_date_query = """
+                    SELECT GAME_DATE
+                    FROM nba_data.game_list
+                    WHERE GAME_ID = :game_id
+                    LIMIT 1
+                """
+                result = self.connection.execute(sql.text(game_date_query), {"game_id": game_id})
+                game_date_row = result.fetchone()
+
+                if game_date_row:
+                    game_date = pd.to_datetime(game_date_row[0])
+                    days_ago = (datetime.datetime.now(datetime.timezone.utc) - game_date.tz_localize('UTC')).days
+
+                    if days_ago <= 5:
+                        # Recent game - data might not be available yet, retry
+                        self.logger.warning(f"⚠️  Recent game ({days_ago} days ago) - API missing key {e} for {table_name}, game {game_id} - will retry")
+                        return 0  # Failed - retry on next run
+                    else:
+                        # Old game - data doesn't exist
+                        self.logger.warning(f"⚠️  Old game ({days_ago} days ago) - API has no data for {table_name}, game {game_id}: Missing key {e}")
+                        return 2  # API has no data - skip future imports
+                else:
+                    # Can't determine game date, retry to be safe
+                    self.logger.warning(f"⚠️  Cannot determine game date - API missing key {e} for {table_name}, game {game_id}")
+                    return 2  # Failed - don't try again
+
+            except Exception as date_error:
+                # If we can't check the date, retry to be safe
+                self.logger.warning(f"⚠️  Error checking game date - API missing key {e} for {table_name}, game {game_id}")
+                return 2  # Failed - don't try again
 
         except Exception as e:
             error_msg = str(e).lower()
@@ -516,6 +561,63 @@ class NBADataImporter:
 
         # API response cache to avoid redundant calls (Solution 2)
         api_cache = {}
+
+        # Check game date - BoxScoreSummaryV3 endpoints are only available for games from October 2025 onwards
+        # For older games, skip these endpoints and mark as status 2 (API has no data)
+        try:
+            game_date_query = """
+                SELECT GAME_DATE
+                FROM nba_data.game_list
+                WHERE GAME_ID = :game_id
+                LIMIT 1
+            """
+            result = self.connection.execute(sql.text(game_date_query), {"game_id": game_id})
+            game_date_row = result.fetchone()
+
+            if game_date_row:
+                game_date = pd.to_datetime(game_date_row[0])
+                cutoff_date = pd.to_datetime('2025-10-01')
+
+                # If game is before October 1, 2025, skip all boxscoresummaryv3 endpoints
+                if game_date < cutoff_date:
+                    self.logger.info(f"Game {game_id} occurred on {game_date.date()} (before Oct 2025) - skipping BoxScoreSummaryV3 endpoints")
+
+                    # List of all boxscoresummaryv3 tables
+                    v3_summary_tables = [
+                        'nba_data.boxscoresummaryv3_game_summary',
+                        'nba_data.boxscoresummaryv3_game_info',
+                        'nba_data.boxscoresummaryv3_arena_info',
+                        'nba_data.boxscoresummaryv3_officials',
+                        'nba_data.boxscoresummaryv3_line_score',
+                        'nba_data.boxscoresummaryv3_inactive_players',
+                        'nba_data.boxscoresummaryv3_last_five_meetings',
+                        'nba_data.boxscoresummaryv3_other_stats',
+                    ]
+
+                    # Set all V3 summary tables to status 2 (API has no data)
+                    for table_name in v3_summary_tables:
+                        status[table_name] = 2
+                        import_results[table_name] = 2
+
+                # If game is on or after October 1, 2025, skip all boxscoresummaryv2 endpoints
+                else:
+                    self.logger.info(f"Game {game_id} occurred on {game_date.date()} (Oct 2025 or later) - skipping BoxScoreSummaryV2 endpoints")
+
+                    # List of all boxscoresummaryv2 tables
+                    v2_summary_tables = [
+                        'nba_data.boxscoresummaryv2_summary',
+                        'nba_data.boxscoresummaryv2_referee',
+                        'nba_data.boxscoresummaryv2_inactive_players',
+                        'nba_data.boxscoresummaryv2_other_stats',
+                        'nba_data.boxscoresummaryv2_game_info',
+                    ]
+
+                    # Set all V2 summary tables to status 2 (API has no data)
+                    for table_name in v2_summary_tables:
+                        status[table_name] = 2
+                        import_results[table_name] = 2
+        except Exception as e:
+            self.logger.warning(f"Could not check game date for V3 endpoint filtering: {e}")
 
         # Regular boxscore endpoints (player/team stats)
         # Dictionary structure: 'table_name': (endpoint_class, db_table_name, dataframe_index)
@@ -705,6 +807,69 @@ class NBADataImporter:
         # API response cache to avoid redundant calls (Solution 2)
         api_cache = {}
 
+        # Check game date - BoxScoreSummaryV3 endpoints are only available for games from October 2025 onwards
+        # For older games, skip these endpoints and mark as status 2 (API has no data)
+        try:
+            game_date_query = """
+                SELECT GAME_DATE
+                FROM nba_data.game_list
+                WHERE GAME_ID = :game_id
+                LIMIT 1
+            """
+            result = self.connection.execute(sql.text(game_date_query), {"game_id": game_id})
+            game_date_row = result.fetchone()
+
+            if game_date_row:
+                game_date = pd.to_datetime(game_date_row[0])
+                cutoff_date = pd.to_datetime('2025-10-01')
+
+                # If game is before October 1, 2025, skip all boxscoresummaryv3 endpoints
+                if game_date < cutoff_date:
+                    self.logger.info(f"Re-import: Game {game_id} occurred on {game_date.date()} (before Oct 2025) - skipping BoxScoreSummaryV3 endpoints")
+
+                    # List of all boxscoresummaryv3 tables
+                    v3_summary_tables = [
+                        'nba_data.boxscoresummaryv3_game_summary',
+                        'nba_data.boxscoresummaryv3_game_info',
+                        'nba_data.boxscoresummaryv3_arena_info',
+                        'nba_data.boxscoresummaryv3_officials',
+                        'nba_data.boxscoresummaryv3_line_score',
+                        'nba_data.boxscoresummaryv3_inactive_players',
+                        'nba_data.boxscoresummaryv3_last_five_meetings',
+                        'nba_data.boxscoresummaryv3_other_stats',
+                    ]
+
+                    # Set all V3 summary tables to status 2 (API has no data)
+                    for table_name in v3_summary_tables:
+                        status[table_name] = 2
+                        import_results[table_name] = 2
+                        # Remove from failed_tables_list if present
+                        if table_name in failed_tables_list:
+                            failed_tables_list.remove(table_name)
+
+                # If game is on or after October 1, 2025, skip all boxscoresummaryv2 endpoints
+                else:
+                    self.logger.info(f"Re-import: Game {game_id} occurred on {game_date.date()} (Oct 2025 or later) - skipping BoxScoreSummaryV2 endpoints")
+
+                    # List of all boxscoresummaryv2 tables
+                    v2_summary_tables = [
+                        'nba_data.boxscoresummaryv2_summary',
+                        'nba_data.boxscoresummaryv2_referee',
+                        'nba_data.boxscoresummaryv2_inactive_players',
+                        'nba_data.boxscoresummaryv2_other_stats',
+                        'nba_data.boxscoresummaryv2_game_info',
+                    ]
+
+                    # Set all V2 summary tables to status 2 (API has no data)
+                    for table_name in v2_summary_tables:
+                        status[table_name] = 2
+                        import_results[table_name] = 2
+                        # Remove from failed_tables_list if present
+                        if table_name in failed_tables_list:
+                            failed_tables_list.remove(table_name)
+        except Exception as e:
+            self.logger.warning(f"Could not check game date for V3 endpoint filtering in re-import: {e}")
+
         # Set all tables to their current status first
         for table_name in self.table_config.keys():
             if status.get(table_name) == 1:
@@ -825,6 +990,8 @@ class NBADataImporter:
         finally:
             if self.connection:
                 self.connection.close()
+            if self.db_engine:
+                self.db_engine.dispose()
 
     def run_import_parallel(self, num_workers=None):
         """
@@ -838,7 +1005,7 @@ class NBADataImporter:
         try:
             # Determine number of workers (default to 2 to avoid API rate limiting)
             if num_workers is None:
-                num_workers = 2
+                num_workers = 20
 
             self.logger.info("=" * 80)
             self.logger.info(f"PARALLEL IMPORT MODE: Using {num_workers} workers")
@@ -875,9 +1042,11 @@ class NBADataImporter:
             self.logger.info(f"Games requiring processing: {len(games_to_process)} games")
             self.logger.info("=" * 80)
 
-            # Close main connection before forking
+            # Close main connection and dispose engine before forking
             if self.connection:
                 self.connection.close()
+            if self.db_engine:
+                self.db_engine.dispose()
 
             # Process new games in parallel
             games_processed = 0
@@ -929,25 +1098,65 @@ class NBADataImporter:
 
                 self.logger.info("=" * 80)
 
-            # Reconnect for re-import phase
-            self.connect_to_database()
-
-            # Re-import failed tables (sequential for now - could be parallelized later)
+            # Re-import failed tables in parallel
             games_reimported = 0
+            reimport_error_stats = defaultdict(int)
+            reimport_elapsed_times = []
+
             if games_needing_reimport:
-                self.logger.info(f"\nStarting re-import process for {len(games_needing_reimport)} games...")
-                for game_id, info in tqdm(games_needing_reimport.items(), desc="Re-importing failed tables"):
-                    self.process_game_reimport(
-                        game_id,
-                        info['failed_tables'],
-                        info['attempts']
-                    )
-                    games_reimported += 1
+                self.logger.info(f"\nStarting parallel re-import process for {len(games_needing_reimport)} games...")
+
+                # Prepare data for parallel processing (game_id, failed_tables, attempts)
+                reimport_tasks = [
+                    (game_id, info['failed_tables'], info['attempts'])
+                    for game_id, info in games_needing_reimport.items()
+                ]
+
+                with Pool(processes=num_workers) as pool:
+                    # Use imap for progress tracking
+                    results = list(tqdm(
+                        pool.imap(_process_game_reimport_worker, reimport_tasks),
+                        total=len(reimport_tasks),
+                        desc="Re-importing failed tables"
+                    ))
+
+                    # Analyze results
+                    for result in results:
+                        if result['success']:
+                            games_reimported += 1
+                            reimport_elapsed_times.append(result['elapsed'])
+                        else:
+                            reimport_error_stats[result['error']] += 1
+
+                # Report re-import statistics
+                self.logger.info("\n" + "=" * 80)
+                self.logger.info("RE-IMPORT STATISTICS")
+                self.logger.info("=" * 80)
+                self.logger.info(f"Successfully re-imported: {games_reimported} games")
+                self.logger.info(f"Failed: {len(results) - games_reimported} games")
+
+                if reimport_error_stats:
+                    self.logger.info("\nRe-import Error Breakdown:")
+                    if reimport_error_stats['rate_limit'] > 0:
+                        self.logger.warning(f"  ⚠️  Rate Limit (429): {reimport_error_stats['rate_limit']} games")
+                    if reimport_error_stats['blocked'] > 0:
+                        self.logger.warning(f"  ⚠️  Blocked/Forbidden (403): {reimport_error_stats['blocked']} games")
+                    if reimport_error_stats['timeout'] > 0:
+                        self.logger.warning(f"  ⚠️  Timeouts: {reimport_error_stats['timeout']} games")
+                    if reimport_error_stats['unknown'] > 0:
+                        self.logger.info(f"  ❌ Other errors: {reimport_error_stats['unknown']} games")
+
+                if reimport_elapsed_times:
+                    avg_time = sum(reimport_elapsed_times) / len(reimport_elapsed_times)
+                    self.logger.info(f"\nAverage re-import time: {avg_time:.2f} seconds per game")
+                    self.logger.info(f"Min: {min(reimport_elapsed_times):.2f}s, Max: {max(reimport_elapsed_times):.2f}s")
+
+                self.logger.info("=" * 80)
 
             end_time = timeit.default_timer()
             elapsed = end_time - start_time
 
-            self.logger.info("=" * 80)
+            self.logger.info("\n" + "=" * 80)
             self.logger.info("PARALLEL IMPORT COMPLETE")
             self.logger.info("=" * 80)
             self.logger.info(f"Total time: {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)")
@@ -963,6 +1172,8 @@ class NBADataImporter:
         finally:
             if self.connection:
                 self.connection.close()
+            if self.db_engine:
+                self.db_engine.dispose()
 
 
 def _process_game_worker(game_id):
@@ -971,6 +1182,7 @@ def _process_game_worker(game_id):
     Each worker creates its own database connection and processes a single game
     """
     start_time = time.time()
+    importer = None
     try:
         # Create new importer instance for this worker
         importer = NBADataImporter()
@@ -978,9 +1190,6 @@ def _process_game_worker(game_id):
 
         # Process the game
         importer.process_single_game(game_id)
-
-        # Close connection
-        importer.connection.close()
 
         elapsed = time.time() - start_time
         return {'game_id': game_id, 'success': True, 'elapsed': elapsed, 'error': None}
@@ -1004,6 +1213,78 @@ def _process_game_worker(game_id):
             print(f"❌ Error processing game {game_id}: {e}")
 
         return {'game_id': game_id, 'success': False, 'elapsed': elapsed, 'error': error_type}
+
+    finally:
+        # Always close connection and dispose engine to prevent connection leaks
+        if importer:
+            if importer.connection:
+                try:
+                    importer.connection.close()
+                except Exception:
+                    pass  # Ignore errors during cleanup
+            if importer.db_engine:
+                try:
+                    importer.db_engine.dispose()
+                except Exception:
+                    pass  # Ignore errors during cleanup
+
+
+def _process_game_reimport_worker(task_data):
+    """
+    Worker function for parallel re-import processing
+    Each worker creates its own database connection and re-imports failed tables for a single game
+
+    Args:
+        task_data: Tuple of (game_id, failed_tables, attempts)
+    """
+    game_id, failed_tables, attempts = task_data
+    start_time = time.time()
+    importer = None
+
+    try:
+        # Create new importer instance for this worker
+        importer = NBADataImporter()
+        importer.connect_to_database()
+
+        # Process the game re-import
+        importer.process_game_reimport(game_id, failed_tables, attempts)
+
+        elapsed = time.time() - start_time
+        return {'game_id': game_id, 'success': True, 'elapsed': elapsed, 'error': None}
+
+    except Exception as e:
+        elapsed = time.time() - start_time
+        error_msg = str(e).lower()
+
+        # Detect specific error types
+        error_type = 'unknown'
+        if '429' in error_msg or 'too many requests' in error_msg:
+            error_type = 'rate_limit'
+            print(f"⚠️  RATE LIMIT: Game {game_id} re-import")
+        elif '403' in error_msg or 'forbidden' in error_msg:
+            error_type = 'blocked'
+            print(f"⚠️  BLOCKED: Game {game_id} re-import")
+        elif 'timeout' in error_msg or 'timed out' in error_msg:
+            error_type = 'timeout'
+            print(f"⚠️  TIMEOUT: Game {game_id} re-import")
+        else:
+            print(f"❌ Error re-importing game {game_id}: {e}")
+
+        return {'game_id': game_id, 'success': False, 'elapsed': elapsed, 'error': error_type}
+
+    finally:
+        # Always close connection and dispose engine to prevent connection leaks
+        if importer:
+            if importer.connection:
+                try:
+                    importer.connection.close()
+                except Exception:
+                    pass  # Ignore errors during cleanup
+            if importer.db_engine:
+                try:
+                    importer.db_engine.dispose()
+                except Exception:
+                    pass  # Ignore errors during cleanup
 
 
 if __name__ == '__main__':

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python schema_exploration.py:*)",
+      "Bash(pip install:*)",
+      "Bash(python predict_games.py:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

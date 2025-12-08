@@ -23,6 +23,8 @@ pip install nba_api  # For fetching live schedules
 pip install dash dash-bootstrap-components plotly  # For visualization app
 ```
 
+**Windows Note**: PyTorch must be imported before NumPy/Pandas due to DLL conflicts. This is handled automatically in `predict_games.py`. If you encounter `OSError: [WinError 1114] DLL initialization failed`, ensure PyTorch is imported first in your scripts.
+
 ### Predict Today's Games
 
 ```bash
@@ -32,6 +34,11 @@ python predict_games.py --model both       # Compare both models side-by-side
 python predict_games.py --tomorrow         # Tomorrow's games
 python predict_games.py --date 2024-12-25  # Specific date
 python predict_games.py --no-plot          # Skip histogram visualization
+python predict_games.py --no-shap          # Skip SHAP calculations (faster)
+
+# With injury adjustments
+python predict_games.py --injuries "LeBron James" "Anthony Davis"
+python predict_games.py --show-impacts     # Show player impact reports
 ```
 
 ---
@@ -101,7 +108,11 @@ python dataExploration.py
 | Script | Purpose |
 |--------|---------|
 | `predict_games.py` | **Main prediction script** - Predicts winners and margins using RF or NN |
-| `feature_engineering.py` | Builds 480+ ML features from raw game data |
+| `feature_engineering.py` | Builds 507+ ML features from raw game data |
+| `player_projections.py` | Player-level projections with opponent adjustments |
+| `player_impact.py` | **NEW** - Historical player impact estimation for injury adjustments |
+| `prediction_tracker.py` | Logs predictions and tracks accuracy over time |
+| `evaluate_impact_approaches.py` | **NEW** - Validates impact estimation approaches |
 | `baseline_models.py` | Trains and evaluates scikit-learn models |
 | `pytorch_nba_models.py` | PyTorch neural network implementation (educational) |
 | `dataExploration.py` | Interactive Dash app with 6 tabs including predictions |
@@ -137,6 +148,32 @@ Captures the impact of schedule density on performance:
 
 **Hypothesis**: Teams with more games in fewer days experience fatigue, leading to decreased performance.
 
+### Player Projection Features (9 features per team)
+
+**NEW**: Aggregates individual player stats with opponent adjustments:
+
+| Feature | Description |
+|---------|-------------|
+| `PROJ_PTS_FROM_PLAYERS` | Sum of all players' opponent-adjusted PPG projections |
+| `PROJ_REB_FROM_PLAYERS` | Sum of all players' opponent-adjusted RPG projections |
+| `PROJ_AST_FROM_PLAYERS` | Sum of all players' opponent-adjusted APG projections |
+| `WEIGHTED_AVG_USAGE` | Minutes-weighted average usage% of rotation |
+| `WEIGHTED_AVG_TS_PCT` | Minutes-weighted average true shooting% |
+| `WEIGHTED_AVG_PIE` | Minutes-weighted average Player Impact Estimate |
+| `ROSTER_DEPTH_SCORE` | Count of players averaging 15+ min/game |
+| `STAR_PLAYER_IMPACT` | Max player PPG on roster (star player) |
+| `TOP_3_SCORER_SHARE` | % of team points from top 3 scorers (concentration) |
+
+**Opponent Adjustments Applied**:
+- **Pace factor**: If opponent plays faster (more possessions), player stats are scaled up
+- **Defensive rating factor**: If opponent has poor defense, player scoring is scaled up
+- **Rebounding factor**: Adjusts rebounding based on opponent's allowed offensive rebound rate
+
+**Example**: LeBron James averages 25 PPG. Against a fast team with bad defense:
+- Pace factor: 105/100 = 1.05
+- Defensive factor: 118/112 = 1.05
+- Projected vs this opponent: 25 × 1.05 × 1.05 = **27.6 PPG**
+
 ### Matchup Features
 
 For each game, features are computed three ways:
@@ -144,7 +181,7 @@ For each game, features are computed three ways:
 - `AWAY_*` - Away team's statistics
 - `DIFF_*` - Differential (HOME - AWAY)
 
-**Total: 480 features** (160 home + 160 away + 160 differential)
+**Total: 507 features** (169 home + 169 away + 169 differential)
 
 ---
 
@@ -309,10 +346,11 @@ python schema_exploration.py
 - **Performance**: AUC 0.792, MAE 9.33 points
 
 ### Neural Network (PyTorch)
-- **Algorithm**: 3-layer MLP with BatchNorm & Dropout
+- **Algorithm**: 3-layer MLP (128→64→32→1) with BatchNorm & Dropout (0.3)
 - **Uncertainty**: Monte Carlo Dropout (100 forward passes with dropout enabled)
+- **Target Scaling**: Regression targets normalized to mean=0, std=1 during training (see Experiments section)
 - **Strengths**: Learns complex patterns, scales to large data, GPU acceleration
-- **Performance**: AUC 0.776, MAE 9.94 points
+- **Performance**: AUC 0.776, MAE ~9.5 points (after target scaling fix)
 
 ### Why Random Forest Wins on Tabular Data
 1. Decision trees naturally capture feature interactions
@@ -326,8 +364,11 @@ python schema_exploration.py
 
 ```
 NBAStatsProject/
-├── predict_games.py          # Main prediction script (RF + NN)
-├── feature_engineering.py    # Feature pipeline with fatigue metrics
+├── predict_games.py          # Main prediction script (RF + NN + SHAP)
+├── feature_engineering.py    # Feature pipeline (507 features)
+├── player_projections.py     # Player-level projections with opponent adjustments
+├── prediction_tracker.py     # Prediction logging and accuracy tracking
+├── prediction_visualizations.py  # Accuracy charts and analysis
 ├── baseline_models.py        # Sklearn model training
 ├── pytorch_nba_models.py     # PyTorch model training
 ├── dataExploration.py        # Dash visualization app (6 tabs)
@@ -338,9 +379,9 @@ NBAStatsProject/
 │   ├── rf_regressor.joblib   # Random Forest regressor
 │   ├── nn_classifier.pt      # PyTorch classifier weights
 │   ├── nn_regressor.pt       # PyTorch regressor weights
-│   ├── scaler.joblib         # Imputer + StandardScaler
-│   ├── feature_names.joblib  # List of 480 feature names
-│   └── nn_config.joblib      # Neural network config
+│   ├── scaler.joblib         # Imputer + StandardScaler for features
+│   ├── feature_names.joblib  # List of 507 feature names
+│   └── nn_config.joblib      # Neural network config (input_dim, target_scaler)
 ├── DATABASE_SCHEMA.md        # Database documentation
 └── README.md                 # This file
 ```
@@ -353,16 +394,295 @@ The project connects to a local MySQL database:
 - Host: localhost
 - Port: 3306
 - Database: nba_data
+- Prediction tracking table: `model_predictions`
 
 Connection details are in each script's `create_engine()` function.
 
 ---
 
+## Recent Enhancements
+
+### SHAP Feature Importance
+- See which features drive each prediction (top 10)
+- TreeExplainer for Random Forest (fast, exact)
+- GradientExplainer for Neural Network
+
+### Prediction Tracking
+```bash
+python predict_games.py --backfill      # Update past predictions with actual results
+python predict_games.py --accuracy-report  # Show accuracy metrics
+```
+
+### Player Projections (Option B: Full Roster Aggregation)
+- Aggregates individual player stats weighted by minutes
+- Adjusts for opponent's pace, defensive rating, rebounding
+- Solves chicken-egg problem using season-to-date stats
+
+---
+
+## Experiments & Research
+
+### Neural Network Target Scaling Fix (2025-12-08)
+
+**Problem**: The Neural Network regressor was producing collapsed predictions (~±1 pt) instead of realistic point margins (~±15 pts), with extreme win probabilities (0%, 2%, 100%).
+
+**Root Cause Analysis**:
+
+The issue was a **~14x scale mismatch** between features and targets during training:
+
+| Data | Mean | Std Dev | Range |
+|------|------|---------|-------|
+| **Features (X)** | 0 | 1 | ~[-3, +3] (StandardScaler applied) |
+| **Targets (y)** | 2.92 | 14.34 | [-68, +73] (raw point margins) |
+
+This mismatch caused:
+1. Very large initial MSE loss (~200+) creating unstable gradients
+2. Model learned to predict near-zero to minimize loss quickly
+3. Gradient updates dominated by outliers (blowout games)
+4. Final predictions collapsed to narrow range (~±1 instead of ±15)
+
+**Diagnosis Output (before fix)**:
+```
+Random Forest (100 trees):
+  Mean: 6.57, Std: 15.46, Range: [-27, +59]
+
+Neural Network (100 MC Dropout samples):
+  Mean: 0.11, Std: 0.27, Range: [-0.63, +0.73]  ← COLLAPSED!
+```
+
+**Solution**: Scale regression targets to mean=0, std=1 during training, then inverse-transform predictions:
+
+```python
+# Training: Scale targets
+target_scaler = StandardScaler()
+y_scaled = target_scaler.fit_transform(y_margins.reshape(-1, 1))
+# Train model on scaled targets (now mean=0, std=1)
+
+# Inference: Inverse-transform predictions
+margin_samples_raw = [model(X) for _ in range(100)]  # MC Dropout
+margin_samples = target_scaler.inverse_transform(margin_samples_raw)
+```
+
+**Results After Fix**:
+
+| Metric | Before Fix | After Fix |
+|--------|-----------|-----------|
+| Margin range | ±1 pt | ±8 pts |
+| Uncertainty | ±0.6-0.8 pts | ±2.8-3.1 pts |
+| Win prob distribution | 0%, 2%, 100% (extreme) | 31%, 91%, 100% (reasonable) |
+| Agreement with RF | Partial | All 3 picks agree |
+
+**Training Logs (after fix)**:
+```
+Training NN classifier...
+  Early stopping at epoch 59 (best val_loss: 0.4419)
+Training NN regressor (with target scaling)...
+  Early stopping at epoch 47 (best val_loss: 0.6960)
+```
+
+**Files Modified**:
+- `predict_games.py`: `_train_pytorch_model()`, `load_or_train_pytorch_models()`, `predict_with_pytorch()`
+- `models/nn_config.joblib`: Now stores `target_scaler` for inference
+
+**Key Lesson**: When training neural networks for regression, ensure feature and target scales are comparable. StandardScaler on targets is essential when features are also standardized.
+
+---
+
+### Split Rebounding Adjustment Model (2025-12-08)
+
+**Problem**: The player projection rebounding adjustment only considered offensive rebounding opportunities (what opponent allows), ignoring defensive rebounding factors.
+
+**Previous Implementation**:
+```python
+# Only adjusted for OREB opportunities
+oreb_factor = opponent_opp_oreb_pct / league_avg_opp_oreb_pct
+proj_rpg = player_rpg * pace_factor * oreb_factor  # Same factor for all rebounds
+```
+
+**Issue**: ~70% of rebounds are defensive. The single factor over-projected DREB when opponent allowed many OREBs.
+
+**New Split Model**:
+
+| Factor | Formula | What It Captures |
+|--------|---------|------------------|
+| **OREB Factor** | `opp_oreb_pct / league_avg` | Opponent allows more OREBs → more OREB opportunities |
+| **DREB Factor** | `oreb_competition × miss_rate` | Opponent bad at OREB + shoots poorly → more DREB |
+
+Where:
+- `oreb_competition = (1 - opponent_own_oreb_pct) / (1 - league_avg_own_oreb_pct)`
+- `miss_rate = (1 - opponent_efg_pct) / (1 - league_avg_efg_pct)`
+
+**Example (vs Lakers)**:
+```
+Lakers Profile:
+  Own OREB%: 23.5% (bad at offensive rebounding)
+  Own EFG%: 53.5% (slightly above average shooting)
+  Opp OREB%: 30.4% (allows many offensive rebounds)
+
+Factors Calculated:
+  OREB factor: 1.068 (Lakers allow 30.4% vs 28.5% league avg)
+  DREB factor: 1.054 (Lakers bad at OREB, but shoot well)
+
+Jayson Tatum Adjustment:
+  Raw: 0.6 OREB, 6.9 DREB, 7.5 RPG
+  Adjusted: 0.64 OREB, 7.25 DREB, 7.89 RPG
+```
+
+**Files Modified**: `player_projections.py` - Added `calculate_rebounding_factors()`, updated `adjust_player_stats_for_opponent()`
+
+---
+
+### PyTorch Import Order on Windows (2025-12-08)
+
+**Problem**: `OSError: [WinError 1114] DLL initialization routine failed` when importing PyTorch after NumPy/Pandas on Windows.
+
+**Root Cause**: NumPy's OpenMP DLL loading conflicts with PyTorch's bundled libraries on Windows.
+
+**Diagnosis**:
+```python
+# This works:
+import torch  # First!
+import numpy as np
+import pandas as pd
+
+# This fails on Windows:
+import numpy as np
+import pandas as pd
+import torch  # OSError: DLL initialization failed
+```
+
+**Solution**: Import PyTorch at the very top of the file, before any other libraries:
+
+```python
+# predict_games.py (line 23-49)
+# PyTorch - MUST be imported FIRST before numpy/pandas on Windows
+try:
+    import torch
+    import torch.nn as nn
+    PYTORCH_AVAILABLE = True
+except (ImportError, OSError) as e:
+    PYTORCH_AVAILABLE = False
+    # ... fallback handling
+
+# Now safe to import numpy, pandas, matplotlib, etc.
+import numpy as np
+import pandas as pd
+```
+
+**Files Modified**: `predict_games.py` - Moved PyTorch import to top of file
+
+---
+
+### Player Impact Estimation: Historical vs Advanced Metrics (2025-12-06)
+
+**Question**: When a player is OUT, how should we estimate their impact on the team's margin?
+
+**OUT Detection**: Uses the `comment` field in `boxscoreplayertrackv3_player` table:
+- **DNP** = Did Not Play (Coach's Decision, Injury/Illness, Rest)
+- **DND** = Did Not Dress (Injury/Illness, specific injuries, Rest)
+- **NWT** = Not With Team (Personal Reasons, Suspension, Illness)
+
+**Approaches Tested**:
+- **Approach A (Historical)**: Compare team's margin WITH player (20+ min) vs WITHOUT player (DNP/DND/NWT)
+- **Approach B (Advanced Metrics)**: Use player's netRating × minutes_share as impact estimate
+
+**Methodology**:
+1. Identified 651 "significant" players (25+ MPG, 20+ games) from 2015-2025
+2. Found 8,823 games where these players were OUT (<10 min played)
+3. For each OUT game, predicted margin using both approaches
+4. Compared predictions to actual margin
+
+**Results** (8,823 evaluation samples):
+
+| Metric | Historical (WITH/WITHOUT) | Advanced (netRating) | Winner |
+|--------|---------------------------|----------------------|--------|
+| **MAE** | **11.10 pts** | 11.88 pts | Historical |
+| **RMSE** | **14.27 pts** | 15.17 pts | Historical |
+| **Correlation** | **0.350** | 0.138 | Historical |
+
+**Breakdown by Sample Size**:
+| Min "OUT" Games | Samples | Historical MAE | Advanced MAE | Winner |
+|-----------------|---------|----------------|--------------|--------|
+| 3+ | 8,823 | 11.10 | 11.88 | Historical |
+| 5+ | 8,593 | 11.13 | 11.87 | Historical |
+| 10+ | 7,571 | 11.08 | 11.75 | Historical |
+
+**Sample Predictions (LeBron James OUT)**:
+```
+2015-12-05: Actual -15, Historical pred -12.1 (err 2.9), Advanced pred -1.5 (err 13.5)
+2016-02-28: Actual -14, Historical pred -12.1 (err 1.9), Advanced pred -1.5 (err 12.5)
+2016-12-26: Actual -16, Historical pred -12.1 (err 3.9), Advanced pred -1.5 (err 14.5)
+```
+
+**Conclusions**:
+1. **Historical approach wins consistently** - 0.78 points lower MAE, 2.5x better correlation
+2. Historical captures team-specific replacement effects (who steps up when star is out)
+3. netRating alone doesn't capture how the team adjusts without the player
+4. Both approaches have ~11pt MAE due to inherent NBA game variance
+
+**Recommendation**: Use Historical WITH/WITHOUT as primary method, Advanced metrics as fallback when <3 historical games available.
+
+**Script**: `evaluate_impact_approaches.py` | **Data**: `impact_evaluation_results.csv`
+
+---
+
+### Unified Monte Carlo Win Probability (2024-12-06)
+
+**Problem**: Having separate classifier (win probability) and regressor (margin) models can lead to inconsistent predictions. For example: predicted margin of -2 points but 55% win probability.
+
+**Solution**: Derive win probability directly from margin samples using Monte Carlo simulation.
+
+**Implementation**:
+```python
+# Both RF (100 trees) and NN (100 MC Dropout passes) return margin_samples
+margin_samples = [tree.predict(X) for tree in forest.estimators_]  # 100 samples
+
+# Primary win probability = P(margin > 0)
+win_prob = np.mean(margin_samples > 0)  # e.g., 62/100 = 62%
+
+# Classifier probability kept as reference for comparison
+win_prob_classifier = clf.predict_proba(X)[0][1]  # e.g., 58%
+```
+
+**Benefits**:
+1. **Consistency**: Margin and probability always agree (can't have negative margin with >50% win)
+2. **Unified injury adjustment**: Shifting margin samples automatically updates probability
+3. **Transparency**: Both probabilities shown for comparison
+4. **Empirically grounded**: Uses validated margin predictions
+
+**Injury Adjustment Flow**:
+```python
+# Shift ALL margin samples by injury impact
+adjusted_samples = margin_samples + injury_adjustment
+
+# Recompute BOTH from adjusted samples
+adjusted_margin = np.mean(adjusted_samples)
+adjusted_win_prob = np.mean(adjusted_samples > 0)  # Consistent!
+```
+
+**Example Output**:
+```
+Matchup                   Pick       P(Win)    Clf Ref     Margin     Uncert
+-----------------------------------------------------------------------------------------------
+LAL @ BOS                 BOS         62.0%     58.2%     +3.5 pts   +/-8.2
+  >> Injury adjusted: margin +8.2 -> +3.5 (-4.7), P(win) 71.0% -> 62.0%
+```
+
+---
+
 ## Future Improvements
 
-1. **Player-level features**: Incorporate individual player stats and injuries
-2. **Betting lines**: Compare predictions to Vegas spreads
-3. **Ensemble methods**: Combine RF and NN predictions
-4. **Real-time updates**: Auto-update after games complete
-5. **Historical accuracy tracking**: Log predictions and measure calibration
-6. **Travel distance**: Calculate miles traveled for road trips
+1. ~~**Player-level features**: Incorporate individual player stats~~ ✅ DONE
+2. ~~**Historical accuracy tracking**: Log predictions and measure calibration~~ ✅ DONE
+3. ~~**Player impact estimation**: Historical WITH/WITHOUT approach for injury adjustments~~ ✅ DONE
+4. ~~**Unified win probability**: Derive P(win) from P(margin > 0) via Monte Carlo~~ ✅ DONE
+5. ~~**DNP/DND/NWT detection**: Use comment field for accurate OUT player identification~~ ✅ DONE (2025-12-06)
+6. ~~**Database performance**: Add indexes for 66x query speedup~~ ✅ DONE (2025-12-06)
+7. **Injury data integration**: Use `nbainjuries` package for real-time injury reports ⬅️ HIGH PRIORITY
+   - Currently requires manual `--injuries` flag
+   - Real injury data would automate player availability detection
+8. **Injury impact features in training**: Include in model training for SHAP visibility ⬅️ NEXT
+9. **Minutes redistribution modeling**: Model how minutes shift when a player is OUT
+10. **Betting lines**: Compare predictions to Vegas spreads
+11. **Ensemble methods**: Combine RF and NN predictions
+12. **Travel distance**: Calculate miles traveled for road trips

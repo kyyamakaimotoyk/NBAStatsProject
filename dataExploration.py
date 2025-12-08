@@ -946,7 +946,8 @@ try:
         load_or_train_rf_models, load_or_train_pytorch_models,
         predict_with_rf, predict_with_pytorch,
         create_engine as pred_create_engine,
-        NBA_API_AVAILABLE, PYTORCH_AVAILABLE
+        NBA_API_AVAILABLE, PYTORCH_AVAILABLE, SHAP_AVAILABLE,
+        get_top_shap_features, format_feature_impact
     )
     PREDICTIONS_AVAILABLE = True
 except (ImportError, OSError) as e:
@@ -954,6 +955,7 @@ except (ImportError, OSError) as e:
     PREDICTIONS_AVAILABLE = False
     NBA_API_AVAILABLE = False
     PYTORCH_AVAILABLE = False
+    SHAP_AVAILABLE = False
 
 # Pre-load BOTH models if available
 rf_models = None
@@ -1029,12 +1031,13 @@ def quick_select_date(today_clicks, tomorrow_clicks):
 
     return dash.no_update
 
-# Main prediction callback - Now generates BOTH RF and NN predictions
+# Main prediction callback - Now generates BOTH RF and NN predictions with SHAP
 @dash.callback(
     [Output('predictionStatus', 'children'),
      Output('predictionResultsContainer', 'children'),
      Output('predictionProbChart', 'figure'),
-     Output('predictionMarginChart', 'figure')],
+     Output('predictionMarginChart', 'figure'),
+     Output('predictionShapContainer', 'children')],
     [Input('btn-predict', 'n_clicks')],
     [dash.State('predictionDatePicker', 'date')],
     prevent_initial_call=True
@@ -1045,7 +1048,8 @@ def make_predictions(n_clicks, game_date):
             dbc.Alert("Prediction system not available. Check console for errors.", color='danger'),
             [],
             go.Figure(),
-            go.Figure()
+            go.Figure(),
+            []
         )
 
     if not NBA_API_AVAILABLE:
@@ -1053,7 +1057,8 @@ def make_predictions(n_clicks, game_date):
             dbc.Alert("NBA API not installed. Run: pip install nba_api", color='warning'),
             [],
             go.Figure(),
-            go.Figure()
+            go.Figure(),
+            []
         )
 
     try:
@@ -1065,7 +1070,8 @@ def make_predictions(n_clicks, game_date):
                 dbc.Alert(f"No games scheduled for {game_date}", color='info'),
                 [],
                 go.Figure().add_annotation(text="No games scheduled", showarrow=False),
-                go.Figure().add_annotation(text="No games scheduled", showarrow=False)
+                go.Figure().add_annotation(text="No games scheduled", showarrow=False),
+                []
             )
 
         # Create engine for database queries
@@ -1123,7 +1129,8 @@ def make_predictions(n_clicks, game_date):
                 dbc.Alert("Could not generate predictions (missing team data)", color='warning'),
                 [],
                 go.Figure(),
-                go.Figure()
+                go.Figure(),
+                []
             )
 
         # Build comparison results table
@@ -1270,14 +1277,116 @@ def make_predictions(n_clicks, game_date):
         fig_margin.add_vline(x=0, line_dash="dash", line_color="yellow", opacity=0.7,
                             annotation_text="Even", annotation_position="top")
 
+        # Build SHAP Feature Importance visualizations
+        shap_components = []
+
+        if SHAP_AVAILABLE:
+            for i, rf_pred in enumerate(rf_predictions):
+                nn_pred = nn_predictions[i] if i < len(nn_predictions) else None
+
+                # Create card for each game's SHAP explanation
+                matchup = f"{rf_pred['away_team']} @ {rf_pred['home_team']}"
+
+                # Get SHAP features for both models
+                rf_shap = rf_pred.get('shap_feature_importance', {})
+                nn_shap = nn_pred.get('shap_feature_importance', {}) if nn_pred else {}
+
+                if rf_shap:
+                    # Create SHAP bar chart for RF
+                    top_features_rf = get_top_shap_features(rf_shap, top_n=10)
+
+                    if top_features_rf:
+                        feature_names = [f.replace('DIFF_', '').replace('HOME_', 'H_').replace('AWAY_', 'A_')[:20] for f, _, _ in top_features_rf]
+                        shap_values = [v for _, v, _ in top_features_rf]
+
+                        fig_shap_rf = go.Figure()
+                        colors = ['#2ecc71' if v > 0 else '#e74c3c' for v in shap_values]
+
+                        fig_shap_rf.add_trace(go.Bar(
+                            x=shap_values,
+                            y=feature_names,
+                            orientation='h',
+                            marker_color=colors,
+                            text=[f'{v:+.2f}' for v in shap_values],
+                            textposition='outside',
+                            name='Random Forest'
+                        ))
+
+                        fig_shap_rf.update_layout(
+                            title=f'RF: Top Features - {matchup}',
+                            xaxis_title='SHAP Value (Impact on Point Margin)',
+                            yaxis_title='',
+                            template='minty_dark',
+                            height=400,
+                            yaxis=dict(autorange='reversed'),
+                            margin=dict(l=150)
+                        )
+                        fig_shap_rf.add_vline(x=0, line_dash="dash", line_color="white", opacity=0.5)
+
+                        # Create NN SHAP chart if available
+                        fig_shap_nn = go.Figure()
+                        if nn_shap:
+                            top_features_nn = get_top_shap_features(nn_shap, top_n=10)
+                            if top_features_nn:
+                                nn_feature_names = [f.replace('DIFF_', '').replace('HOME_', 'H_').replace('AWAY_', 'A_')[:20] for f, _, _ in top_features_nn]
+                                nn_shap_values = [v for _, v, _ in top_features_nn]
+                                nn_colors = ['#2ecc71' if v > 0 else '#e74c3c' for v in nn_shap_values]
+
+                                fig_shap_nn.add_trace(go.Bar(
+                                    x=nn_shap_values,
+                                    y=nn_feature_names,
+                                    orientation='h',
+                                    marker_color=nn_colors,
+                                    text=[f'{v:+.2f}' for v in nn_shap_values],
+                                    textposition='outside',
+                                    name='Neural Network'
+                                ))
+
+                                fig_shap_nn.update_layout(
+                                    title=f'NN: Top Features - {matchup}',
+                                    xaxis_title='SHAP Value (Impact on Point Margin)',
+                                    yaxis_title='',
+                                    template='minty_dark',
+                                    height=400,
+                                    yaxis=dict(autorange='reversed'),
+                                    margin=dict(l=150)
+                                )
+                                fig_shap_nn.add_vline(x=0, line_dash="dash", line_color="white", opacity=0.5)
+
+                        # Add to components
+                        shap_components.append(
+                            dbc.Card([
+                                dbc.CardHeader(f"Feature Importance: {matchup}", style={'fontWeight': 'bold'}),
+                                dbc.CardBody([
+                                    dbc.Row([
+                                        dbc.Col(dcc.Graph(figure=fig_shap_rf), width=6),
+                                        dbc.Col(dcc.Graph(figure=fig_shap_nn) if nn_shap else html.Div("NN SHAP not available"), width=6),
+                                    ]),
+                                    html.Hr(),
+                                    html.Div([
+                                        html.P([
+                                            html.Strong("How to read: "),
+                                            html.Span("Green bars = helps home team win. Red bars = helps away team win. ", style={'color': '#95DFC9'}),
+                                            html.Span("Longer bars = stronger impact on the prediction.", style={'color': '#FA7851'})
+                                        ]),
+                                        html.P([
+                                            html.Strong("Example: "),
+                                            "If 'DIFF_netRating_L10' is +2.5 (green), the home team's better net rating over last 10 games adds ~2.5 points to the predicted margin."
+                                        ])
+                                    ], style={'fontSize': '12px', 'backgroundColor': 'rgba(255,255,255,0.05)', 'padding': '10px', 'borderRadius': '5px'})
+                                ])
+                            ], className='mb-3')
+                        )
+
         # Status message
         nn_status = " and Neural Network" if nn_predictions else " (Neural Network not available)"
+        shap_status = " with SHAP explanations" if SHAP_AVAILABLE else ""
         status = dbc.Alert(
-            f"Generated Random Forest{nn_status} predictions for {len(rf_predictions)} games on {game_date}",
+            f"Generated Random Forest{nn_status} predictions{shap_status} for {len(rf_predictions)} games on {game_date}",
             color='success'
         )
 
-        return status, results_table, fig_prob, fig_margin
+        return status, results_table, fig_prob, fig_margin, shap_components
 
     except Exception as e:
         import traceback
@@ -1286,7 +1395,8 @@ def make_predictions(n_clicks, game_date):
             dbc.Alert(f"Error generating predictions: {str(e)}", color='danger'),
             html.Pre(error_msg, style={'fontSize': '10px', 'maxHeight': '200px', 'overflow': 'auto'}),
             go.Figure(),
-            go.Figure()
+            go.Figure(),
+            []
         )
 
 #######################################################################################################################
@@ -1520,7 +1630,24 @@ app.layout = html.Div(
                         html.P([html.Strong('When models disagree: '), 'Games where RF and NN pick different winners are higher uncertainty - consider the underdog.']),
                         html.P([html.Strong('Margin distribution width: '), 'Wider = more uncertain. If both models show wide distributions, the game is a toss-up.']),
                     ])
-                ])
+                ]),
+                html.Br(),
+                html.Hr(),
+                html.H4('Feature Importance Explanations (SHAP)'),
+                html.Div([
+                    html.P([
+                        'SHAP (SHapley Additive exPlanations) shows which features are driving each prediction. ',
+                        html.Span('Green bars', style={'color': '#2ecc71', 'fontWeight': 'bold'}),
+                        ' push toward the home team winning. ',
+                        html.Span('Red bars', style={'color': '#e74c3c', 'fontWeight': 'bold'}),
+                        ' push toward the away team winning. The length of each bar shows the magnitude of impact on the predicted point margin.'
+                    ]),
+                    html.P([
+                        html.Strong('Example: '),
+                        'If "DIFF_netRating_L10" has a SHAP value of +3.2, it means the home team\'s superior net rating (last 10 games) is adding approximately 3.2 points to the predicted margin.'
+                    ]),
+                ]),
+                html.Div(id='predictionShapContainer')
             ])
         ])
     ]

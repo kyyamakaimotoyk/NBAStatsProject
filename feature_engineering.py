@@ -465,6 +465,389 @@ def calculate_fatigue_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _process_single_game(args):
+    """
+    Process a single game for player projections (used by parallel executor).
+
+    This is a module-level function to work with multiprocessing.
+    """
+    game_id, game_date, team_id, opponent_id, connection_string = args
+
+    default_features = {
+        'PROJ_PTS_FROM_PLAYERS': 110.0,
+        'PROJ_REB_FROM_PLAYERS': 44.0,
+        'PROJ_AST_FROM_PLAYERS': 25.0,
+        'WEIGHTED_AVG_USAGE': 20.0,
+        'WEIGHTED_AVG_TS_PCT': 0.55,
+        'WEIGHTED_AVG_PIE': 0.1,
+        'ROSTER_DEPTH_SCORE': 8,
+        'STAR_PLAYER_IMPACT': 20.0,
+        'TOP_3_SCORER_SHARE': 0.5,
+        'PLAYER_DATA_QUALITY': 0.0
+    }
+
+    try:
+        # Each worker needs its own database connection
+        import sqlalchemy as sql
+        engine = sql.create_engine(connection_string)
+
+        from player_projections import get_player_projection_features
+        features = get_player_projection_features(engine, team_id, opponent_id, game_date)
+
+        engine.dispose()
+        return (game_id, team_id, features, None)  # None = no error
+    except Exception as e:
+        # Return default values on error, but include error message
+        return (game_id, team_id, default_features, str(e))
+
+
+def calculate_player_projection_features(engine, df: pd.DataFrame, n_jobs: int = -1) -> pd.DataFrame:
+    """
+    Calculate player-level projection features for historical games.
+
+    This adds features based on player-level data aggregated to team level,
+    with opponent adjustments for pace and defensive rating.
+
+    Uses parallel processing for speed (joblib).
+
+    Parameters:
+    -----------
+    engine : SQLAlchemy engine
+    df : DataFrame with game data
+    n_jobs : Number of parallel jobs (-1 = all cores, -2 = all but one)
+    """
+    try:
+        from player_projections import get_player_projection_features
+        from joblib import Parallel, delayed
+    except ImportError as e:
+        print(f"  Warning: Required module not available ({e}), skipping player features")
+        return df
+
+    print("  Calculating player projection features (parallelized)...")
+
+    # We need to calculate features for each team-game row
+    df = df.sort_values(['GAME_DATE', 'GAME_ID', 'TEAM_ID'])
+
+    # Initialize new columns
+    player_feature_cols = [
+        'PROJ_PTS_FROM_PLAYERS', 'PROJ_REB_FROM_PLAYERS', 'PROJ_AST_FROM_PLAYERS',
+        'WEIGHTED_AVG_USAGE', 'WEIGHTED_AVG_TS_PCT', 'WEIGHTED_AVG_PIE',
+        'ROSTER_DEPTH_SCORE', 'STAR_PLAYER_IMPACT', 'TOP_3_SCORER_SHARE',
+        'PLAYER_DATA_QUALITY'
+    ]
+
+    for col in player_feature_cols:
+        df[col] = np.nan
+
+    # Build list of tasks (game_id, game_date, team_id, opponent_id)
+    # First, create a mapping of game_id -> [team_ids]
+    game_teams = df.groupby('GAME_ID')['TEAM_ID'].apply(list).to_dict()
+
+    # Get connection string for workers (must include password!)
+    # str(engine.url) hides password with ***, so we use render_as_string
+    connection_string = engine.url.render_as_string(hide_password=False)
+
+    # Build task list
+    tasks = []
+    unique_games = df[['GAME_ID', 'GAME_DATE', 'TEAM_ID']].drop_duplicates()
+
+    for _, row in unique_games.iterrows():
+        game_id = row['GAME_ID']
+        game_date = row['GAME_DATE']
+        if hasattr(game_date, 'strftime'):
+            game_date = game_date.strftime('%Y-%m-%d')
+        else:
+            game_date = str(game_date)[:10]
+        team_id = row['TEAM_ID']
+
+        # Find opponent
+        teams_in_game = game_teams.get(game_id, [])
+        opponent_ids = [t for t in teams_in_game if t != team_id]
+        if not opponent_ids:
+            continue
+        opponent_id = opponent_ids[0]
+
+        tasks.append((game_id, game_date, team_id, opponent_id, connection_string))
+
+    total_tasks = len(tasks)
+    print(f"    Processing {total_tasks} team-games using parallel workers...")
+
+    # Determine number of jobs
+    import os
+    if n_jobs == -1:
+        n_jobs = os.cpu_count() or 4
+    elif n_jobs == -2:
+        n_jobs = max(1, (os.cpu_count() or 4) - 1)
+
+    print(f"    Using {n_jobs} parallel workers...")
+
+    # Process in parallel with progress updates
+    # Use batching for progress reporting
+    batch_size = 500
+    results = []
+
+    for i in range(0, len(tasks), batch_size):
+        batch = tasks[i:i + batch_size]
+        batch_results = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_process_single_game)(task) for task in batch
+        )
+        results.extend(batch_results)
+        print(f"    Processed {min(i + batch_size, total_tasks)}/{total_tasks} team-games...")
+
+    # Apply results to dataframe and collect errors
+    print("    Applying results to dataframe...")
+    results_dict = {(r[0], r[1]): (r[2], r[3]) for r in results}  # (features, error)
+
+    error_count = 0
+    error_samples = []
+
+    for (game_id, team_id), (features, error) in results_dict.items():
+        mask = (df['GAME_ID'] == game_id) & (df['TEAM_ID'] == team_id)
+        for col in player_feature_cols:
+            if col in features:
+                df.loc[mask, col] = features[col]
+
+        if error is not None:
+            error_count += 1
+            if len(error_samples) < 5:  # Collect first 5 unique errors
+                if error not in [e[1] for e in error_samples]:
+                    error_samples.append((game_id, error))
+
+    # Report results
+    success_count = len(results) - error_count
+    print(f"  Player projection features calculated: {success_count} succeeded, {error_count} failed")
+
+    if error_samples:
+        print(f"\n  Sample errors (showing up to 5 unique):")
+        for game_id, error in error_samples:
+            print(f"    - Game {game_id}: {error[:100]}...")
+
+    return df
+
+
+def _process_injury_impact_for_game(args):
+    """
+    Calculate injury impact for a single game (used by parallel executor).
+
+    For each team in the game, identifies players who were OUT (DNP/DND/NWT)
+    using the comment field from boxscoreplayertrackv3_player table and
+    calculates the sum of their historical impacts.
+    """
+    game_id, game_date, home_team_id, away_team_id, connection_string = args
+
+    default_result = {
+        'home_injury_impact': 0.0,
+        'away_injury_impact': 0.0,
+        'home_players_out': [],
+        'away_players_out': []
+    }
+
+    try:
+        import sqlalchemy as sql
+        from sqlalchemy import text
+        import pandas as pd
+
+        engine = sql.create_engine(connection_string)
+
+        # Get players who were OUT using the comment field from boxscoreplayertrackv3_player
+        # DNP = Did Not Play, DND = Did Not Dress, NWT = Not With Team
+        query = f"""
+            SELECT p.personId, p.teamId, p.firstName, p.familyName, p.comment
+            FROM boxscoreplayertrackv3_player p
+            WHERE p.gameId = '{game_id}'
+              AND p.comment IS NOT NULL
+              AND p.comment != ''
+              AND (p.comment LIKE 'DNP%' OR p.comment LIKE 'DND%' OR p.comment LIKE 'NWT%')
+        """
+        with engine.connect() as conn:
+            out_players = pd.read_sql(text(query), conn)
+
+        if len(out_players) == 0:
+            engine.dispose()
+            return (game_id, default_result, None)
+
+        home_impact = 0.0
+        away_impact = 0.0
+        home_players_out = []
+        away_players_out = []
+
+        # Import player impact function
+        try:
+            from player_impact import get_player_historical_impact
+        except ImportError:
+            engine.dispose()
+            return (game_id, default_result, "player_impact module not available")
+
+        for _, player in out_players.iterrows():
+            player_id = int(player['personId'])
+            team_id = int(player['teamId'])
+            player_name = f"{player['firstName']} {player['familyName']}"
+
+            # Get impact for this player (using data before this game)
+            impact_data = get_player_historical_impact(
+                engine, player_id, team_id, game_date
+            )
+
+            if impact_data['confidence'] != 'INSUFFICIENT':
+                impact_value = impact_data['impact']
+                reason = player.get('comment', 'Unknown')
+
+                if team_id == home_team_id:
+                    home_impact += impact_value
+                    home_players_out.append({
+                        'name': player_name,
+                        'impact': impact_value,
+                        'confidence': impact_data['confidence'],
+                        'reason': reason
+                    })
+                elif team_id == away_team_id:
+                    away_impact += impact_value
+                    away_players_out.append({
+                        'name': player_name,
+                        'impact': impact_value,
+                        'confidence': impact_data['confidence'],
+                        'reason': reason
+                    })
+
+        engine.dispose()
+
+        result = {
+            'home_injury_impact': home_impact,
+            'away_injury_impact': away_impact,
+            'home_players_out': home_players_out,
+            'away_players_out': away_players_out
+        }
+
+        return (game_id, result, None)
+
+    except Exception as e:
+        return (game_id, default_result, str(e))
+
+
+def calculate_injury_impact_features(engine, df: pd.DataFrame, n_jobs: int = -1) -> pd.DataFrame:
+    """
+    Calculate injury impact features for historical games.
+
+    For each game, identifies players who were OUT using the comment field from
+    boxscoreplayertrackv3_player table (DNP/DND/NWT) and calculates the sum of
+    their historical impacts. This allows the model to learn how player
+    availability affects game outcomes.
+
+    OUT status is determined by comment prefixes:
+    - DNP = Did Not Play (Coach's Decision, Injury/Illness, Rest)
+    - DND = Did Not Dress (Injury/Illness, specific injuries, Rest)
+    - NWT = Not With Team (Personal Reasons, Suspension, Illness)
+
+    Adds features:
+    - HOME_INJURY_IMPACT: Sum of impacts for OUT home players
+    - AWAY_INJURY_IMPACT: Sum of impacts for OUT away players
+    - DIFF_INJURY_IMPACT: Differential (away - home, positive = home advantage)
+
+    Uses parallel processing for speed.
+    """
+    try:
+        from joblib import Parallel, delayed
+        from player_impact import get_player_historical_impact
+    except ImportError as e:
+        print(f"  Warning: Required module not available ({e}), skipping injury features")
+        return df
+
+    print("  Calculating injury impact features (parallelized)...")
+
+    # Initialize columns
+    df['HOME_INJURY_IMPACT'] = 0.0
+    df['AWAY_INJURY_IMPACT'] = 0.0
+
+    # Get unique games with home/away team IDs
+    # First, identify home and away teams for each game
+    home_teams = df[df['IS_HOME'] == 1][['GAME_ID', 'GAME_DATE', 'TEAM_ID']].copy()
+    home_teams = home_teams.rename(columns={'TEAM_ID': 'HOME_TEAM_ID'})
+
+    away_teams = df[df['IS_HOME'] == 0][['GAME_ID', 'TEAM_ID']].copy()
+    away_teams = away_teams.rename(columns={'TEAM_ID': 'AWAY_TEAM_ID'})
+
+    games = home_teams.merge(away_teams, on='GAME_ID', how='inner')
+
+    # Get connection string
+    connection_string = engine.url.render_as_string(hide_password=False)
+
+    # Build task list
+    tasks = []
+    for _, row in games.iterrows():
+        game_id = row['GAME_ID']
+        game_date = row['GAME_DATE']
+        if hasattr(game_date, 'strftime'):
+            game_date = game_date.strftime('%Y-%m-%d')
+        else:
+            game_date = str(game_date)[:10]
+
+        tasks.append((
+            game_id, game_date,
+            int(row['HOME_TEAM_ID']), int(row['AWAY_TEAM_ID']),
+            connection_string
+        ))
+
+    total_tasks = len(tasks)
+    print(f"    Processing {total_tasks} games for injury impacts...")
+
+    # Determine number of jobs
+    import os
+    if n_jobs == -1:
+        n_jobs = os.cpu_count() or 4
+    elif n_jobs == -2:
+        n_jobs = max(1, (os.cpu_count() or 4) - 1)
+
+    # Limit parallel jobs to avoid overwhelming the database
+    n_jobs = min(n_jobs, 4)
+    print(f"    Using {n_jobs} parallel workers...")
+
+    # Process in batches
+    batch_size = 200
+    results = []
+
+    for i in range(0, len(tasks), batch_size):
+        batch = tasks[i:i + batch_size]
+        batch_results = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_process_injury_impact_for_game)(task) for task in batch
+        )
+        results.extend(batch_results)
+        print(f"    Processed {min(i + batch_size, total_tasks)}/{total_tasks} games...")
+
+    # Apply results to dataframe
+    print("    Applying injury impact results...")
+    results_dict = {r[0]: (r[1], r[2]) for r in results}
+
+    error_count = 0
+    impact_count = 0
+
+    for game_id, (result, error) in results_dict.items():
+        if error:
+            error_count += 1
+            continue
+
+        home_impact = result['home_injury_impact']
+        away_impact = result['away_injury_impact']
+
+        if home_impact != 0 or away_impact != 0:
+            impact_count += 1
+
+        # Set values for home team row
+        mask_home = (df['GAME_ID'] == game_id) & (df['IS_HOME'] == 1)
+        df.loc[mask_home, 'HOME_INJURY_IMPACT'] = home_impact
+        df.loc[mask_home, 'AWAY_INJURY_IMPACT'] = away_impact
+
+        # Set values for away team row
+        mask_away = (df['GAME_ID'] == game_id) & (df['IS_HOME'] == 0)
+        df.loc[mask_away, 'HOME_INJURY_IMPACT'] = home_impact
+        df.loc[mask_away, 'AWAY_INJURY_IMPACT'] = away_impact
+
+    print(f"  Injury impact features calculated: {impact_count} games had players OUT")
+    if error_count > 0:
+        print(f"    ({error_count} games had errors)")
+
+    return df
+
+
 def calculate_home_away_splits(df: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate rolling home and away performance separately.
@@ -541,7 +924,8 @@ def create_matchup_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_feature_dataset(engine,
                           start_date: str = '2015-01-01',
-                          end_date: str = '2025-12-31') -> pd.DataFrame:
+                          end_date: str = '2025-12-31',
+                          include_player_features: bool = True) -> pd.DataFrame:
     """
     Main function to build the complete feature dataset.
 
@@ -550,6 +934,7 @@ def build_feature_dataset(engine,
     engine : SQLAlchemy engine
     start_date : Filter games after this date
     end_date : Filter games before this date
+    include_player_features : Whether to include player-level projection features
 
     Returns:
     --------
@@ -708,6 +1093,36 @@ def build_feature_dataset(engine,
     print("  Calculating home/away splits...")
     game_df = calculate_home_away_splits(game_df)
 
+    # Step 8b: Calculate player projection features (optional, can be slow)
+    if include_player_features:
+        print("\n[9/9] Calculating player projection features...")
+        try:
+            game_df = calculate_player_projection_features(engine, game_df)
+            # Verify features were added
+            player_cols = [c for c in game_df.columns if 'PROJ_' in c or 'WEIGHTED_AVG' in c or 'ROSTER_DEPTH' in c]
+            if player_cols:
+                print(f"  ✓ Added {len(player_cols)} player projection columns")
+            else:
+                print("  ⚠ Warning: No player projection columns were added")
+        except Exception as e:
+            print(f"  ✗ Error calculating player features: {e}")
+            print("    Continuing without player features...")
+
+        # Step 8c: Calculate injury impact features
+        print("\n[10/10] Calculating injury impact features...")
+        try:
+            game_df = calculate_injury_impact_features(engine, game_df)
+            # Verify features were added
+            injury_cols = [c for c in game_df.columns if 'INJURY_IMPACT' in c]
+            if injury_cols:
+                print(f"  ✓ Added {len(injury_cols)} injury impact columns")
+        except Exception as e:
+            print(f"  ✗ Error calculating injury features: {e}")
+            print("    Continuing without injury features...")
+    else:
+        print("\n[9/9] Skipping player projection features (--no-player-features flag)")
+        print("[10/10] Skipping injury impact features (--no-player-features flag)")
+
     # Step 4: Filter date range
     print("\nFiltering date range and finalizing...")
     game_df = game_df[
@@ -739,9 +1154,15 @@ def prepare_ml_dataset(df: pd.DataFrame) -> Tuple[pd.DataFrame, list]:
 
     # Define feature columns (rolling averages only - no current game stats!)
     # Added fatigue features: IS_BACK_TO_BACK, IS_3_IN_4, GAMES_LAST, AVG_REST, ROAD_TRIP
+    # Added player projection features: PROJ_*, WEIGHTED_*, ROSTER_*, STAR_*, TOP_3_*
+    # Added injury impact features: INJURY_IMPACT
     feature_patterns = ['_L5', '_L10', 'STREAK', 'REST_DAYS', 'WIN_PCT',
                         'IS_BACK_TO_BACK', 'IS_3_IN_4_NIGHTS', 'GAMES_LAST',
-                        'AVG_REST_LAST', 'ROAD_TRIP_LENGTH']
+                        'AVG_REST_LAST', 'ROAD_TRIP_LENGTH',
+                        'PROJ_PTS_FROM_PLAYERS', 'PROJ_REB_FROM_PLAYERS', 'PROJ_AST_FROM_PLAYERS',
+                        'WEIGHTED_AVG_USAGE', 'WEIGHTED_AVG_TS_PCT', 'WEIGHTED_AVG_PIE',
+                        'ROSTER_DEPTH_SCORE', 'STAR_PLAYER_IMPACT', 'TOP_3_SCORER_SHARE',
+                        'INJURY_IMPACT']
 
     # Get all feature columns
     all_features = []
@@ -782,15 +1203,26 @@ def prepare_ml_dataset(df: pd.DataFrame) -> Tuple[pd.DataFrame, list]:
 # ============================================================================
 
 if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Generate ML features from NBA game data')
+    parser.add_argument('--no-player-features', action='store_true',
+                       help='Skip player projection features (faster)')
+    parser.add_argument('--start-date', type=str, default='2015-01-01',
+                       help='Start date for data (default: 2015-01-01)')
+    parser.add_argument('--end-date', type=str, default='2025-12-31',
+                       help='End date for data (default: 2025-12-31)')
+    args = parser.parse_args()
+
     # Create database connection
     engine = create_engine()
 
     # Build feature dataset
-    # Using 2020+ for more recent, relevant data
     feature_df = build_feature_dataset(
         engine,
-        start_date='2015-01-01',
-        end_date='2025-12-31'
+        start_date=args.start_date,
+        end_date=args.end_date,
+        include_player_features=not args.no_player_features
     )
 
     # Prepare ML-ready dataset

@@ -381,9 +381,49 @@ ORDER BY avg_pts DESC;
 
 ---
 
+## Database Indexes (Added 2025-12-06)
+
+Performance indexes were added to dramatically improve query speed for player impact calculations and feature engineering.
+
+### Indexes Created
+
+| Table | Index Name | Columns | Purpose |
+|-------|------------|---------|---------|
+| `game_list` | `idx_game_list_team_date` | (TEAM_ID, GAME_DATE) | Fast team history lookups |
+| `game_list` | `idx_game_list_game_id` | (GAME_ID) | Fast game joins |
+| `boxscoretraditionalv3_player` | `idx_trad_game_team_person` | (gameId, teamId, personId) | Player stat queries |
+| `boxscoreadvancedv3_player` | `idx_adv_game_person` | (gameId, personId) | Advanced stat joins |
+| `boxscoreplayertrackv3_player` | `idx_track_game_person` | (gameId, personId) | DNP/DND/NWT lookups |
+
+### Performance Impact
+
+| Query Type | Before Indexes | After Indexes | Speedup |
+|-----------|----------------|---------------|---------|
+| Player historical impact | 5.99s | 0.09s | **66x** |
+| Team game history | ~4s | ~0.1s | **40x** |
+
+### SQL to Create Indexes
+
+```sql
+-- game_list indexes
+CREATE INDEX idx_game_list_team_date ON game_list (TEAM_ID, GAME_DATE);
+CREATE INDEX idx_game_list_game_id ON game_list (GAME_ID);
+
+-- Player boxscore indexes
+CREATE INDEX idx_trad_game_team_person ON boxscoretraditionalv3_player (gameId, teamId, personId);
+CREATE INDEX idx_adv_game_person ON boxscoreadvancedv3_player (gameId, personId);
+CREATE INDEX idx_track_game_person ON boxscoreplayertrackv3_player (gameId, personId);
+```
+
+---
+
 ## Notes
 
 1. **Game IDs**: Format is `00XXYYZZZZ` where XX=season type (22=regular), YY=season year offset, ZZZZ=game number
 2. **Date Range**: Database contains games from 1995-96 season to present
 3. **Missing Data**: Some advanced stats (tracking, hustle) only available from 2013+
 4. **Home/Away**: Determined from `MATCHUP` column - "vs." = home, "@" = away
+5. **DNP/DND/NWT Detection**: The `comment` column in `boxscoreplayertrackv3_player` contains player status:
+   - `DNP` = Did Not Play (Coach's Decision, Injury/Illness, Rest)
+   - `DND` = Did Not Dress (Injury/Illness, specific injuries, Rest)
+   - `NWT` = Not With Team (Personal Reasons, Suspension, Illness)

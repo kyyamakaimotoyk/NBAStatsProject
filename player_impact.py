@@ -33,10 +33,93 @@ from scipy.special import expit  # Logistic function
 # Cache for margin-to-probability calibration
 _MARGIN_TO_PROB_COEFFICIENT = None
 
+# =============================================================================
+# CONFIGURABLE WEIGHTS FOR PLAYER IMPACT MODEL
+# These can be tuned through empirical testing/backtesting
+# =============================================================================
+
+# Player importance weighting (addresses selection bias for role players)
+MINUTES_WEIGHT = 0.5          # Weight for minutes share in importance calculation
+USAGE_WEIGHT = 0.5            # Weight for usage rate in importance calculation
+MAX_USAGE_RATE = 0.35         # Maximum realistic usage rate for normalization
+BASELINE_IMPORTANCE = 0.35    # Normalization baseline (typical rotation player)
+
+# Time decay for consecutive games without player (team adaptation)
+TIME_DECAY_FACTOR = 0.85      # Decay multiplier per consecutive game out
+
+# Confidence level weights
+CONFIDENCE_WEIGHTS = {
+    'HIGH': 1.0,              # 10+ games without player
+    'MEDIUM': 0.7,            # 5-9 games without player
+    'LOW': 0.4,               # 3-4 games without player (or advanced method)
+    'INSUFFICIENT': 0.0       # Not enough data
+}
+
+# Minimum sample sizes to avoid garbage-time bias
+MIN_GAMES_WITH = 5            # Minimum games with 20+ min to use historical method
+
 
 def create_engine():
     """Create database connection."""
     return sql.create_engine('mysql://kaiyamamoto:KN!yoWMhiH8cBvD@localhost:3306/nba_data')
+
+
+def _calculate_streak_positions(df, is_out_column='is_out'):
+    """
+    Calculate position within consecutive OUT streaks for time decay.
+
+    For each OUT game, determines its position in the current streak:
+    - First game out: position = 1
+    - Second consecutive game out: position = 2
+    - etc.
+
+    Resets when player returns (plays a game).
+
+    Args:
+        df: DataFrame with games sorted by date, containing is_out column
+        is_out_column: Name of boolean column indicating OUT status
+
+    Returns:
+        Series with streak position for each row (0 for non-OUT games)
+    """
+    positions = []
+    current_streak = 0
+
+    for is_out in df[is_out_column]:
+        if is_out:
+            current_streak += 1
+            positions.append(current_streak)
+        else:
+            current_streak = 0
+            positions.append(0)
+
+    return pd.Series(positions, index=df.index)
+
+
+def _calculate_importance_weight(avg_minutes, avg_usage):
+    """
+    Calculate player importance weight based on minutes and usage.
+
+    Args:
+        avg_minutes: Player's average minutes per game
+        avg_usage: Player's average usage percentage (0.0 to ~0.35)
+
+    Returns:
+        importance_multiplier: Factor to scale raw impact (>1 for stars, <1 for role players)
+    """
+    # Normalize minutes to 0-1 scale (48 min = full game)
+    minutes_share = min(avg_minutes / 48.0, 1.0)
+
+    # Normalize usage to 0-1 scale (MAX_USAGE_RATE = realistic max)
+    normalized_usage = min(avg_usage / MAX_USAGE_RATE, 1.0) if avg_usage else 0.0
+
+    # Combine with configurable weights
+    importance_weight = (minutes_share * MINUTES_WEIGHT) + (normalized_usage * USAGE_WEIGHT)
+
+    # Scale relative to baseline (typical rotation player)
+    importance_multiplier = importance_weight / BASELINE_IMPORTANCE if BASELINE_IMPORTANCE > 0 else 1.0
+
+    return importance_multiplier
 
 
 def parse_minutes(minutes_str) -> float:
@@ -65,7 +148,7 @@ def parse_minutes(minutes_str) -> float:
 
 def get_player_historical_impact(engine, player_id, team_id, as_of_date=None, lookback_days=365):
     """
-    Calculate player impact using Historical WITH/WITHOUT approach.
+    Calculate player impact using Historical WITH/WITHOUT approach with importance weighting.
 
     Args:
         engine: SQLAlchemy engine
@@ -77,13 +160,18 @@ def get_player_historical_impact(engine, player_id, team_id, as_of_date=None, lo
     Returns:
         dict with impact metrics:
         {
-            'impact': float,           # Expected margin swing when player is OUT
+            'raw_impact': float,       # Raw margin swing before weighting
+            'impact': float,           # Weighted impact (importance-adjusted)
             'margin_with': float,      # Team margin when player plays
-            'margin_without': float,   # Team margin when player is OUT
+            'margin_without': float,   # Team margin when player is OUT (with time decay)
             'games_with': int,         # Sample size (with player)
             'games_without': int,      # Sample size (without player)
             'confidence': str,         # HIGH/MEDIUM/LOW/INSUFFICIENT
-            'method': str              # 'historical' or 'advanced'
+            'method': str,             # 'historical' or 'advanced'
+            'avg_minutes': float,      # Player's average minutes
+            'avg_usage': float,        # Player's average usage rate
+            'importance_multiplier': float,  # Importance weight applied
+            'decay_applied': bool      # Whether time decay was applied
         }
     """
     if as_of_date is None:
@@ -91,7 +179,8 @@ def get_player_historical_impact(engine, player_id, team_id, as_of_date=None, lo
 
     start_date = (datetime.strptime(as_of_date, '%Y-%m-%d') - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
 
-    # Query includes comment field from boxscoreplayertrackv3_player to identify DNP/DND/NWT
+    # Query includes comment field and usage percentage
+    # Note: 'usage' is a MySQL reserved word, so we alias the table as 'usg'
     query = f"""
         SELECT
             gl.GAME_ID,
@@ -100,14 +189,17 @@ def get_player_historical_impact(engine, player_id, team_id, as_of_date=None, lo
             COALESCE(p.minutes, '0:00') as player_minutes,
             COALESCE(adv.netRating, 0) as player_net_rating,
             COALESCE(adv.PIE, 0) as player_pie,
-            track.comment as player_comment
+            track.comment as player_comment,
+            usg.usagePercentage as player_usage
         FROM game_list gl
         LEFT JOIN boxscoretraditionalv3_player p
             ON gl.GAME_ID = p.gameId AND gl.TEAM_ID = p.teamId AND p.personId = {player_id}
         LEFT JOIN boxscoreadvancedv3_player adv
             ON gl.GAME_ID = adv.gameId AND p.personId = adv.personId
         LEFT JOIN boxscoreplayertrackv3_player track
-            ON gl.GAME_ID = track.gameId AND p.personId = track.personId
+            ON gl.GAME_ID = track.gameId AND track.personId = {player_id}
+        LEFT JOIN boxscoreusagev3_player usg
+            ON gl.GAME_ID = usg.gameId AND usg.personId = {player_id}
         WHERE gl.TEAM_ID = {team_id}
           AND gl.GAME_DATE >= '{start_date}'
           AND gl.GAME_DATE < '{as_of_date}'
@@ -118,16 +210,24 @@ def get_player_historical_impact(engine, player_id, team_id, as_of_date=None, lo
     with engine.connect() as conn:
         df = pd.read_sql(text(query), conn)
 
+    # Default return for no data
+    default_return = {
+        'raw_impact': 0.0,
+        'impact': 0.0,
+        'margin_with': 0.0,
+        'margin_without': 0.0,
+        'games_with': 0,
+        'games_without': 0,
+        'confidence': 'INSUFFICIENT',
+        'method': 'none',
+        'avg_minutes': 0.0,
+        'avg_usage': 0.0,
+        'importance_multiplier': 1.0,
+        'decay_applied': False
+    }
+
     if len(df) == 0:
-        return {
-            'impact': 0.0,
-            'margin_with': 0.0,
-            'margin_without': 0.0,
-            'games_with': 0,
-            'games_without': 0,
-            'confidence': 'INSUFFICIENT',
-            'method': 'none'
-        }
+        return default_return
 
     # Parse minutes
     df['minutes_float'] = df['player_minutes'].apply(parse_minutes)
@@ -141,6 +241,9 @@ def get_player_historical_impact(engine, player_id, team_id, as_of_date=None, lo
 
     df['is_out'] = df.apply(is_out, axis=1)
 
+    # Calculate streak positions for time decay
+    df['streak_position'] = _calculate_streak_positions(df, 'is_out')
+
     # Split into WITH (20+ min, not OUT) and WITHOUT (OUT via comment)
     games_with = df[(df['minutes_float'] >= 20) & (~df['is_out'])]
     games_without = df[df['is_out']]
@@ -148,55 +251,102 @@ def get_player_historical_impact(engine, player_id, team_id, as_of_date=None, lo
     n_with = len(games_with)
     n_without = len(games_without)
 
+    # Calculate player's average minutes and usage (from games played)
+    games_played = df[df['minutes_float'] >= 15]
+    avg_minutes = games_played['minutes_float'].mean() if len(games_played) > 0 else 0.0
+    avg_usage = games_played['player_usage'].mean() if len(games_played) > 0 else 0.0
+    if pd.isna(avg_usage):
+        avg_usage = 0.0
+
+    # Calculate importance multiplier
+    importance_multiplier = _calculate_importance_weight(avg_minutes, avg_usage)
+
     # Calculate margins
     margin_with = games_with['team_margin'].mean() if n_with > 0 else 0.0
-    margin_without = games_without['team_margin'].mean() if n_without > 0 else None
 
-    # If we have enough "WITHOUT" games, use Historical approach
-    if n_without >= 3:
-        impact = margin_with - margin_without
+    # Calculate margin_without with time decay
+    decay_applied = False
+    margin_without = None
+    if n_without > 0:
+        # Apply time decay: weight = TIME_DECAY_FACTOR^(position-1)
+        # First game in streak: weight=1.0, second: 0.85, third: 0.72, etc.
+        games_without = games_without.copy()
+        games_without['decay_weight'] = games_without['streak_position'].apply(
+            lambda pos: TIME_DECAY_FACTOR ** (pos - 1) if pos > 0 else 1.0
+        )
+
+        # Check if any decay was actually applied (i.e., any streak > 1)
+        if (games_without['streak_position'] > 1).any():
+            decay_applied = True
+
+        # Weighted average
+        total_weight = games_without['decay_weight'].sum()
+        if total_weight > 0:
+            margin_without = (games_without['team_margin'] * games_without['decay_weight']).sum() / total_weight
+        else:
+            margin_without = games_without['team_margin'].mean()
+
+    # Determine if we can use Historical approach
+    # Requires: n_without >= 3 AND n_with >= MIN_GAMES_WITH (to avoid garbage-time bias)
+    if n_without >= 3 and n_with >= MIN_GAMES_WITH:
+        raw_impact = margin_with - margin_without
+        weighted_impact = raw_impact * importance_multiplier
         confidence = 'HIGH' if n_without >= 10 else ('MEDIUM' if n_without >= 5 else 'LOW')
+
         return {
-            'impact': impact,
+            'raw_impact': raw_impact,
+            'impact': weighted_impact,
             'margin_with': margin_with,
             'margin_without': margin_without,
             'games_with': n_with,
             'games_without': n_without,
             'confidence': confidence,
-            'method': 'historical'
+            'method': 'historical',
+            'avg_minutes': avg_minutes,
+            'avg_usage': avg_usage,
+            'importance_multiplier': importance_multiplier,
+            'decay_applied': decay_applied
         }
 
     # Fallback to Advanced Metrics approach
-    games_played = df[df['minutes_float'] >= 15]
     if len(games_played) >= 5:
         avg_net_rating = games_played['player_net_rating'].mean()
-        avg_minutes = games_played['minutes_float'].mean()
         minutes_share = avg_minutes / 48.0
 
-        # Estimated impact = netRating * minutes_share
-        impact = avg_net_rating * minutes_share
+        # Estimated raw impact = netRating * minutes_share
+        raw_impact = avg_net_rating * minutes_share
+        weighted_impact = raw_impact * importance_multiplier
 
         return {
-            'impact': impact,
+            'raw_impact': raw_impact,
+            'impact': weighted_impact,
             'margin_with': margin_with,
-            'margin_without': None,
+            'margin_without': margin_without,
             'games_with': n_with,
             'games_without': n_without,
             'avg_net_rating': avg_net_rating,
-            'avg_minutes': avg_minutes,
             'confidence': 'LOW',  # Advanced metrics are less reliable
-            'method': 'advanced'
+            'method': 'advanced',
+            'avg_minutes': avg_minutes,
+            'avg_usage': avg_usage,
+            'importance_multiplier': importance_multiplier,
+            'decay_applied': decay_applied
         }
 
     # Not enough data for either approach
     return {
+        'raw_impact': 0.0,
         'impact': 0.0,
         'margin_with': margin_with,
-        'margin_without': None,
+        'margin_without': margin_without,
         'games_with': n_with,
         'games_without': n_without,
         'confidence': 'INSUFFICIENT',
-        'method': 'none'
+        'method': 'none',
+        'avg_minutes': avg_minutes,
+        'avg_usage': avg_usage,
+        'importance_multiplier': importance_multiplier,
+        'decay_applied': False
     }
 
 
@@ -285,14 +435,19 @@ def get_team_player_impacts(engine, team_id, as_of_date=None, min_minutes=20, mi
             'player_name': f"{player['firstName']} {player['familyName']}",
             'avg_minutes': player['avg_minutes'],
             'avg_points': player['avg_points'],
+            'avg_usage': impact_data.get('avg_usage', 0.0),
             'games_played': int(player['games']),
-            'impact': impact_data['impact'],
+            'raw_impact': impact_data.get('raw_impact', impact_data['impact']),
+            'impact': impact_data['impact'],  # Importance-weighted impact
+            'importance_multiplier': impact_data.get('importance_multiplier', 1.0),
+            'games_with': impact_data['games_with'],
             'games_without': impact_data['games_without'],
             'confidence': impact_data['confidence'],
-            'method': impact_data['method']
+            'method': impact_data['method'],
+            'decay_applied': impact_data.get('decay_applied', False)
         })
 
-    # Sort by impact (highest first)
+    # Sort by weighted impact (highest first)
     results.sort(key=lambda x: abs(x['impact']), reverse=True)
 
     return results
@@ -302,6 +457,12 @@ def calculate_injury_adjusted_margin(engine, team_id, opponent_id, baseline_marg
                                       injuries_out=None, as_of_date=None):
     """
     Adjust predicted margin based on player availability.
+
+    Applies confidence weighting to player impacts:
+    - HIGH confidence: 100% weight
+    - MEDIUM confidence: 70% weight
+    - LOW confidence: 40% weight
+    - INSUFFICIENT: 0% weight (excluded)
 
     Args:
         engine: SQLAlchemy engine
@@ -315,8 +476,9 @@ def calculate_injury_adjusted_margin(engine, team_id, opponent_id, baseline_marg
         dict with:
         {
             'adjusted_margin': float,
-            'total_impact': float,
-            'player_impacts': list of dicts
+            'total_impact': float,           # Sum of confidence-weighted impacts
+            'total_raw_impact': float,       # Sum of raw (unweighted) impacts
+            'player_impacts': list of dicts  # Details per player
         }
     """
     if injuries_out is None:
@@ -327,18 +489,36 @@ def calculate_injury_adjusted_margin(engine, team_id, opponent_id, baseline_marg
 
     player_impacts = []
     total_impact = 0.0
+    total_raw_impact = 0.0
 
     for player_id in injuries_out:
         impact_data = get_player_historical_impact(engine, player_id, team_id, as_of_date)
 
         if impact_data['confidence'] != 'INSUFFICIENT':
+            # Get confidence weight
+            conf_weight = CONFIDENCE_WEIGHTS.get(impact_data['confidence'], 0.0)
+
+            # The impact from get_player_historical_impact is already importance-weighted
+            # Now apply confidence weight on top
+            importance_weighted_impact = impact_data['impact']
+            confidence_weighted_impact = importance_weighted_impact * conf_weight
+
             player_impacts.append({
                 'player_id': player_id,
-                'impact': impact_data['impact'],
+                'raw_impact': impact_data.get('raw_impact', impact_data['impact']),
+                'importance_weighted_impact': importance_weighted_impact,
+                'confidence_weighted_impact': confidence_weighted_impact,
+                'impact': confidence_weighted_impact,  # Final impact used
                 'confidence': impact_data['confidence'],
-                'method': impact_data['method']
+                'confidence_weight': conf_weight,
+                'method': impact_data['method'],
+                'avg_minutes': impact_data.get('avg_minutes', 0.0),
+                'avg_usage': impact_data.get('avg_usage', 0.0),
+                'importance_multiplier': impact_data.get('importance_multiplier', 1.0)
             })
-            total_impact += impact_data['impact']
+
+            total_impact += confidence_weighted_impact
+            total_raw_impact += impact_data.get('raw_impact', impact_data['impact'])
 
     # Adjusted margin = baseline - total_impact (positive impact means team is worse without player)
     adjusted_margin = baseline_margin - total_impact
@@ -347,6 +527,7 @@ def calculate_injury_adjusted_margin(engine, team_id, opponent_id, baseline_marg
         'adjusted_margin': adjusted_margin,
         'baseline_margin': baseline_margin,
         'total_impact': total_impact,
+        'total_raw_impact': total_raw_impact,
         'player_impacts': player_impacts
     }
 
@@ -398,9 +579,16 @@ def get_player_id_by_name(engine, player_name, team_id=None):
     return int(df.iloc[0]['personId'])
 
 
-def print_team_impact_report(engine, team_id, team_name=None, as_of_date=None):
+def print_team_impact_report(engine, team_id, team_name=None, as_of_date=None, verbose=False):
     """
     Print a formatted report of player impacts for a team.
+
+    Args:
+        engine: SQLAlchemy engine
+        team_id: NBA team ID
+        team_name: Display name for team (optional)
+        as_of_date: Calculate impacts as of this date
+        verbose: If True, show detailed weighting information
     """
     if as_of_date is None:
         as_of_date = datetime.now().strftime('%Y-%m-%d')
@@ -410,40 +598,83 @@ def print_team_impact_report(engine, team_id, team_name=None, as_of_date=None):
     if team_name is None:
         team_name = f"Team {team_id}"
 
-    print(f"\n{'='*70}")
+    print(f"\n{'='*90}")
     print(f"PLAYER IMPACT REPORT: {team_name}")
     print(f"As of: {as_of_date}")
-    print(f"{'='*70}")
+    print(f"{'='*90}")
 
     if not impacts:
         print("No significant players found.")
         return
 
-    print(f"\n{'Player':<25} {'MPG':>6} {'PPG':>6} {'Impact':>8} {'Conf':>8} {'Method':>10}")
-    print("-" * 70)
+    if verbose:
+        # Detailed view with raw impact and weighting
+        print(f"\n{'Player':<22} {'MPG':>5} {'USG%':>5} {'Raw':>7} {'Mult':>5} {'Wtd':>7} {'Conf':>6} {'Method':>8}")
+        print("-" * 90)
 
-    for p in impacts:
-        # Handle non-ASCII characters in player names
-        player_name = p['player_name'].encode('ascii', 'replace').decode('ascii')
-        print(f"{player_name:<25} {p['avg_minutes']:>6.1f} {p['avg_points']:>6.1f} "
-              f"{p['impact']:>+8.1f} {p['confidence']:>8} {p['method']:>10}")
+        for p in impacts:
+            player_name = p['player_name'].encode('ascii', 'replace').decode('ascii')[:21]
+            usage_pct = p.get('avg_usage', 0) * 100
+            raw_impact = p.get('raw_impact', p['impact'])
+            mult = p.get('importance_multiplier', 1.0)
+            decay_marker = '*' if p.get('decay_applied', False) else ''
 
-    print("-" * 70)
-    print(f"Impact = expected margin change if player is OUT")
+            print(f"{player_name:<22} {p['avg_minutes']:>5.1f} {usage_pct:>5.1f} "
+                  f"{raw_impact:>+7.1f} {mult:>5.2f} {p['impact']:>+7.1f} "
+                  f"{p['confidence']:>6} {p['method']:>8}{decay_marker}")
+
+        print("-" * 90)
+        print("Raw = unweighted impact | Mult = importance multiplier | Wtd = weighted impact")
+        print("* = time decay applied for consecutive games out")
+    else:
+        # Simple view
+        print(f"\n{'Player':<25} {'MPG':>6} {'PPG':>6} {'Impact':>8} {'Conf':>8} {'Method':>10}")
+        print("-" * 70)
+
+        for p in impacts:
+            player_name = p['player_name'].encode('ascii', 'replace').decode('ascii')
+            print(f"{player_name:<25} {p['avg_minutes']:>6.1f} {p['avg_points']:>6.1f} "
+                  f"{p['impact']:>+8.1f} {p['confidence']:>8} {p['method']:>10}")
+
+        print("-" * 70)
+
+    print(f"\nImpact = expected margin change if player is OUT (importance-weighted)")
     print(f"Positive impact means team performs WORSE without player")
+    print(f"\nConfig: MIN_WEIGHT={MINUTES_WEIGHT}, USG_WEIGHT={USAGE_WEIGHT}, "
+          f"DECAY={TIME_DECAY_FACTOR}, BASELINE={BASELINE_IMPORTANCE}")
 
 
 # Example usage
 if __name__ == '__main__':
     engine = create_engine()
 
-    # Example: Lakers (team_id 1610612747)
-    print_team_impact_report(engine, 1610612747, "Los Angeles Lakers")
+    # Example: Spurs (team_id 1610612759) - to see McLaughlin vs Wembanyama
+    print_team_impact_report(engine, 1610612759, "San Antonio Spurs", verbose=True)
 
-    # Example: Get LeBron's impact
-    lebron_id = get_player_id_by_name(engine, "LeBron James")
-    if lebron_id:
-        impact = get_player_historical_impact(engine, lebron_id, 1610612747)
-        print(f"\nLeBron James Impact: {impact}")
+    # Example: Get specific player impacts
+    print("\n" + "="*90)
+    print("INDIVIDUAL PLAYER ANALYSIS")
+    print("="*90)
+
+    # Jordan McLaughlin - should be dampened due to low importance
+    jm_id = get_player_id_by_name(engine, "Jordan McLaughlin")
+    if jm_id:
+        impact = get_player_historical_impact(engine, jm_id, 1610612759)
+        print(f"\nJordan McLaughlin (role player):")
+        print(f"  Raw Impact: {impact.get('raw_impact', 0):+.1f}")
+        print(f"  Importance Mult: {impact.get('importance_multiplier', 1):.2f}x")
+        print(f"  Weighted Impact: {impact['impact']:+.1f}")
+        print(f"  Avg Minutes: {impact.get('avg_minutes', 0):.1f}, Usage: {impact.get('avg_usage', 0)*100:.1f}%")
+        print(f"  Method: {impact['method']}, Confidence: {impact['confidence']}")
+
+    # Victor Wembanyama - should be amplified due to high importance
+    wemby_id = 1641705
+    impact = get_player_historical_impact(engine, wemby_id, 1610612759)
+    print(f"\nVictor Wembanyama (star):")
+    print(f"  Raw Impact: {impact.get('raw_impact', 0):+.1f}")
+    print(f"  Importance Mult: {impact.get('importance_multiplier', 1):.2f}x")
+    print(f"  Weighted Impact: {impact['impact']:+.1f}")
+    print(f"  Avg Minutes: {impact.get('avg_minutes', 0):.1f}, Usage: {impact.get('avg_usage', 0)*100:.1f}%")
+    print(f"  Method: {impact['method']}, Confidence: {impact['confidence']}")
 
     engine.dispose()

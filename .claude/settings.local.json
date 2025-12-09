@@ -5,7 +5,8 @@
       "Bash(pip install:*)",
       "Bash(python predict_games.py:*)",
       "Bash(python:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []

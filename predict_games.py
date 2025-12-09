@@ -244,8 +244,18 @@ def get_scheduled_games(game_date: str) -> pd.DataFrame:
 
         result = pd.DataFrame(scheduled)
         team_map = {t['id']: t['abbreviation'] for t in nba_teams.get_teams()}
+
+        # Ensure team IDs are integers for proper mapping
+        result['HOME_TEAM_ID'] = pd.to_numeric(result['HOME_TEAM_ID'], errors='coerce').astype('Int64')
+        result['AWAY_TEAM_ID'] = pd.to_numeric(result['AWAY_TEAM_ID'], errors='coerce').astype('Int64')
         result['HOME_TEAM'] = result['HOME_TEAM_ID'].map(team_map)
         result['AWAY_TEAM'] = result['AWAY_TEAM_ID'].map(team_map)
+
+        # Filter out games with missing team data (e.g., TBD or postponed games)
+        before_count = len(result)
+        result = result.dropna(subset=['HOME_TEAM_ID', 'AWAY_TEAM_ID', 'HOME_TEAM', 'AWAY_TEAM'])
+        if len(result) < before_count:
+            print(f"  Filtered out {before_count - len(result)} games with missing team data")
 
         return result
 

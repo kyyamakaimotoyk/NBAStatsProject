@@ -586,43 +586,80 @@ import pandas as pd
 - **Approach A (Historical)**: Compare team's margin WITH player (20+ min) vs WITHOUT player (DNP/DND/NWT)
 - **Approach B (Advanced Metrics)**: Use player's netRating × minutes_share as impact estimate
 
-**Methodology**:
-1. Identified 651 "significant" players (25+ MPG, 20+ games) from 2015-2025
-2. Found 8,823 games where these players were OUT (<10 min played)
-3. For each OUT game, predicted margin using both approaches
-4. Compared predictions to actual margin
-
 **Results** (8,823 evaluation samples):
 
 | Metric | Historical (WITH/WITHOUT) | Advanced (netRating) | Winner |
 |--------|---------------------------|----------------------|--------|
 | **MAE** | **11.10 pts** | 11.88 pts | Historical |
-| **RMSE** | **14.27 pts** | 15.17 pts | Historical |
 | **Correlation** | **0.350** | 0.138 | Historical |
-
-**Breakdown by Sample Size**:
-| Min "OUT" Games | Samples | Historical MAE | Advanced MAE | Winner |
-|-----------------|---------|----------------|--------------|--------|
-| 3+ | 8,823 | 11.10 | 11.88 | Historical |
-| 5+ | 8,593 | 11.13 | 11.87 | Historical |
-| 10+ | 7,571 | 11.08 | 11.75 | Historical |
-
-**Sample Predictions (LeBron James OUT)**:
-```
-2015-12-05: Actual -15, Historical pred -12.1 (err 2.9), Advanced pred -1.5 (err 13.5)
-2016-02-28: Actual -14, Historical pred -12.1 (err 1.9), Advanced pred -1.5 (err 12.5)
-2016-12-26: Actual -16, Historical pred -12.1 (err 3.9), Advanced pred -1.5 (err 14.5)
-```
-
-**Conclusions**:
-1. **Historical approach wins consistently** - 0.78 points lower MAE, 2.5x better correlation
-2. Historical captures team-specific replacement effects (who steps up when star is out)
-3. netRating alone doesn't capture how the team adjusts without the player
-4. Both approaches have ~11pt MAE due to inherent NBA game variance
 
 **Recommendation**: Use Historical WITH/WITHOUT as primary method, Advanced metrics as fallback when <3 historical games available.
 
 **Script**: `evaluate_impact_approaches.py` | **Data**: `impact_evaluation_results.csv`
+
+---
+
+### Enhanced Player Impact Weighting (2025-12-10)
+
+**Problem**: The raw historical impact had issues:
+1. **Selection bias** - Role players showed extreme impacts from garbage-time games only
+2. **No confidence weighting** - All confidence levels contributed equally
+3. **No time decay** - Teams adapt when players are out for extended periods
+
+**Solution**: Three-layer weighting system in `player_impact.py`:
+
+#### 1. Player Importance Weighting
+Combines minutes share and usage rate (50/50) to weight raw impact:
+
+```
+minutes_share = avg_minutes / 48
+normalized_usage = avg_usage / 0.35
+importance_weight = (minutes_share × 0.5) + (normalized_usage × 0.5)
+importance_multiplier = importance_weight / 0.35  # baseline
+weighted_impact = raw_impact × importance_multiplier
+```
+
+**Example Results**:
+| Player | MPG | Usage | Multiplier | Effect |
+|--------|-----|-------|------------|--------|
+| Victor Wembanyama | 33 | 30% | **2.20x** | Stars amplified |
+| LeBron James | 35 | 28% | **2.21x** | Stars amplified |
+| Jordan McLaughlin | 20 | 10% | **1.02x** | Role players dampened |
+
+#### 2. Confidence Level Weighting
+Applied when summing impacts:
+- **HIGH** (10+ games): 100% weight
+- **MEDIUM** (5-9 games): 70% weight
+- **LOW** (3-4 games or advanced method): 40% weight
+
+#### 3. Time Decay for Consecutive Absences
+Teams adapt over consecutive games without a player:
+```
+decay_weight = 0.85^(position_in_streak - 1)
+# Game 1: 100%, Game 2: 85%, Game 3: 72%, Game 4: 61%...
+```
+
+#### 4. Minimum Games Threshold
+Require 5+ games with 20+ minutes to use historical method (avoids garbage-time bias).
+
+**Configuration** (all tunable in `player_impact.py`):
+```python
+MINUTES_WEIGHT = 0.5
+USAGE_WEIGHT = 0.5
+TIME_DECAY_FACTOR = 0.85
+CONFIDENCE_WEIGHTS = {'HIGH': 1.0, 'MEDIUM': 0.7, 'LOW': 0.4}
+MIN_GAMES_WITH = 5
+```
+
+**Sample Output**:
+```
+Player                   MPG  USG%     Raw  Mult     Wtd   Conf   Method
+------------------------------------------------------------------------------------------
+LeBron James            35.2  28.4   +20.5  2.21   +45.2    LOW historical*
+Gabe Vincent            22.1  13.0   +11.1  1.21   +13.4 MEDIUM historical*
+Anthony Davis           33.0  29.9    +4.2  2.29    +9.5    LOW advanced
+```
+`*` = time decay applied for consecutive games out
 
 ---
 

@@ -848,6 +848,243 @@ def calculate_injury_impact_features(engine, df: pd.DataFrame, n_jobs: int = -1)
     return df
 
 
+def _process_player_slots_for_game(args):
+    """
+    Calculate player slot features for a single game (used by parallel executor).
+
+    For each team in the game, gets the top 8 players by impact and checks
+    their availability status for that specific game.
+
+    Returns tuple: (game_id, home_team_id, away_team_id, features_dict, error)
+    """
+    game_id, game_date, home_team_id, away_team_id, connection_string = args
+
+    # Default features (8 slots per team, 3 features per slot)
+    default_features = {}
+    for side in ['HOME', 'AWAY']:
+        for slot in range(1, 9):
+            default_features[f'{side}_SLOT_{slot}_IMPACT'] = 0.0
+            default_features[f'{side}_SLOT_{slot}_AVAILABLE'] = 1.0  # Assume available
+            default_features[f'{side}_SLOT_{slot}_PLAYER_ID'] = 0
+
+    try:
+        import sqlalchemy as sql
+        from sqlalchemy import text
+        import pandas as pd
+
+        engine = sql.create_engine(connection_string)
+
+        # Import player impact functions
+        try:
+            from player_impact import (
+                get_top_players_by_impact,
+                get_player_availability_for_game
+            )
+        except ImportError:
+            engine.dispose()
+            return (game_id, home_team_id, away_team_id, default_features, "player_impact module not available")
+
+        features = {}
+
+        # Process each team
+        for side, team_id in [('HOME', home_team_id), ('AWAY', away_team_id)]:
+            # Get top 8 players by impact for this team
+            top_players = get_top_players_by_impact(engine, team_id, game_date, top_n=8)
+
+            # Get availability for this game
+            availability = get_player_availability_for_game(engine, game_id, team_id)
+
+            # Fill slot features
+            for player in top_players:
+                slot = player['slot']
+                player_id = player['player_id']
+
+                features[f'{side}_SLOT_{slot}_IMPACT'] = player['impact']
+                features[f'{side}_SLOT_{slot}_PLAYER_ID'] = player_id
+
+                # Check if this player was available in this game
+                if player_id in availability:
+                    features[f'{side}_SLOT_{slot}_AVAILABLE'] = 1.0 if availability[player_id]['available'] else 0.0
+                else:
+                    # Player not in game data - might have been traded, etc.
+                    # Default to available if not explicitly OUT
+                    features[f'{side}_SLOT_{slot}_AVAILABLE'] = 1.0
+
+        engine.dispose()
+        return (game_id, home_team_id, away_team_id, features, None)
+
+    except Exception as e:
+        return (game_id, home_team_id, away_team_id, default_features, str(e))
+
+
+def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n_slots: int = 8) -> pd.DataFrame:
+    """
+    Calculate player slot features for historical games.
+
+    For each game, creates features for the top N players (by impact) on each team.
+    Each player slot has:
+    - SLOT_X_IMPACT: The player's historical impact score
+    - SLOT_X_AVAILABLE: 1 if playing, 0 if OUT (DNP/DND/NWT)
+    - SLOT_X_PLAYER_ID: The player's ID (for NN embedding, ignored by RF)
+
+    The model learns how player availability affects outcomes, and SHAP can
+    attribute impact to specific slots which map back to player names.
+
+    Uses parallel processing for speed.
+
+    Args:
+        engine: SQLAlchemy engine
+        df: DataFrame with game data (must have IS_HOME column)
+        n_jobs: Number of parallel workers (-1 = all cores)
+        n_slots: Number of player slots per team (default: 8)
+
+    Returns:
+        DataFrame with player slot features added
+    """
+    try:
+        from joblib import Parallel, delayed
+        from player_impact import (
+            get_top_players_by_impact,
+            get_player_availability_for_game,
+            ensure_player_impact_table
+        )
+    except ImportError as e:
+        print(f"  Warning: Required module not available ({e}), skipping player slot features")
+        return df
+
+    print("  Calculating player slot features (parallelized)...")
+
+    # Ensure player_impact table exists
+    try:
+        ensure_player_impact_table(engine)
+    except Exception as e:
+        print(f"  Warning: Could not ensure player_impact table: {e}")
+
+    # Initialize new columns
+    slot_feature_cols = []
+    for side in ['HOME', 'AWAY']:
+        for slot in range(1, n_slots + 1):
+            slot_feature_cols.extend([
+                f'{side}_SLOT_{slot}_IMPACT',
+                f'{side}_SLOT_{slot}_AVAILABLE',
+                f'{side}_SLOT_{slot}_PLAYER_ID'
+            ])
+
+    for col in slot_feature_cols:
+        if 'AVAILABLE' in col:
+            df[col] = 1.0  # Default: available
+        elif 'PLAYER_ID' in col:
+            df[col] = 0  # Default: no player
+        else:
+            df[col] = 0.0  # Default: zero impact
+
+    # Get unique games with home/away team IDs
+    home_teams = df[df['IS_HOME'] == 1][['GAME_ID', 'GAME_DATE', 'TEAM_ID']].copy()
+    home_teams = home_teams.rename(columns={'TEAM_ID': 'HOME_TEAM_ID'})
+
+    away_teams = df[df['IS_HOME'] == 0][['GAME_ID', 'TEAM_ID']].copy()
+    away_teams = away_teams.rename(columns={'TEAM_ID': 'AWAY_TEAM_ID'})
+
+    games = home_teams.merge(away_teams, on='GAME_ID', how='inner')
+
+    # Get connection string
+    connection_string = engine.url.render_as_string(hide_password=False)
+
+    # Build task list
+    tasks = []
+    for _, row in games.iterrows():
+        game_id = row['GAME_ID']
+        game_date = row['GAME_DATE']
+        if hasattr(game_date, 'strftime'):
+            game_date = game_date.strftime('%Y-%m-%d')
+        else:
+            game_date = str(game_date)[:10]
+
+        tasks.append((
+            game_id, game_date,
+            int(row['HOME_TEAM_ID']), int(row['AWAY_TEAM_ID']),
+            connection_string
+        ))
+
+    total_tasks = len(tasks)
+    print(f"    Processing {total_tasks} games for player slot features...")
+
+    # Determine number of jobs
+    import os
+    if n_jobs == -1:
+        n_jobs = os.cpu_count() or 4
+    elif n_jobs == -2:
+        n_jobs = max(1, (os.cpu_count() or 4) - 1)
+
+    # Limit to avoid DB connection issues
+    n_jobs = min(n_jobs, 8)
+    print(f"    Using {n_jobs} parallel workers...")
+
+    # Process in batches
+    batch_size = 200
+    results = []
+
+    for i in range(0, len(tasks), batch_size):
+        batch = tasks[i:i + batch_size]
+        batch_results = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_process_player_slots_for_game)(task) for task in batch
+        )
+        results.extend(batch_results)
+        print(f"    Processed {min(i + batch_size, total_tasks)}/{total_tasks} games...")
+
+    # Apply results to dataframe
+    print("    Applying player slot results...")
+    results_dict = {r[0]: (r[3], r[4]) for r in results}  # game_id -> (features, error)
+
+    error_count = 0
+    success_count = 0
+
+    for game_id, (features, error) in results_dict.items():
+        if error:
+            error_count += 1
+            continue
+
+        success_count += 1
+
+        # Apply features to both home and away rows for this game
+        mask = df['GAME_ID'] == game_id
+
+        for col, value in features.items():
+            if col in df.columns:
+                df.loc[mask, col] = value
+
+    print(f"  Player slot features calculated: {success_count} games succeeded, {error_count} errors")
+
+    # Also create derived features
+    print("  Creating derived slot features...")
+
+    # Total available impact per team
+    for side in ['HOME', 'AWAY']:
+        impact_cols = [f'{side}_SLOT_{i}_IMPACT' for i in range(1, n_slots + 1)]
+        avail_cols = [f'{side}_SLOT_{i}_AVAILABLE' for i in range(1, n_slots + 1)]
+
+        # Effective impact = impact * available
+        df[f'{side}_TOTAL_AVAILABLE_IMPACT'] = sum(
+            df[impact_cols[i]] * df[avail_cols[i]] for i in range(n_slots)
+        )
+
+        # Total missing impact = sum of impacts for unavailable players
+        df[f'{side}_TOTAL_MISSING_IMPACT'] = sum(
+            df[impact_cols[i]] * (1 - df[avail_cols[i]]) for i in range(n_slots)
+        )
+
+        # Count of unavailable players
+        df[f'{side}_PLAYERS_OUT'] = sum(
+            (1 - df[avail_cols[i]]) for i in range(n_slots)
+        )
+
+    # Differential features
+    df['DIFF_AVAILABLE_IMPACT'] = df['HOME_TOTAL_AVAILABLE_IMPACT'] - df['AWAY_TOTAL_AVAILABLE_IMPACT']
+    df['DIFF_MISSING_IMPACT'] = df['HOME_TOTAL_MISSING_IMPACT'] - df['AWAY_TOTAL_MISSING_IMPACT']
+
+    return df
+
+
 def calculate_home_away_splits(df: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate rolling home and away performance separately.
@@ -1108,8 +1345,8 @@ def build_feature_dataset(engine,
             print(f"  ✗ Error calculating player features: {e}")
             print("    Continuing without player features...")
 
-        # Step 8c: Calculate injury impact features
-        print("\n[10/10] Calculating injury impact features...")
+        # Step 8c: Calculate injury impact features (legacy - kept for compatibility)
+        print("\n[10/11] Calculating injury impact features (legacy)...")
         try:
             game_df = calculate_injury_impact_features(engine, game_df)
             # Verify features were added
@@ -1119,9 +1356,25 @@ def build_feature_dataset(engine,
         except Exception as e:
             print(f"  ✗ Error calculating injury features: {e}")
             print("    Continuing without injury features...")
+
+        # Step 8d: Calculate player slot features (NEW - integrated roster model)
+        print("\n[11/11] Calculating player slot features (integrated roster model)...")
+        try:
+            game_df = calculate_player_slot_features(engine, game_df)
+            # Verify features were added
+            slot_cols = [c for c in game_df.columns if '_SLOT_' in c]
+            derived_cols = [c for c in game_df.columns if 'TOTAL_AVAILABLE_IMPACT' in c or 'TOTAL_MISSING_IMPACT' in c]
+            if slot_cols:
+                print(f"  ✓ Added {len(slot_cols)} player slot columns + {len(derived_cols)} derived columns")
+            else:
+                print("  ⚠ Warning: No player slot columns were added")
+        except Exception as e:
+            print(f"  ✗ Error calculating player slot features: {e}")
+            print("    Continuing without player slot features...")
     else:
         print("\n[9/9] Skipping player projection features (--no-player-features flag)")
-        print("[10/10] Skipping injury impact features (--no-player-features flag)")
+        print("[10/11] Skipping injury impact features (--no-player-features flag)")
+        print("[11/11] Skipping player slot features (--no-player-features flag)")
 
     # Step 4: Filter date range
     print("\nFiltering date range and finalizing...")
@@ -1156,17 +1409,27 @@ def prepare_ml_dataset(df: pd.DataFrame) -> Tuple[pd.DataFrame, list]:
     # Added fatigue features: IS_BACK_TO_BACK, IS_3_IN_4, GAMES_LAST, AVG_REST, ROAD_TRIP
     # Added player projection features: PROJ_*, WEIGHTED_*, ROSTER_*, STAR_*, TOP_3_*
     # Added injury impact features: INJURY_IMPACT
+    # Added player slot features: SLOT_*_IMPACT, SLOT_*_AVAILABLE, TOTAL_*_IMPACT, PLAYERS_OUT
     feature_patterns = ['_L5', '_L10', 'STREAK', 'REST_DAYS', 'WIN_PCT',
                         'IS_BACK_TO_BACK', 'IS_3_IN_4_NIGHTS', 'GAMES_LAST',
                         'AVG_REST_LAST', 'ROAD_TRIP_LENGTH',
                         'PROJ_PTS_FROM_PLAYERS', 'PROJ_REB_FROM_PLAYERS', 'PROJ_AST_FROM_PLAYERS',
                         'WEIGHTED_AVG_USAGE', 'WEIGHTED_AVG_TS_PCT', 'WEIGHTED_AVG_PIE',
                         'ROSTER_DEPTH_SCORE', 'STAR_PLAYER_IMPACT', 'TOP_3_SCORER_SHARE',
-                        'INJURY_IMPACT']
+                        'INJURY_IMPACT',
+                        # Player slot features (integrated roster model)
+                        '_SLOT_', '_AVAILABLE', '_IMPACT',
+                        'TOTAL_AVAILABLE_IMPACT', 'TOTAL_MISSING_IMPACT', 'PLAYERS_OUT']
+
+    # Exclude PLAYER_ID columns - they're for lookup/embedding, not direct features for RF
+    # (NN will handle these separately via embedding layer)
 
     # Get all feature columns
     all_features = []
     for col in matchup_df.columns:
+        # Skip PLAYER_ID columns - these are for SHAP interpretation, not model features
+        if 'PLAYER_ID' in col:
+            continue
         if any(pattern in col for pattern in feature_patterns):
             all_features.append(col)
 

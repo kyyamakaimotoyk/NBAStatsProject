@@ -644,6 +644,481 @@ def print_team_impact_report(engine, team_id, team_name=None, as_of_date=None, v
           f"DECAY={TIME_DECAY_FACTOR}, BASELINE={BASELINE_IMPORTANCE}")
 
 
+# =============================================================================
+# PLAYER IMPACT LOOKUP TABLE (SQL)
+# =============================================================================
+
+def ensure_player_impact_table(engine):
+    """
+    Create the player_impact table if it doesn't exist.
+
+    Schema:
+        player_id: INT - NBA player ID (from personId)
+        team_id: INT - Team ID the player is on
+        compute_date: DATE - Date the impact was computed (for trend analysis)
+        player_name: VARCHAR - Full player name for convenience
+        impact: FLOAT - Weighted impact score (margin swing when OUT)
+        raw_impact: FLOAT - Unweighted impact score
+        confidence: VARCHAR - HIGH/MEDIUM/LOW/INSUFFICIENT
+        method: VARCHAR - 'historical' or 'advanced'
+        games_with: INT - Sample size (games with player)
+        games_without: INT - Sample size (games without player)
+        avg_minutes: FLOAT - Player's average minutes
+        avg_usage: FLOAT - Player's average usage rate
+        importance_multiplier: FLOAT - Importance weight applied
+
+    Primary key: (player_id, team_id, compute_date)
+    """
+    create_table_sql = """
+    CREATE TABLE IF NOT EXISTS player_impact (
+        player_id BIGINT NOT NULL,
+        team_id BIGINT NOT NULL,
+        compute_date DATE NOT NULL,
+        player_name VARCHAR(100),
+        impact FLOAT,
+        raw_impact FLOAT,
+        confidence VARCHAR(20),
+        method VARCHAR(20),
+        games_with INT,
+        games_without INT,
+        avg_minutes FLOAT,
+        avg_usage FLOAT,
+        importance_multiplier FLOAT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (player_id, team_id, compute_date),
+        INDEX idx_player_impact_team_date (team_id, compute_date),
+        INDEX idx_player_impact_date (compute_date),
+        INDEX idx_player_impact_player (player_id)
+    )
+    """
+    with engine.connect() as conn:
+        conn.execute(text(create_table_sql))
+        conn.commit()
+    print("player_impact table ensured.")
+
+
+def get_cached_player_impact(engine, player_id, team_id, as_of_date=None):
+    """
+    Get player impact from the cache table.
+
+    Returns the most recent impact computed on or before as_of_date.
+    Falls back to computing live if no cached value exists.
+
+    Args:
+        engine: SQLAlchemy engine
+        player_id: NBA player ID
+        team_id: NBA team ID
+        as_of_date: Get impact as of this date (default: today)
+
+    Returns:
+        dict with impact data, or None if not found
+    """
+    if as_of_date is None:
+        as_of_date = datetime.now().strftime('%Y-%m-%d')
+
+    query = f"""
+        SELECT * FROM player_impact
+        WHERE player_id = {player_id}
+          AND team_id = {team_id}
+          AND compute_date <= '{as_of_date}'
+        ORDER BY compute_date DESC
+        LIMIT 1
+    """
+
+    try:
+        with engine.connect() as conn:
+            result = pd.read_sql(text(query), conn)
+
+        if len(result) == 0:
+            return None
+
+        row = result.iloc[0]
+        return {
+            'player_id': int(row['player_id']),
+            'team_id': int(row['team_id']),
+            'player_name': row['player_name'],
+            'impact': float(row['impact']) if pd.notna(row['impact']) else 0.0,
+            'raw_impact': float(row['raw_impact']) if pd.notna(row['raw_impact']) else 0.0,
+            'confidence': row['confidence'],
+            'method': row['method'],
+            'games_with': int(row['games_with']) if pd.notna(row['games_with']) else 0,
+            'games_without': int(row['games_without']) if pd.notna(row['games_without']) else 0,
+            'avg_minutes': float(row['avg_minutes']) if pd.notna(row['avg_minutes']) else 0.0,
+            'avg_usage': float(row['avg_usage']) if pd.notna(row['avg_usage']) else 0.0,
+            'importance_multiplier': float(row['importance_multiplier']) if pd.notna(row['importance_multiplier']) else 1.0,
+            'compute_date': str(row['compute_date'])
+        }
+    except Exception as e:
+        # Table might not exist yet
+        return None
+
+
+def _compute_impact_for_player(args):
+    """
+    Compute impact for a single player (used by parallel executor).
+
+    Returns tuple: (player_id, team_id, player_name, impact_dict, error)
+    """
+    player_id, team_id, player_name, as_of_date, connection_string = args
+
+    try:
+        import sqlalchemy as sql
+        engine = sql.create_engine(connection_string)
+
+        impact_data = get_player_historical_impact(engine, player_id, team_id, as_of_date)
+
+        engine.dispose()
+        return (player_id, team_id, player_name, impact_data, None)
+    except Exception as e:
+        return (player_id, team_id, player_name, None, str(e))
+
+
+def populate_player_impact_table(engine, as_of_date=None, min_minutes=15, min_games=5,
+                                  n_jobs=-1, teams=None):
+    """
+    Populate the player_impact table with current impact scores for all significant players.
+
+    This computes impact scores for all players meeting the criteria and stores them
+    in the player_impact table. Run periodically (e.g., daily) to keep the cache fresh.
+
+    Args:
+        engine: SQLAlchemy engine
+        as_of_date: Compute impacts as of this date (default: today)
+        min_minutes: Minimum average minutes to be included
+        min_games: Minimum games played to be included
+        n_jobs: Number of parallel workers (-1 = all cores)
+        teams: List of team_ids to process (default: all 30 teams)
+
+    Returns:
+        dict with statistics: {'players_processed': int, 'players_inserted': int, 'errors': int}
+    """
+    from joblib import Parallel, delayed
+    import os
+
+    if as_of_date is None:
+        as_of_date = datetime.now().strftime('%Y-%m-%d')
+
+    print(f"\n{'='*60}")
+    print(f"POPULATING PLAYER IMPACT TABLE")
+    print(f"As of date: {as_of_date}")
+    print(f"{'='*60}")
+
+    # Ensure table exists
+    ensure_player_impact_table(engine)
+
+    # Get all teams if not specified
+    if teams is None:
+        query = "SELECT DISTINCT id FROM nba_teams"
+        with engine.connect() as conn:
+            teams_df = pd.read_sql(text(query), conn)
+        teams = teams_df['id'].tolist()
+
+    print(f"Processing {len(teams)} teams...")
+
+    # Get all significant players across all teams
+    start_date = (datetime.strptime(as_of_date, '%Y-%m-%d') - timedelta(days=365)).strftime('%Y-%m-%d')
+
+    query = f"""
+        SELECT
+            p.personId as player_id,
+            p.teamId as team_id,
+            CONCAT(p.firstName, ' ', p.familyName) as player_name,
+            COUNT(*) as games,
+            AVG(CASE
+                WHEN p.minutes LIKE 'PT%%' THEN
+                    CAST(SUBSTRING(p.minutes, 3, LOCATE('M', p.minutes) - 3) AS DECIMAL(10,2))
+                WHEN p.minutes LIKE '%%:%%' THEN
+                    CAST(SUBSTRING_INDEX(p.minutes, ':', 1) AS DECIMAL(10,2))
+                ELSE 0
+            END) as avg_minutes
+        FROM boxscoretraditionalv3_player p
+        JOIN game_list gl ON p.gameId = gl.GAME_ID AND p.teamId = gl.TEAM_ID
+        WHERE gl.GAME_DATE >= '{start_date}'
+          AND gl.GAME_DATE < '{as_of_date}'
+          AND p.teamId IN ({','.join(map(str, teams))})
+        GROUP BY p.personId, p.teamId, p.firstName, p.familyName
+        HAVING games >= {min_games} AND avg_minutes >= {min_minutes}
+        ORDER BY team_id, avg_minutes DESC
+    """
+
+    with engine.connect() as conn:
+        players_df = pd.read_sql(text(query), conn)
+
+    print(f"Found {len(players_df)} significant players to process")
+
+    if len(players_df) == 0:
+        return {'players_processed': 0, 'players_inserted': 0, 'errors': 0}
+
+    # Build task list
+    connection_string = engine.url.render_as_string(hide_password=False)
+    tasks = []
+
+    for _, row in players_df.iterrows():
+        tasks.append((
+            int(row['player_id']),
+            int(row['team_id']),
+            row['player_name'],
+            as_of_date,
+            connection_string
+        ))
+
+    # Determine number of jobs
+    if n_jobs == -1:
+        n_jobs = os.cpu_count() or 4
+    elif n_jobs == -2:
+        n_jobs = max(1, (os.cpu_count() or 4) - 1)
+
+    # Limit to avoid DB connection issues
+    n_jobs = min(n_jobs, 8)
+    print(f"Using {n_jobs} parallel workers...")
+
+    # Process in batches
+    batch_size = 100
+    all_results = []
+
+    for i in range(0, len(tasks), batch_size):
+        batch = tasks[i:i + batch_size]
+        batch_results = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_compute_impact_for_player)(task) for task in batch
+        )
+        all_results.extend(batch_results)
+        print(f"  Processed {min(i + batch_size, len(tasks))}/{len(tasks)} players...")
+
+    # Insert results into database
+    print("Inserting results into player_impact table...")
+
+    inserted = 0
+    errors = 0
+
+    insert_sql = """
+        INSERT INTO player_impact
+            (player_id, team_id, compute_date, player_name, impact, raw_impact,
+             confidence, method, games_with, games_without, avg_minutes, avg_usage,
+             importance_multiplier)
+        VALUES
+            (:player_id, :team_id, :compute_date, :player_name, :impact, :raw_impact,
+             :confidence, :method, :games_with, :games_without, :avg_minutes, :avg_usage,
+             :importance_multiplier)
+        ON DUPLICATE KEY UPDATE
+            player_name = VALUES(player_name),
+            impact = VALUES(impact),
+            raw_impact = VALUES(raw_impact),
+            confidence = VALUES(confidence),
+            method = VALUES(method),
+            games_with = VALUES(games_with),
+            games_without = VALUES(games_without),
+            avg_minutes = VALUES(avg_minutes),
+            avg_usage = VALUES(avg_usage),
+            importance_multiplier = VALUES(importance_multiplier)
+    """
+
+    with engine.connect() as conn:
+        for player_id, team_id, player_name, impact_data, error in all_results:
+            if error or impact_data is None:
+                errors += 1
+                continue
+
+            try:
+                conn.execute(text(insert_sql), {
+                    'player_id': player_id,
+                    'team_id': team_id,
+                    'compute_date': as_of_date,
+                    'player_name': player_name,
+                    'impact': impact_data.get('impact', 0.0),
+                    'raw_impact': impact_data.get('raw_impact', 0.0),
+                    'confidence': impact_data.get('confidence', 'INSUFFICIENT'),
+                    'method': impact_data.get('method', 'none'),
+                    'games_with': impact_data.get('games_with', 0),
+                    'games_without': impact_data.get('games_without', 0),
+                    'avg_minutes': impact_data.get('avg_minutes', 0.0),
+                    'avg_usage': impact_data.get('avg_usage', 0.0),
+                    'importance_multiplier': impact_data.get('importance_multiplier', 1.0)
+                })
+                inserted += 1
+            except Exception as e:
+                errors += 1
+                if errors <= 5:
+                    print(f"  Error inserting {player_name}: {e}")
+
+        conn.commit()
+
+    print(f"\nDone! Processed: {len(all_results)}, Inserted: {inserted}, Errors: {errors}")
+
+    return {
+        'players_processed': len(all_results),
+        'players_inserted': inserted,
+        'errors': errors
+    }
+
+
+def get_top_players_by_impact(engine, team_id, as_of_date=None, top_n=8):
+    """
+    Get the top N players by impact score for a team.
+
+    Uses cached values from player_impact table if available,
+    otherwise computes live.
+
+    Args:
+        engine: SQLAlchemy engine
+        team_id: NBA team ID
+        as_of_date: Get impacts as of this date
+        top_n: Number of top players to return (default: 8)
+
+    Returns:
+        List of dicts with player info and impact, sorted by abs(impact) descending:
+        [
+            {
+                'player_id': int,
+                'player_name': str,
+                'impact': float,
+                'confidence': str,
+                'avg_minutes': float,
+                'slot': int  # 1-8 indicating their rank
+            },
+            ...
+        ]
+    """
+    if as_of_date is None:
+        as_of_date = datetime.now().strftime('%Y-%m-%d')
+
+    # Try to get from cache first
+    query = f"""
+        SELECT
+            player_id, player_name, impact, raw_impact, confidence, method,
+            games_with, games_without, avg_minutes, avg_usage, importance_multiplier
+        FROM player_impact
+        WHERE team_id = {team_id}
+          AND compute_date = (
+              SELECT MAX(compute_date)
+              FROM player_impact
+              WHERE team_id = {team_id} AND compute_date <= '{as_of_date}'
+          )
+        ORDER BY ABS(impact) DESC
+        LIMIT {top_n}
+    """
+
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(text(query), conn)
+
+        if len(df) >= top_n // 2:  # Use cache if we have at least half the players
+            results = []
+            for i, row in df.iterrows():
+                results.append({
+                    'player_id': int(row['player_id']),
+                    'player_name': row['player_name'],
+                    'impact': float(row['impact']) if pd.notna(row['impact']) else 0.0,
+                    'raw_impact': float(row['raw_impact']) if pd.notna(row['raw_impact']) else 0.0,
+                    'confidence': row['confidence'],
+                    'method': row['method'],
+                    'avg_minutes': float(row['avg_minutes']) if pd.notna(row['avg_minutes']) else 0.0,
+                    'slot': i + 1
+                })
+
+            # Pad with empty slots if needed
+            while len(results) < top_n:
+                results.append({
+                    'player_id': 0,
+                    'player_name': '',
+                    'impact': 0.0,
+                    'raw_impact': 0.0,
+                    'confidence': 'INSUFFICIENT',
+                    'method': 'none',
+                    'avg_minutes': 0.0,
+                    'slot': len(results) + 1
+                })
+
+            return results
+    except Exception:
+        pass  # Fall through to live computation
+
+    # Fallback: compute live using get_team_player_impacts
+    impacts = get_team_player_impacts(engine, team_id, as_of_date, min_minutes=15, min_games=5)
+
+    results = []
+    for i, p in enumerate(impacts[:top_n]):
+        results.append({
+            'player_id': p['player_id'],
+            'player_name': p['player_name'],
+            'impact': p['impact'],
+            'raw_impact': p.get('raw_impact', p['impact']),
+            'confidence': p['confidence'],
+            'method': p['method'],
+            'avg_minutes': p['avg_minutes'],
+            'slot': i + 1
+        })
+
+    # Pad with empty slots if needed
+    while len(results) < top_n:
+        results.append({
+            'player_id': 0,
+            'player_name': '',
+            'impact': 0.0,
+            'raw_impact': 0.0,
+            'confidence': 'INSUFFICIENT',
+            'method': 'none',
+            'avg_minutes': 0.0,
+            'slot': len(results) + 1
+        })
+
+    return results
+
+
+def get_player_availability_for_game(engine, game_id, team_id):
+    """
+    Get player availability status for a specific historical game.
+
+    Uses the comment field from boxscoreplayertrackv3_player to determine
+    if a player was OUT (DNP/DND/NWT) or AVAILABLE.
+
+    Args:
+        engine: SQLAlchemy engine
+        game_id: NBA game ID
+        team_id: NBA team ID
+
+    Returns:
+        Dict mapping player_id -> {'available': bool, 'comment': str, 'minutes': float}
+    """
+    query = f"""
+        SELECT
+            p.personId as player_id,
+            CONCAT(p.firstName, ' ', p.familyName) as player_name,
+            p.minutes,
+            COALESCE(track.comment, '') as comment
+        FROM boxscoretraditionalv3_player p
+        LEFT JOIN boxscoreplayertrackv3_player track
+            ON p.gameId = track.gameId AND p.personId = track.personId
+        WHERE p.gameId = '{game_id}' AND p.teamId = {team_id}
+    """
+
+    with engine.connect() as conn:
+        df = pd.read_sql(text(query), conn)
+
+    result = {}
+    for _, row in df.iterrows():
+        player_id = int(row['player_id'])
+        comment = row['comment'] or ''
+
+        # Determine if player was OUT
+        is_out = (
+            comment.startswith('DNP') or
+            comment.startswith('DND') or
+            comment.startswith('NWT')
+        )
+
+        # Parse minutes
+        minutes = parse_minutes(row['minutes'])
+
+        result[player_id] = {
+            'available': not is_out,
+            'comment': comment,
+            'minutes': minutes,
+            'player_name': row['player_name']
+        }
+
+    return result
+
+
 # Example usage
 if __name__ == '__main__':
     engine = create_engine()

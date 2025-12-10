@@ -85,7 +85,8 @@ except ImportError:
 try:
     from player_impact import (
         get_player_historical_impact, get_team_player_impacts,
-        get_player_id_by_name, calculate_injury_adjusted_margin
+        get_player_id_by_name, calculate_injury_adjusted_margin,
+        get_top_players_by_impact, ensure_player_impact_table
     )
     PLAYER_IMPACT_AVAILABLE = True
 except ImportError:
@@ -198,6 +199,194 @@ class NBARegressor(nn.Module):
 
     def forward(self, x):
         return self.network(x)
+
+
+# ============================================================================
+# PYTORCH MODELS WITH PLAYER EMBEDDINGS
+# ============================================================================
+
+class NBAClassifierWithEmbeddings(nn.Module):
+    """
+    Neural network for win/loss classification with player embeddings.
+
+    Architecture:
+    - Player IDs (16 per game: 8 home + 8 away) → Embedding layer → Dense vectors
+    - Embeddings concatenated with team features and availability flags
+    - Combined input passes through MLP
+
+    The embedding layer learns player-specific representations that capture:
+    - Playing style interactions
+    - Matchup-specific effects
+    - Synergies/conflicts between players
+    """
+    def __init__(self, team_feature_dim, n_players, embedding_dim=16,
+                 n_slots=8, dropout_rate=0.3):
+        super().__init__()
+
+        self.n_slots = n_slots
+        self.embedding_dim = embedding_dim
+
+        # Player embedding: maps player_id -> dense vector
+        # Add 1 to n_players for padding index (player_id=0 means empty slot)
+        self.player_embedding = nn.Embedding(n_players + 1, embedding_dim, padding_idx=0)
+
+        # Input dimension calculation:
+        # - team_feature_dim: all non-player features (rolling stats, fatigue, etc.)
+        # - 16 player embeddings (8 home + 8 away) × embedding_dim
+        # - 16 availability flags (already in team features, but we use them to mask)
+        # - 16 impact scores (already in team features)
+        player_input_dim = 2 * n_slots * embedding_dim  # Embedded player vectors
+
+        combined_dim = team_feature_dim + player_input_dim
+
+        self.network = nn.Sequential(
+            nn.Linear(combined_dim, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(64, 1)
+        )
+
+    def forward(self, team_features, player_ids, availability_mask=None):
+        """
+        Forward pass with player embeddings.
+
+        Args:
+            team_features: Tensor of shape (batch, team_feature_dim) - non-player features
+            player_ids: Tensor of shape (batch, 16) - player IDs (8 home + 8 away)
+            availability_mask: Optional tensor (batch, 16) - 1 if available, 0 if OUT
+                              If provided, OUT players' embeddings are zeroed
+
+        Returns:
+            Tensor of shape (batch, 1) - classification logits
+        """
+        # Get player embeddings: (batch, 16, embedding_dim)
+        player_embeds = self.player_embedding(player_ids)
+
+        # Apply availability mask if provided (zero out embeddings for OUT players)
+        if availability_mask is not None:
+            # Expand mask to match embedding dimensions
+            mask = availability_mask.unsqueeze(-1)  # (batch, 16, 1)
+            player_embeds = player_embeds * mask
+
+        # Flatten embeddings: (batch, 16 * embedding_dim)
+        player_embeds_flat = player_embeds.view(player_embeds.size(0), -1)
+
+        # Concatenate with team features
+        combined = torch.cat([team_features, player_embeds_flat], dim=1)
+
+        return self.network(combined)
+
+
+class NBARegressorWithEmbeddings(nn.Module):
+    """
+    Neural network for point margin regression with player embeddings.
+
+    Same architecture as classifier but for regression task.
+    """
+    def __init__(self, team_feature_dim, n_players, embedding_dim=16,
+                 n_slots=8, dropout_rate=0.3):
+        super().__init__()
+
+        self.n_slots = n_slots
+        self.embedding_dim = embedding_dim
+
+        # Player embedding
+        self.player_embedding = nn.Embedding(n_players + 1, embedding_dim, padding_idx=0)
+
+        # Combined dimension
+        player_input_dim = 2 * n_slots * embedding_dim
+        combined_dim = team_feature_dim + player_input_dim
+
+        self.network = nn.Sequential(
+            nn.Linear(combined_dim, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(64, 1)
+        )
+
+    def forward(self, team_features, player_ids, availability_mask=None):
+        """
+        Forward pass with player embeddings.
+
+        Args:
+            team_features: Tensor of shape (batch, team_feature_dim)
+            player_ids: Tensor of shape (batch, 16) - player IDs
+            availability_mask: Optional tensor (batch, 16) - availability flags
+
+        Returns:
+            Tensor of shape (batch, 1) - margin prediction
+        """
+        # Get player embeddings
+        player_embeds = self.player_embedding(player_ids)
+
+        # Apply availability mask
+        if availability_mask is not None:
+            mask = availability_mask.unsqueeze(-1)
+            player_embeds = player_embeds * mask
+
+        # Flatten and concatenate
+        player_embeds_flat = player_embeds.view(player_embeds.size(0), -1)
+        combined = torch.cat([team_features, player_embeds_flat], dim=1)
+
+        return self.network(combined)
+
+
+def create_player_id_mapping(engine):
+    """
+    Create a mapping from NBA player IDs to sequential indices for embedding.
+
+    The embedding layer needs sequential indices (0, 1, 2, ...) but NBA player IDs
+    are large integers (e.g., 1629029). This creates a bidirectional mapping.
+
+    Returns:
+        tuple: (player_to_idx, idx_to_player, n_players)
+            - player_to_idx: dict mapping NBA player_id -> embedding index
+            - idx_to_player: dict mapping embedding index -> NBA player_id
+            - n_players: total number of unique players
+    """
+    from sqlalchemy import text
+
+    query = """
+        SELECT DISTINCT personId as player_id
+        FROM boxscoretraditionalv3_player
+        WHERE personId IS NOT NULL
+        ORDER BY personId
+    """
+
+    with engine.connect() as conn:
+        df = pd.read_sql(text(query), conn)
+
+    # Index 0 is reserved for padding (empty slot / unknown player)
+    player_to_idx = {0: 0}  # Unknown/empty maps to 0
+    idx_to_player = {0: 0}
+
+    for i, player_id in enumerate(df['player_id'].values, start=1):
+        player_to_idx[int(player_id)] = i
+        idx_to_player[i] = int(player_id)
+
+    n_players = len(df)
+
+    print(f"Created player ID mapping: {n_players} unique players")
+
+    return player_to_idx, idx_to_player, n_players
 
 
 # ============================================================================
@@ -474,7 +663,106 @@ def build_matchup_features(home_features: dict, away_features: dict,
         except Exception as e:
             print(f"  Warning: Player projections failed: {e}")
 
+    # Add player slot features (integrated roster model)
+    if PLAYER_IMPACT_AVAILABLE and engine is not None and home_team_id and away_team_id and game_date:
+        try:
+            slot_features = get_player_slot_features_for_prediction(
+                engine, home_team_id, away_team_id, game_date,
+                home_injuries, away_injuries
+            )
+            matchup.update(slot_features)
+        except Exception as e:
+            print(f"  Warning: Player slot features failed: {e}")
+
     return matchup
+
+
+def get_player_slot_features_for_prediction(engine, home_team_id, away_team_id, game_date,
+                                              home_injuries=None, away_injuries=None, n_slots=8):
+    """
+    Get player slot features for a prediction (not a historical game).
+
+    For predictions, we check injuries against the player names to determine availability.
+    Returns features in the same format as calculate_player_slot_features() but for a single game.
+
+    Args:
+        engine: SQLAlchemy engine
+        home_team_id: Home team ID
+        away_team_id: Away team ID
+        game_date: Game date string
+        home_injuries: List of injured home player names (strings)
+        away_injuries: List of injured away player names (strings)
+        n_slots: Number of player slots per team
+
+    Returns:
+        dict with slot features for this matchup
+    """
+    from player_impact import get_top_players_by_impact
+
+    if home_injuries is None:
+        home_injuries = []
+    if away_injuries is None:
+        away_injuries = []
+
+    # Normalize injury names for matching
+    home_injuries_lower = [name.lower().strip() for name in home_injuries]
+    away_injuries_lower = [name.lower().strip() for name in away_injuries]
+
+    features = {}
+    slot_to_player = {'HOME': {}, 'AWAY': {}}  # For SHAP interpretation
+
+    for side, team_id, injuries_lower in [
+        ('HOME', home_team_id, home_injuries_lower),
+        ('AWAY', away_team_id, away_injuries_lower)
+    ]:
+        # Get top players by impact
+        top_players = get_top_players_by_impact(engine, team_id, game_date, top_n=n_slots)
+
+        total_available_impact = 0.0
+        total_missing_impact = 0.0
+        players_out = 0
+
+        for player in top_players:
+            slot = player['slot']
+            player_name = player['player_name']
+            player_id = player['player_id']
+            impact = player['impact']
+
+            # Check if this player is injured
+            player_name_lower = player_name.lower().strip()
+            is_available = player_name_lower not in injuries_lower
+
+            features[f'{side}_SLOT_{slot}_IMPACT'] = impact
+            features[f'{side}_SLOT_{slot}_AVAILABLE'] = 1.0 if is_available else 0.0
+            features[f'{side}_SLOT_{slot}_PLAYER_ID'] = player_id
+
+            # Store for SHAP interpretation
+            slot_to_player[side][slot] = {
+                'player_id': player_id,
+                'player_name': player_name,
+                'impact': impact,
+                'available': is_available
+            }
+
+            # Aggregate stats
+            if is_available:
+                total_available_impact += impact
+            else:
+                total_missing_impact += impact
+                players_out += 1
+
+        features[f'{side}_TOTAL_AVAILABLE_IMPACT'] = total_available_impact
+        features[f'{side}_TOTAL_MISSING_IMPACT'] = total_missing_impact
+        features[f'{side}_PLAYERS_OUT'] = players_out
+
+    # Differential features
+    features['DIFF_AVAILABLE_IMPACT'] = features['HOME_TOTAL_AVAILABLE_IMPACT'] - features['AWAY_TOTAL_AVAILABLE_IMPACT']
+    features['DIFF_MISSING_IMPACT'] = features['HOME_TOTAL_MISSING_IMPACT'] - features['AWAY_TOTAL_MISSING_IMPACT']
+
+    # Store slot-to-player mapping for SHAP interpretation (will be used in post-processing)
+    features['_slot_to_player'] = slot_to_player
+
+    return features
 
 
 # ============================================================================
@@ -753,6 +1041,398 @@ def _train_pytorch_model(model, X, y, is_classifier=True, epochs=100, lr=0.001, 
 
 
 # ============================================================================
+# PYTORCH WITH EMBEDDINGS - TRAINING & LOADING
+# ============================================================================
+
+def load_or_train_pytorch_embedding_models(engine):
+    """
+    Load pre-trained PyTorch models with player embeddings or train new ones.
+
+    The embedding models use a different architecture that takes:
+    - Team features (rolling stats, fatigue, etc.)
+    - Player IDs (16 per game: 8 home + 8 away)
+    - Availability mask (1 if playing, 0 if OUT)
+
+    Returns:
+        tuple: (classifier, regressor, scaler_tuple, team_feature_names,
+                player_to_idx, target_scaler, n_slots, embedding_dim)
+    """
+    if not PYTORCH_AVAILABLE:
+        raise ImportError("PyTorch not available")
+
+    clf_path = 'models/nn_embed_classifier.pt'
+    reg_path = 'models/nn_embed_regressor.pt'
+    scaler_path = 'models/scaler.joblib'
+    features_path = 'models/feature_names.joblib'
+    config_path = 'models/nn_embed_config.joblib'
+
+    if all(os.path.exists(p) for p in [clf_path, reg_path, scaler_path, features_path, config_path]):
+        print("Loading pre-trained PyTorch embedding models...")
+        scaler = joblib.load(scaler_path)
+        feature_names = joblib.load(features_path)
+        config = joblib.load(config_path)
+
+        clf = NBAClassifierWithEmbeddings(
+            team_feature_dim=config['team_feature_dim'],
+            n_players=config['n_players'],
+            embedding_dim=config['embedding_dim'],
+            n_slots=config['n_slots']
+        )
+        clf.load_state_dict(torch.load(clf_path, weights_only=True))
+        clf.eval()
+
+        reg = NBARegressorWithEmbeddings(
+            team_feature_dim=config['team_feature_dim'],
+            n_players=config['n_players'],
+            embedding_dim=config['embedding_dim'],
+            n_slots=config['n_slots']
+        )
+        reg.load_state_dict(torch.load(reg_path, weights_only=True))
+        reg.eval()
+
+        return (clf, reg, scaler, config['team_feature_names'],
+                config['player_to_idx'], config.get('target_scaler'),
+                config['n_slots'], config['embedding_dim'])
+
+    print("Training PyTorch models with player embeddings...")
+
+    # Prepare training data with player IDs
+    (ml_df, team_feature_names, X_team_scaled, player_ids, availability_mask,
+     y_clf, y_reg, scaler_tuple, player_to_idx, n_players) = _prepare_embedding_training_data(engine)
+
+    n_slots = 8
+    embedding_dim = 16
+    team_feature_dim = X_team_scaled.shape[1]
+
+    # Train classifier
+    print("  Training NN classifier with embeddings...")
+    clf = NBAClassifierWithEmbeddings(
+        team_feature_dim=team_feature_dim,
+        n_players=n_players,
+        embedding_dim=embedding_dim,
+        n_slots=n_slots
+    )
+    _train_pytorch_embedding_model(clf, X_team_scaled, player_ids, availability_mask,
+                                    y_clf.values, is_classifier=True)
+
+    # Train regressor with target scaling
+    print("  Training NN regressor with embeddings (with target scaling)...")
+    reg = NBARegressorWithEmbeddings(
+        team_feature_dim=team_feature_dim,
+        n_players=n_players,
+        embedding_dim=embedding_dim,
+        n_slots=n_slots
+    )
+    target_scaler = StandardScaler()
+    _train_pytorch_embedding_model(reg, X_team_scaled, player_ids, availability_mask,
+                                    y_reg.values, is_classifier=False, target_scaler=target_scaler)
+
+    # Save models
+    os.makedirs('models', exist_ok=True)
+    torch.save(clf.state_dict(), clf_path)
+    torch.save(reg.state_dict(), reg_path)
+
+    # Save scalers if not already saved
+    if not os.path.exists(scaler_path):
+        joblib.dump(scaler_tuple, scaler_path)
+    if not os.path.exists(features_path):
+        joblib.dump(team_feature_names, features_path)
+
+    # Save config
+    joblib.dump({
+        'team_feature_dim': team_feature_dim,
+        'team_feature_names': team_feature_names,
+        'n_players': n_players,
+        'embedding_dim': embedding_dim,
+        'n_slots': n_slots,
+        'player_to_idx': player_to_idx,
+        'target_scaler': target_scaler
+    }, config_path)
+
+    print("  PyTorch embedding models saved to ./models/")
+    return (clf, reg, scaler_tuple, team_feature_names, player_to_idx,
+            target_scaler, n_slots, embedding_dim)
+
+
+def _prepare_embedding_training_data(engine):
+    """
+    Prepare training data for embedding models.
+
+    Returns team features (without player ID columns) + separate player ID array.
+    """
+    if os.path.exists('nba_ml_features.csv'):
+        ml_df = pd.read_csv('nba_ml_features.csv')
+    else:
+        from feature_engineering import build_feature_dataset, prepare_ml_dataset
+        feature_df = build_feature_dataset(engine, start_date='2020-01-01')
+        ml_df, _ = prepare_ml_dataset(feature_df)
+        ml_df.to_csv('nba_ml_features.csv', index=False)
+
+    # Create player ID mapping
+    player_to_idx, idx_to_player, n_players = create_player_id_mapping(engine)
+
+    # Identify player ID columns (HOME_SLOT_1_PLAYER_ID, etc.)
+    player_id_cols = [col for col in ml_df.columns if 'PLAYER_ID' in col]
+    availability_cols = [col for col in ml_df.columns if '_SLOT_' in col and '_AVAILABLE' in col]
+
+    # Sort columns to ensure consistent order: HOME_SLOT_1..8, then AWAY_SLOT_1..8
+    player_id_cols = sorted([c for c in player_id_cols if 'HOME' in c]) + \
+                     sorted([c for c in player_id_cols if 'AWAY' in c])
+    availability_cols = sorted([c for c in availability_cols if 'HOME' in c]) + \
+                        sorted([c for c in availability_cols if 'AWAY' in c])
+
+    # Team features (everything except PLAYER_ID columns)
+    team_feature_patterns = ['_L5', '_L10', 'STREAK', 'REST_DAYS', 'WIN_PCT',
+                              'IS_BACK_TO_BACK', 'IS_3_IN_4_NIGHTS', 'GAMES_LAST',
+                              'AVG_REST_LAST', 'ROAD_TRIP_LENGTH',
+                              'PROJ_PTS_FROM_PLAYERS', 'PROJ_REB_FROM_PLAYERS', 'PROJ_AST_FROM_PLAYERS',
+                              'WEIGHTED_AVG_USAGE', 'WEIGHTED_AVG_TS_PCT', 'WEIGHTED_AVG_PIE',
+                              'ROSTER_DEPTH_SCORE', 'STAR_PLAYER_IMPACT', 'TOP_3_SCORER_SHARE',
+                              '_SLOT_', '_AVAILABLE', '_IMPACT',
+                              'TOTAL_AVAILABLE_IMPACT', 'TOTAL_MISSING_IMPACT', 'PLAYERS_OUT']
+
+    team_feature_cols = [col for col in ml_df.columns
+                          if any(p in col for p in team_feature_patterns)
+                          and 'PLAYER_ID' not in col]
+
+    # Extract features
+    X_team = ml_df[team_feature_cols].copy()
+    y_clf = ml_df['TARGET_WIN']
+    y_reg = ml_df['TARGET_MARGIN']
+
+    # Handle missing columns
+    valid_cols = X_team.columns[X_team.notna().any()].tolist()
+    X_team = X_team[valid_cols]
+
+    # Scale team features
+    imputer = SimpleImputer(strategy='median')
+    scaler = StandardScaler()
+    X_team_imputed = imputer.fit_transform(X_team)
+    X_team_scaled = scaler.fit_transform(X_team_imputed)
+
+    # Extract player IDs and convert to embedding indices
+    if player_id_cols and all(col in ml_df.columns for col in player_id_cols):
+        player_ids_raw = ml_df[player_id_cols].fillna(0).astype(int).values
+        # Map NBA player IDs to embedding indices
+        player_ids = np.vectorize(lambda x: player_to_idx.get(int(x), 0))(player_ids_raw)
+    else:
+        # No player ID columns - create zeros (all unknown players)
+        print("  Warning: No player ID columns found, using zeros")
+        player_ids = np.zeros((len(ml_df), 16), dtype=int)
+
+    # Extract availability mask
+    if availability_cols and all(col in ml_df.columns for col in availability_cols):
+        availability_mask = ml_df[availability_cols].fillna(1.0).values
+    else:
+        # Default to all available
+        availability_mask = np.ones((len(ml_df), 16), dtype=float)
+
+    print(f"  Team features: {len(valid_cols)}, Player ID columns: {len(player_id_cols)}")
+    print(f"  Samples: {len(ml_df)}, Unique players in mapping: {n_players}")
+
+    return (ml_df, valid_cols, X_team_scaled, player_ids, availability_mask,
+            y_clf, y_reg, (imputer, scaler), player_to_idx, n_players)
+
+
+def _train_pytorch_embedding_model(model, X_team, player_ids, availability_mask, y,
+                                     is_classifier=True, epochs=100, lr=0.001, target_scaler=None):
+    """
+    Train a PyTorch embedding model with early stopping.
+
+    Similar to _train_pytorch_model but handles the separate inputs for embeddings.
+    """
+    # Convert to tensors
+    X_team_tensor = torch.FloatTensor(X_team)
+    player_ids_tensor = torch.LongTensor(player_ids)
+    availability_tensor = torch.FloatTensor(availability_mask)
+
+    # Handle target scaling for regression
+    if not is_classifier and target_scaler is not None:
+        y_scaled = target_scaler.fit_transform(y.reshape(-1, 1)).flatten()
+        y_tensor = torch.FloatTensor(y_scaled).unsqueeze(1)
+    else:
+        y_tensor = torch.FloatTensor(y).unsqueeze(1) if not is_classifier else torch.FloatTensor(y).unsqueeze(1)
+
+    # Train/validation split (80/20)
+    n_samples = len(y)
+    indices = np.random.permutation(n_samples)
+    train_idx = indices[:int(0.8 * n_samples)]
+    val_idx = indices[int(0.8 * n_samples):]
+
+    X_team_train = X_team_tensor[train_idx]
+    X_team_val = X_team_tensor[val_idx]
+    player_ids_train = player_ids_tensor[train_idx]
+    player_ids_val = player_ids_tensor[val_idx]
+    avail_train = availability_tensor[train_idx]
+    avail_val = availability_tensor[val_idx]
+    y_train = y_tensor[train_idx]
+    y_val = y_tensor[val_idx]
+
+    # Loss and optimizer
+    if is_classifier:
+        criterion = nn.BCEWithLogitsLoss()
+    else:
+        criterion = nn.MSELoss()
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+
+    # Training loop with early stopping
+    best_val_loss = float('inf')
+    best_model_state = None
+    patience = 15
+    patience_counter = 0
+
+    model.train()
+    for epoch in range(epochs):
+        optimizer.zero_grad()
+        outputs = model(X_team_train, player_ids_train, avail_train)
+        loss = criterion(outputs, y_train)
+
+        loss.backward()
+        optimizer.step()
+
+        # Validation
+        model.eval()
+        with torch.no_grad():
+            val_outputs = model(X_team_val, player_ids_val, avail_val)
+            val_loss = criterion(val_outputs, y_val).item()
+        model.train()
+
+        # Early stopping
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model_state = model.state_dict().copy()
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"    Early stopping at epoch {epoch+1} (best val_loss: {best_val_loss:.4f})")
+                break
+
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+
+    model.eval()
+    return target_scaler if not is_classifier else None
+
+
+def predict_with_pytorch_embeddings(clf, reg, scaler_tuple, team_feature_names, player_to_idx,
+                                     matchup_features: dict, n_samples=100, skip_shap=False,
+                                     target_scaler=None, n_slots=8):
+    """
+    Make predictions using PyTorch models with player embeddings.
+
+    Args:
+        clf: NBAClassifierWithEmbeddings model
+        reg: NBARegressorWithEmbeddings model
+        scaler_tuple: (imputer, scaler) for team features
+        team_feature_names: List of team feature column names
+        player_to_idx: Dict mapping NBA player_id -> embedding index
+        matchup_features: Dict of feature values (including _slot_to_player)
+        n_samples: Number of MC Dropout samples
+        skip_shap: Skip SHAP calculation
+        target_scaler: StandardScaler for inverse-transforming margins
+        n_slots: Number of player slots per team (default: 8)
+
+    Returns:
+        dict with predictions and uncertainty estimates
+    """
+    imputer, scaler = scaler_tuple
+
+    # Separate team features from player features
+    team_features = {k: v for k, v in matchup_features.items()
+                     if not k.startswith('_') and 'PLAYER_ID' not in k}
+
+    # Prepare team features
+    X_team = pd.DataFrame([team_features])
+    for col in team_feature_names:
+        if col not in X_team.columns:
+            X_team[col] = np.nan
+    X_team = X_team[team_feature_names]
+
+    X_team_imputed = imputer.transform(X_team)
+    X_team_scaled = scaler.transform(X_team_imputed)
+    X_team_tensor = torch.FloatTensor(X_team_scaled)
+
+    # Extract player IDs and convert to embedding indices
+    player_ids = []
+    availability = []
+
+    for side in ['HOME', 'AWAY']:
+        for slot in range(1, n_slots + 1):
+            player_id_key = f'{side}_SLOT_{slot}_PLAYER_ID'
+            avail_key = f'{side}_SLOT_{slot}_AVAILABLE'
+
+            nba_player_id = matchup_features.get(player_id_key, 0)
+            embed_idx = player_to_idx.get(int(nba_player_id), 0)
+            player_ids.append(embed_idx)
+
+            avail = matchup_features.get(avail_key, 1.0)
+            availability.append(avail)
+
+    player_ids_tensor = torch.LongTensor([player_ids])
+    availability_tensor = torch.FloatTensor([availability])
+
+    # MC Dropout inference for classifier
+    clf.train()  # Enable dropout
+    enable_dropout(clf)  # Keep BatchNorm in eval mode
+
+    win_probs = []
+    for _ in range(n_samples):
+        with torch.no_grad():
+            logits = clf(X_team_tensor, player_ids_tensor, availability_tensor)
+            prob = torch.sigmoid(logits).item()
+            win_probs.append(prob)
+
+    win_prob_classifier = np.mean(win_probs)
+
+    # MC Dropout inference for regressor
+    reg.train()
+    enable_dropout(reg)
+
+    margin_samples = []
+    for _ in range(n_samples):
+        with torch.no_grad():
+            pred = reg(X_team_tensor, player_ids_tensor, availability_tensor)
+            margin_samples.append(pred.item())
+
+    margin_samples = np.array(margin_samples)
+
+    # Inverse-transform if target was scaled during training
+    if target_scaler is not None:
+        margin_samples = target_scaler.inverse_transform(margin_samples.reshape(-1, 1)).flatten()
+
+    margin_mean = np.mean(margin_samples)
+    margin_std = np.std(margin_samples)
+
+    # Derive win probability from margin samples
+    win_prob = np.mean(margin_samples > 0)
+
+    # SHAP is more complex with embeddings - skip for now
+    # (Would need custom explainer for embedding inputs)
+    shap_values = None
+    shap_feature_importance = {}
+
+    # Get slot_to_player mapping
+    slot_to_player = matchup_features.get('_slot_to_player', None)
+
+    return {
+        'win_prob': win_prob,
+        'win_prob_classifier': win_prob_classifier,
+        'win_prob_classifier_std': np.std(win_probs),
+        'margin_mean': margin_mean,
+        'margin_std': margin_std,
+        'margin_samples': margin_samples,
+        'model': 'Neural Network with Embeddings (MC Dropout)',
+        'shap_values': shap_values,
+        'shap_feature_importance': shap_feature_importance,
+        'X_scaled': X_team_scaled,
+        'feature_names': team_feature_names,
+        'slot_to_player': slot_to_player
+    }
+
+
+# ============================================================================
 # PREDICTION FUNCTIONS
 # ============================================================================
 
@@ -804,6 +1484,9 @@ def predict_with_rf(clf, reg, scaler_tuple, feature_names, matchup_features: dic
         except Exception as e:
             print(f"Warning: SHAP calculation failed: {e}")
 
+    # Extract slot_to_player mapping if present (for SHAP interpretation)
+    slot_to_player = matchup_features.get('_slot_to_player', None)
+
     return {
         'win_prob': win_prob,                        # PRIMARY: derived from margin samples
         'win_prob_classifier': win_prob_classifier,  # REFERENCE: from classifier
@@ -814,7 +1497,8 @@ def predict_with_rf(clf, reg, scaler_tuple, feature_names, matchup_features: dic
         'shap_values': shap_values,
         'shap_feature_importance': shap_feature_importance,
         'X_scaled': X_scaled,
-        'feature_names': feature_names
+        'feature_names': feature_names,
+        'slot_to_player': slot_to_player  # For SHAP player name resolution
     }
 
 
@@ -949,6 +1633,9 @@ def predict_with_pytorch(clf, reg, scaler_tuple, feature_names, matchup_features
             except Exception as e2:
                 print(f"Warning: Gradient-based importance also failed: {e2}")
 
+    # Extract slot_to_player mapping if present (for SHAP interpretation)
+    slot_to_player = matchup_features.get('_slot_to_player', None)
+
     return {
         'win_prob': win_prob,                        # PRIMARY: derived from margin samples
         'win_prob_classifier': win_prob_classifier,  # REFERENCE: from classifier
@@ -960,7 +1647,8 @@ def predict_with_pytorch(clf, reg, scaler_tuple, feature_names, matchup_features
         'shap_values': shap_values,
         'shap_feature_importance': shap_feature_importance,
         'X_scaled': X_scaled,
-        'feature_names': feature_names
+        'feature_names': feature_names,
+        'slot_to_player': slot_to_player  # For SHAP player name resolution
     }
 
 
@@ -979,9 +1667,15 @@ def predict_with_uncertainty(clf, reg, scaler_tuple, feature_names, matchup_feat
 # SHAP FEATURE IMPORTANCE HELPERS
 # ============================================================================
 
-def get_top_shap_features(shap_importance: dict, top_n: int = 10) -> list:
+def get_top_shap_features(shap_importance: dict, top_n: int = 10, slot_to_player: dict = None) -> list:
     """
     Get top N features by absolute SHAP value.
+
+    Args:
+        shap_importance: Dict of feature_name -> SHAP value
+        top_n: Number of top features to return
+        slot_to_player: Optional mapping of slot -> player info for player slot features
+                        Format: {'HOME': {1: {'player_name': 'LeBron James', ...}, ...}, 'AWAY': {...}}
 
     Returns list of tuples: [(feature_name, shap_value, impact_description), ...]
     """
@@ -994,24 +1688,82 @@ def get_top_shap_features(shap_importance: dict, top_n: int = 10) -> list:
     results = []
     for feat, val in sorted_features[:top_n]:
         # Parse feature name to create human-readable description
-        impact = format_feature_impact(feat, val)
+        impact = format_feature_impact(feat, val, slot_to_player)
         results.append((feat, val, impact))
 
     return results
 
 
-def format_feature_impact(feature_name: str, shap_value: float) -> str:
+def format_feature_impact(feature_name: str, shap_value: float, slot_to_player: dict = None) -> str:
     """
     Convert feature name and SHAP value into human-readable impact description.
 
     Example:
         DIFF_netRating_L10: +2.3 -> "Home team has +2.3 better net rating (L10)"
         AWAY_IS_BACK_TO_BACK: -1.2 -> "Away team on back-to-back (-1.2 pts)"
+        HOME_SLOT_1_AVAILABLE: -6.9 -> "LeBron James OUT (-6.9 pts)"
+
+    Args:
+        feature_name: The feature name from the model
+        shap_value: The SHAP value for this feature
+        slot_to_player: Optional mapping for slot features:
+                        {'HOME': {1: {'player_name': 'LeBron James', 'available': False}, ...}, ...}
     """
+    import re
+
     direction = "Home" if shap_value > 0 else "Away"
     abs_val = abs(shap_value)
 
-    # Parse feature name
+    # Handle player slot features specially
+    # Match patterns like HOME_SLOT_1_AVAILABLE, AWAY_SLOT_3_IMPACT
+    slot_match = re.match(r'(HOME|AWAY)_SLOT_(\d+)_(AVAILABLE|IMPACT)', feature_name)
+    if slot_match and slot_to_player:
+        side = slot_match.group(1)  # HOME or AWAY
+        slot_num = int(slot_match.group(2))
+        feature_type = slot_match.group(3)  # AVAILABLE or IMPACT
+
+        # Look up player name
+        player_info = slot_to_player.get(side, {}).get(slot_num, {})
+        player_name = player_info.get('player_name', f'Slot {slot_num} player')
+        is_available = player_info.get('available', True)
+
+        team_label = side.lower().capitalize()
+
+        if feature_type == 'AVAILABLE':
+            if is_available:
+                # Player is playing - positive SHAP means they help their team
+                if (side == 'HOME' and shap_value > 0) or (side == 'AWAY' and shap_value < 0):
+                    desc = f"{player_name} playing (helps {team_label})"
+                else:
+                    desc = f"{player_name} playing"
+            else:
+                # Player is OUT - this is the key use case
+                desc = f"{player_name} OUT"
+        else:  # IMPACT
+            desc = f"{player_name} impact factor"
+
+        return f"{desc} ({shap_value:+.2f} pts)"
+
+    # Handle aggregate slot features
+    if 'TOTAL_AVAILABLE_IMPACT' in feature_name:
+        side = 'Home' if feature_name.startswith('HOME') else ('Away' if feature_name.startswith('AWAY') else 'Diff')
+        if side == 'Diff':
+            desc = "Roster strength advantage" if shap_value > 0 else "Roster strength disadvantage"
+        else:
+            desc = f"{side} available roster strength"
+        return f"{desc} ({shap_value:+.2f} pts)"
+
+    if 'TOTAL_MISSING_IMPACT' in feature_name:
+        side = 'Home' if feature_name.startswith('HOME') else ('Away' if feature_name.startswith('AWAY') else 'Diff')
+        desc = f"{side} injuries impact"
+        return f"{desc} ({shap_value:+.2f} pts)"
+
+    if 'PLAYERS_OUT' in feature_name:
+        side = 'Home' if feature_name.startswith('HOME') else 'Away'
+        desc = f"{side} players missing"
+        return f"{desc} ({shap_value:+.2f} pts)"
+
+    # Parse standard feature names
     if feature_name.startswith('DIFF_'):
         stat_name = feature_name.replace('DIFF_', '').replace('_L5', '').replace('_L10', '')
         window = 'L5' if '_L5' in feature_name else ('L10' if '_L10' in feature_name else '')
@@ -1058,13 +1810,23 @@ def format_feature_impact(feature_name: str, shap_value: float) -> str:
 def print_shap_explanation(home_team: str, away_team: str, prediction: dict, top_n: int = 10):
     """
     Print SHAP-based explanation for a prediction.
+
+    If the prediction contains slot_to_player mapping, player slot features
+    will be displayed with actual player names (e.g., "LeBron James OUT: -6.9 pts").
     """
     if 'shap_feature_importance' not in prediction or not prediction['shap_feature_importance']:
         return
 
     print(f"\n  Top {top_n} factors driving this prediction:")
 
-    top_features = get_top_shap_features(prediction['shap_feature_importance'], top_n)
+    # Get slot_to_player mapping if available (for player name resolution)
+    slot_to_player = prediction.get('slot_to_player', None)
+
+    top_features = get_top_shap_features(
+        prediction['shap_feature_importance'],
+        top_n,
+        slot_to_player=slot_to_player
+    )
 
     for i, (feat, shap_val, impact_desc) in enumerate(top_features, 1):
         # Color code: positive = helps home team, negative = helps away team
@@ -1651,8 +2413,8 @@ def main():
     parser = argparse.ArgumentParser(description='Predict NBA game outcomes')
     parser.add_argument('--date', type=str, help='Game date (YYYY-MM-DD)')
     parser.add_argument('--tomorrow', action='store_true', help='Predict tomorrow\'s games')
-    parser.add_argument('--model', type=str, choices=['rf', 'nn', 'both'], default='both',
-                       help='Model to use: rf (Random Forest), nn (Neural Network), both')
+    parser.add_argument('--model', type=str, choices=['rf', 'nn', 'nn-embed', 'both'], default='both',
+                       help='Model to use: rf (Random Forest), nn (Neural Network), nn-embed (NN with player embeddings), both')
     parser.add_argument('--no-plot', action='store_true', help='Skip histogram plots')
     parser.add_argument('--no-log', action='store_true', help='Skip logging predictions to database')
     parser.add_argument('--backfill', action='store_true', help='Backfill actual results for past predictions')
@@ -1715,6 +2477,7 @@ def main():
     # Load models
     rf_models = None
     nn_models = None
+    nn_embed_models = None
 
     if args.model in ['rf', 'both']:
         rf_models = load_or_train_rf_models(engine)
@@ -1724,6 +2487,12 @@ def main():
             print("ERROR: PyTorch not available. Install with: pip install torch")
             return
         nn_models = load_or_train_pytorch_models(engine)
+
+    if args.model == 'nn-embed':
+        if not PYTORCH_AVAILABLE:
+            print("ERROR: PyTorch not available. Install with: pip install torch")
+            return
+        nn_embed_models = load_or_train_pytorch_embedding_models(engine)
 
     # Fetch auto-injuries if requested
     auto_injury_data = {}
@@ -1765,6 +2534,10 @@ def main():
     elif nn_models:
         _, _, _, nn_features, _ = nn_models
         feature_count = len(nn_features)
+        model_version = get_model_version(feature_count) if PREDICTION_TRACKING_AVAILABLE else None
+    elif nn_embed_models:
+        _, _, _, team_features, _, _, _, _ = nn_embed_models
+        feature_count = len(team_features)
         model_version = get_model_version(feature_count) if PREDICTION_TRACKING_AVAILABLE else None
     else:
         feature_count = 0
@@ -1930,11 +2703,51 @@ def main():
                 except Exception as e:
                     print(f"  Warning: Failed to log NN prediction: {e}")
 
+        if nn_embed_models:
+            clf, reg, scaler, team_features, player_to_idx, target_scaler, n_slots, embed_dim = nn_embed_models
+            result = predict_with_pytorch_embeddings(
+                clf, reg, scaler, team_features, player_to_idx, matchup,
+                skip_shap=args.no_shap, target_scaler=target_scaler, n_slots=n_slots
+            )
+            result['home_team'] = home_team
+            result['away_team'] = away_team
+            result['game_id'] = game_id
+
+            # For embedding model, injuries are already incorporated via availability flags
+            # No post-hoc adjustment needed, but we still store injury details for display
+            if injury_info['injury_details']:
+                result['injury_details'] = injury_info['injury_details']
+
+            nn_predictions.append(result)
+
+            # Log prediction to database
+            if PREDICTION_TRACKING_AVAILABLE and not args.no_log:
+                try:
+                    predicted_winner = home_team if result['win_prob'] > 0.5 else away_team
+                    log_prediction(
+                        engine=engine,
+                        game_id=game_id,
+                        game_date=game_date,
+                        home_team=home_team,
+                        away_team=away_team,
+                        model_type='nn-embed',
+                        model_version=model_version,
+                        predicted_winner=predicted_winner,
+                        predicted_margin=result['margin_mean'],
+                        home_win_probability=result['win_prob'],
+                        margin_uncertainty=result['margin_std'],
+                        feature_count=len(team_features)
+                    )
+                except Exception as e:
+                    print(f"  Warning: Failed to log NN-embed prediction: {e}")
+
     # Display results
     if args.model == 'both' and rf_predictions and nn_predictions:
         print_comparison_table(rf_predictions, nn_predictions, game_date)
         print_predictions_table(rf_predictions, game_date, "Random Forest")
         print_predictions_table(nn_predictions, game_date, "Neural Network")
+    elif args.model == 'nn-embed' and nn_predictions:
+        print_predictions_table(nn_predictions, game_date, "Neural Network with Embeddings")
     elif rf_predictions:
         print_predictions_table(rf_predictions, game_date, "Random Forest")
     elif nn_predictions:

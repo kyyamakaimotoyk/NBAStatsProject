@@ -30,6 +30,7 @@ pip install dash dash-bootstrap-components plotly  # For visualization app
 ```bash
 python predict_games.py                    # Today's games (Random Forest)
 python predict_games.py --model nn         # Today's games (Neural Network)
+python predict_games.py --model nn-embed   # Today's games (NN with player embeddings)
 python predict_games.py --model both       # Compare both models side-by-side
 python predict_games.py --tomorrow         # Tomorrow's games
 python predict_games.py --date 2024-12-25  # Specific date
@@ -108,11 +109,11 @@ python dataExploration.py
 | Script | Purpose |
 |--------|---------|
 | `predict_games.py` | **Main prediction script** - Predicts winners and margins using RF or NN |
-| `feature_engineering.py` | Builds 507+ ML features from raw game data |
+| `feature_engineering.py` | Builds 550+ ML features including player slot features |
 | `player_projections.py` | Player-level projections with opponent adjustments |
-| `player_impact.py` | **NEW** - Historical player impact estimation for injury adjustments |
+| `player_impact.py` | Historical player impact estimation + SQL table management |
 | `prediction_tracker.py` | Logs predictions and tracks accuracy over time |
-| `evaluate_impact_approaches.py` | **NEW** - Validates impact estimation approaches |
+| `evaluate_impact_approaches.py` | Validates impact estimation approaches |
 | `baseline_models.py` | Trains and evaluates scikit-learn models |
 | `pytorch_nba_models.py` | PyTorch neural network implementation (educational) |
 | `dataExploration.py` | Interactive Dash app with 6 tabs including predictions |
@@ -148,9 +149,36 @@ Captures the impact of schedule density on performance:
 
 **Hypothesis**: Teams with more games in fewer days experience fatigue, leading to decreased performance.
 
+### Player Slot Features (58 features) ⬅️ NEW
+
+**Integrated roster model** that embeds player availability directly into the model, replacing the 2-tier injury adjustment approach:
+
+| Feature Pattern | Count | Description |
+|-----------------|-------|-------------|
+| `{HOME/AWAY}_SLOT_{1-8}_IMPACT` | 16 | Historical impact score for top 8 players by impact |
+| `{HOME/AWAY}_SLOT_{1-8}_AVAILABLE` | 16 | 1 if playing, 0 if OUT (DNP/DND/NWT) |
+| `{HOME/AWAY}_TOTAL_AVAILABLE_IMPACT` | 2 | Sum of impacts for available players |
+| `{HOME/AWAY}_TOTAL_MISSING_IMPACT` | 2 | Sum of impacts for OUT players |
+| `{HOME/AWAY}_PLAYERS_OUT` | 2 | Count of top-8 players missing |
+| `DIFF_AVAILABLE_IMPACT` | 1 | Home - Away available impact differential |
+| `DIFF_MISSING_IMPACT` | 1 | Home - Away missing impact differential |
+
+**Key Benefits**:
+1. **SHAP-friendly**: Model learns player availability effects; SHAP shows "LeBron James OUT: -6.9 pts"
+2. **Learned interactions**: Model discovers how absences interact with matchups, pace, depth
+3. **Non-linear effects**: Losing 2nd-best player when star is out has different impact
+4. **No post-hoc adjustment**: Roster is integrated into prediction, not bolted on after
+
+**Player Impact Table** (`player_impact` in MySQL):
+```sql
+PRIMARY KEY (player_id, team_id, compute_date)
+-- Allows tracking impact trends over time
+-- Run populate_player_impact_table() daily to refresh
+```
+
 ### Player Projection Features (9 features per team)
 
-**NEW**: Aggregates individual player stats with opponent adjustments:
+Aggregates individual player stats with opponent adjustments:
 
 | Feature | Description |
 |---------|-------------|
@@ -181,7 +209,7 @@ For each game, features are computed three ways:
 - `AWAY_*` - Away team's statistics
 - `DIFF_*` - Differential (HOME - AWAY)
 
-**Total: 507 features** (169 home + 169 away + 169 differential)
+**Total: ~550 features** (rolling stats + fatigue + player slots + projections + differentials)
 
 ---
 
@@ -224,18 +252,32 @@ DEN @ ATL            | DEN      43.9%       -2.7      | ATL      51.2%       +1.
 2. Calculates rolling averages (L5, L10) for 76 statistics
 3. Calculates fatigue features (back-to-back, games in last 7 days, etc.)
 4. Adds derived features (win streak, rest days, home/away splits)
-5. Creates matchup features (HOME_, AWAY_, DIFF_ prefixes)
-6. Exports ML-ready dataset to CSV
+5. Calculates player projection features (opponent-adjusted)
+6. Calculates injury impact features (legacy aggregate)
+7. **NEW**: Calculates player slot features (top 8 players per team with availability)
+8. Creates matchup features (HOME_, AWAY_, DIFF_ prefixes)
+9. Exports ML-ready dataset to CSV
+
+**Pipeline Steps:**
+```
+[1/8]  Loading game data
+[2-7]  Loading advanced/four factors/hustle/tracking/misc/scoring stats
+[8/8]  Calculating rolling features (76 stats × 2 windows = 152 features)
+[9/11] Player projection features
+[10/11] Injury impact features (legacy)
+[11/11] Player slot features (NEW - integrated roster model)
+```
 
 **Key concepts:**
 - **Data leakage prevention**: Uses `shift(1)` to exclude current game from rolling calculations
 - **Fatigue tracking**: Counts games in rolling windows to measure schedule density
-- **Differential features**: Captures relative strength between teams
+- **Integrated roster model**: Player availability embedded as features, not post-hoc adjustment
 
-**Output:** `nba_ml_features.csv` (~8,800 games, 655 columns)
+**Output:** `nba_ml_features.csv` (~8,800 games, ~700 columns)
 
 ```bash
 python feature_engineering.py
+python feature_engineering.py --no-player-features  # Skip player features (faster)
 ```
 
 ---
@@ -352,6 +394,23 @@ python schema_exploration.py
 - **Strengths**: Learns complex patterns, scales to large data, GPU acceleration
 - **Performance**: AUC 0.776, MAE ~9.5 points (after target scaling fix)
 
+### Neural Network with Player Embeddings (PyTorch) ⬅️ NEW
+- **Algorithm**: 4-layer MLP (256→128→64→1) with BatchNorm, Dropout, and player embedding layer
+- **Embedding Layer**: Maps player IDs → 16-dimensional learned vectors
+- **Input**: Team features + 16 player embeddings (8 per team) + availability masks
+- **Architecture**:
+  ```
+  Player IDs (16) → Embedding(n_players, 16) → Flatten → Concat with team features
+                                                              ↓
+  Team Features (500+) ──────────────────────────────────→ Linear(256) → ... → Output
+  ```
+- **Key Advantage**: Learns player-specific effects beyond historical impact scores
+  - Player synergies and conflicts
+  - Matchup-specific patterns
+  - Style interactions (pace, defensive schemes)
+- **Availability Masking**: OUT players' embeddings are zeroed, teaching the model absence effects
+- **Usage**: `python predict_games.py --model nn-embed`
+
 ### Why Random Forest Wins on Tabular Data
 1. Decision trees naturally capture feature interactions
 2. Handles heterogeneous features well (counts, percentages, binary)
@@ -379,8 +438,11 @@ NBAStatsProject/
 │   ├── rf_regressor.joblib   # Random Forest regressor
 │   ├── nn_classifier.pt      # PyTorch classifier weights
 │   ├── nn_regressor.pt       # PyTorch regressor weights
+│   ├── nn_embed_classifier.pt   # PyTorch embedding classifier weights (NEW)
+│   ├── nn_embed_regressor.pt    # PyTorch embedding regressor weights (NEW)
+│   ├── nn_embed_config.joblib   # Embedding model config (player_to_idx, etc.) (NEW)
 │   ├── scaler.joblib         # Imputer + StandardScaler for features
-│   ├── feature_names.joblib  # List of 507 feature names
+│   ├── feature_names.joblib  # List of feature names
 │   └── nn_config.joblib      # Neural network config (input_dim, target_scaler)
 ├── DATABASE_SCHEMA.md        # Database documentation
 └── README.md                 # This file
@@ -663,6 +725,166 @@ Anthony Davis           33.0  29.9    +4.2  2.29    +9.5    LOW advanced
 
 ---
 
+### Integrated Player Slot Model (2025-12-10)
+
+**Problem**: The 2-tier approach (predict margin → adjust for injuries) had limitations:
+1. Model couldn't learn interaction effects (player absence × opponent matchup)
+2. SHAP couldn't attribute impact to specific players
+3. Non-linear effects not captured (losing 2nd player when star already out)
+
+**Solution**: Integrate roster availability directly into features:
+
+```
+Previous (2-tier):
+  RF/NN → Base Margin → Ad-hoc Injury Adjustment → Final Margin
+
+New (Integrated):
+  RF/NN(team_stats + player_slots) → Final Margin
+```
+
+**Implementation**:
+
+1. **Player Impact Table** (`player_impact` in MySQL):
+   ```sql
+   CREATE TABLE player_impact (
+       player_id BIGINT NOT NULL,
+       team_id BIGINT NOT NULL,
+       compute_date DATE NOT NULL,
+       player_name VARCHAR(100),
+       impact FLOAT,              -- Weighted impact score
+       raw_impact FLOAT,          -- Unweighted historical impact
+       confidence VARCHAR(20),    -- HIGH/MEDIUM/LOW/INSUFFICIENT
+       method VARCHAR(20),        -- 'historical' or 'advanced'
+       avg_minutes FLOAT,
+       avg_usage FLOAT,
+       importance_multiplier FLOAT,
+       PRIMARY KEY (player_id, team_id, compute_date)
+   );
+   ```
+
+2. **Feature Engineering** (`calculate_player_slot_features()`):
+   - For each historical game, get top 8 players by impact for each team
+   - Check availability from `boxscoreplayertrackv3_player.comment`
+   - Create slot features: `{HOME/AWAY}_SLOT_{1-8}_{IMPACT/AVAILABLE}`
+   - Parallel processing with batches of 200 games
+
+3. **Prediction Time** (`get_player_slot_features_for_prediction()`):
+   - Get current top 8 players by impact
+   - Match injury list against player names
+   - Return slot features for model input
+
+4. **SHAP Interpretation**:
+   - Model outputs: `HOME_SLOT_1_AVAILABLE: -6.9`
+   - Lookup: Slot 1 = LeBron James
+   - Display: **"LeBron James OUT (-6.9 pts)"**
+
+**New Features Added** (58 total):
+| Feature | Count | Description |
+|---------|-------|-------------|
+| `SLOT_{1-8}_IMPACT` | 16 | Impact score per slot per team |
+| `SLOT_{1-8}_AVAILABLE` | 16 | Availability flag per slot |
+| `TOTAL_AVAILABLE_IMPACT` | 2 | Sum of available player impacts |
+| `TOTAL_MISSING_IMPACT` | 2 | Sum of OUT player impacts |
+| `PLAYERS_OUT` | 2 | Count of missing top-8 players |
+| `DIFF_*` | 2 | Differentials for above |
+
+**Usage**:
+```bash
+# Populate player impact table (run daily)
+python -c "from player_impact import *; populate_player_impact_table(create_engine())"
+
+# Regenerate training data with new features
+python feature_engineering.py
+
+# Retrain models to use new features
+python baseline_models.py
+python pytorch_nba_models.py
+```
+
+**Key Files Modified**:
+- `player_impact.py`: Added SQL table management + `get_top_players_by_impact()`
+- `feature_engineering.py`: Added `calculate_player_slot_features()` (step [11/11])
+- `predict_games.py`: Added `get_player_slot_features_for_prediction()` + SHAP player name mapping
+
+---
+
+### Player Embeddings for Neural Network (2025-12-10)
+
+**Motivation**: The integrated player slot model uses pre-computed impact scores, but these are static values that don't capture:
+- Player synergies (how well players work together)
+- Matchup-specific effects (player A dominates player B)
+- Playing style interactions (pace, defensive schemes)
+
+**Solution**: Add an embedding layer that learns player-specific 16-dimensional vectors during training.
+
+**Architecture**:
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    NBARegressorWithEmbeddings                    │
+├─────────────────────────────────────────────────────────────────┤
+│  Player IDs (16)    ─→  Embedding(n_players, 16)  ─→  Flatten   │
+│        ↓                                                ↓       │
+│  Availability (16)  ─→  Mask embeddings (zero OUT)      │       │
+│                                                         ↓       │
+│  Team Features (500+) ────────────────────────→  Concatenate    │
+│                                                         ↓       │
+│                                              Linear(256) + BN   │
+│                                                         ↓       │
+│                                              Linear(128) + BN   │
+│                                                         ↓       │
+│                                              Linear(64) + BN    │
+│                                                         ↓       │
+│                                              Linear(1) → Margin │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key Implementation Details**:
+
+1. **Player ID Mapping**: NBA player IDs (large integers like 1629029) are mapped to sequential indices (0, 1, 2, ...) for the embedding layer.
+
+2. **Availability Masking**: When a player is OUT, their embedding is multiplied by 0, effectively removing them from the model input. This teaches the model absence effects.
+
+3. **Padding Index**: Index 0 is reserved for "unknown/empty" players, initialized to zeros.
+
+4. **Combined Input**:
+   ```
+   Team features: ~500 dimensions
+   Player embeddings: 16 players × 16 dims = 256 dimensions
+   Total input: ~756 dimensions
+   ```
+
+**Files Added/Modified**:
+- `predict_games.py`:
+  - `NBAClassifierWithEmbeddings` class
+  - `NBARegressorWithEmbeddings` class
+  - `create_player_id_mapping()` function
+  - `load_or_train_pytorch_embedding_models()` function
+  - `predict_with_pytorch_embeddings()` function
+  - `--model nn-embed` CLI option
+
+**Usage**:
+```bash
+# Train and predict with embedding model
+python predict_games.py --model nn-embed
+
+# Models saved to:
+# - models/nn_embed_classifier.pt
+# - models/nn_embed_regressor.pt
+# - models/nn_embed_config.joblib (contains player_to_idx mapping)
+```
+
+**Potential Benefits** (to be validated):
+- Learn that certain players have outsized effects in specific matchups
+- Capture diminishing returns (losing 3rd player when 1st and 2nd are already out)
+- Understand roster composition effects (spacing, defense, etc.)
+
+**Limitations**:
+- SHAP explanations not yet implemented (would need custom explainer)
+- New players (not in training data) map to unknown embedding
+- Requires more data to learn meaningful embeddings
+
+---
+
 ### Unified Monte Carlo Win Probability (2024-12-06)
 
 **Problem**: Having separate classifier (win probability) and regressor (margin) models can lead to inconsistent predictions. For example: predicted margin of -2 points but 55% win probability.
@@ -715,11 +937,13 @@ LAL @ BOS                 BOS         62.0%     58.2%     +3.5 pts   +/-8.2
 4. ~~**Unified win probability**: Derive P(win) from P(margin > 0) via Monte Carlo~~ ✅ DONE
 5. ~~**DNP/DND/NWT detection**: Use comment field for accurate OUT player identification~~ ✅ DONE (2025-12-06)
 6. ~~**Database performance**: Add indexes for 66x query speedup~~ ✅ DONE (2025-12-06)
-7. **Injury data integration**: Use `nbainjuries` package for real-time injury reports ⬅️ HIGH PRIORITY
+7. ~~**Injury impact features in training**: Integrated roster model with SHAP visibility~~ ✅ DONE (2025-12-10)
+8. ~~**Player embeddings for NN**: Embedding layer for player-specific learned representations~~ ✅ DONE (2025-12-10)
+9. **Injury data integration**: Use `nbainjuries` package for real-time injury reports ⬅️ HIGH PRIORITY
    - Currently requires manual `--injuries` flag
    - Real injury data would automate player availability detection
-8. **Injury impact features in training**: Include in model training for SHAP visibility ⬅️ NEXT
-9. **Minutes redistribution modeling**: Model how minutes shift when a player is OUT
-10. **Betting lines**: Compare predictions to Vegas spreads
-11. **Ensemble methods**: Combine RF and NN predictions
-12. **Travel distance**: Calculate miles traveled for road trips
+10. **SHAP for embedding model**: Custom explainer for embedding inputs
+11. **Minutes redistribution modeling**: Model how minutes shift when a player is OUT
+12. **Betting lines**: Compare predictions to Vegas spreads
+13. **Ensemble methods**: Combine RF and NN predictions
+14. **Travel distance**: Calculate miles traveled for road trips

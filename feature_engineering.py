@@ -793,12 +793,12 @@ def calculate_injury_impact_features(engine, df: pd.DataFrame, n_jobs: int = -1)
     # Determine number of jobs
     import os
     if n_jobs == -1:
-        n_jobs = os.cpu_count() or 4
+        n_jobs = os.cpu_count() or 24
     elif n_jobs == -2:
-        n_jobs = max(1, (os.cpu_count() or 4) - 1)
+        n_jobs = max(1, (os.cpu_count() or 20) - 1)
 
     # Limit parallel jobs to avoid overwhelming the database
-    n_jobs = min(n_jobs, 4)
+    n_jobs = min(n_jobs, 24)
     print(f"    Using {n_jobs} parallel workers...")
 
     # Process in batches
@@ -848,51 +848,48 @@ def calculate_injury_impact_features(engine, df: pd.DataFrame, n_jobs: int = -1)
     return df
 
 
-def _process_player_slots_for_game(args):
+def _process_player_slots_for_game_bulk(game_id, game_date, home_team_id, away_team_id,
+                                         impacts_by_team, sorted_dates, availability_lookup, n_slots=8):
     """
-    Calculate player slot features for a single game (used by parallel executor).
+    Calculate player slot features for a single game using pre-fetched bulk data.
 
-    For each team in the game, gets the top 8 players by impact and checks
-    their availability status for that specific game.
+    This is the fast version that uses in-memory lookups instead of database queries.
 
-    Returns tuple: (game_id, home_team_id, away_team_id, features_dict, error)
+    Args:
+        game_id: Game ID
+        game_date: Game date string (YYYY-MM-DD)
+        home_team_id: Home team ID
+        away_team_id: Away team ID
+        impacts_by_team: Pre-fetched player impacts dict from bulk_fetch_player_impacts
+        sorted_dates: Sorted list of compute dates
+        availability_lookup: Pre-fetched availability dict from bulk_fetch_player_availability
+        n_slots: Number of player slots per team
+
+    Returns tuple: (game_id, features_dict, error)
     """
-    game_id, game_date, home_team_id, away_team_id, connection_string = args
+    from player_impact import get_top_players_for_team_date
 
-    # Default features (8 slots per team, 3 features per slot)
+    # Default features
     default_features = {}
     for side in ['HOME', 'AWAY']:
-        for slot in range(1, 9):
+        for slot in range(1, n_slots + 1):
             default_features[f'{side}_SLOT_{slot}_IMPACT'] = 0.0
             default_features[f'{side}_SLOT_{slot}_AVAILABLE'] = 1.0  # Assume available
             default_features[f'{side}_SLOT_{slot}_PLAYER_ID'] = 0
 
     try:
-        import sqlalchemy as sql
-        from sqlalchemy import text
-        import pandas as pd
-
-        engine = sql.create_engine(connection_string)
-
-        # Import player impact functions
-        try:
-            from player_impact import (
-                get_top_players_by_impact,
-                get_player_availability_for_game
-            )
-        except ImportError:
-            engine.dispose()
-            return (game_id, home_team_id, away_team_id, default_features, "player_impact module not available")
-
         features = {}
 
         # Process each team
         for side, team_id in [('HOME', home_team_id), ('AWAY', away_team_id)]:
-            # Get top 8 players by impact for this team
-            top_players = get_top_players_by_impact(engine, team_id, game_date, top_n=8)
+            # Get top players by impact using in-memory lookup
+            top_players = get_top_players_for_team_date(
+                impacts_by_team, sorted_dates, team_id, game_date, top_n=n_slots
+            )
 
-            # Get availability for this game
-            availability = get_player_availability_for_game(engine, game_id, team_id)
+            # Get availability from pre-fetched data
+            availability_key = (game_id, team_id)
+            availability = availability_lookup.get(availability_key, {})
 
             # Fill slot features
             for player in top_players:
@@ -910,11 +907,10 @@ def _process_player_slots_for_game(args):
                     # Default to available if not explicitly OUT
                     features[f'{side}_SLOT_{slot}_AVAILABLE'] = 1.0
 
-        engine.dispose()
-        return (game_id, home_team_id, away_team_id, features, None)
+        return (game_id, features, None)
 
     except Exception as e:
-        return (game_id, home_team_id, away_team_id, default_features, str(e))
+        return (game_id, default_features, str(e))
 
 
 def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n_slots: int = 8) -> pd.DataFrame:
@@ -930,29 +926,29 @@ def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n
     The model learns how player availability affects outcomes, and SHAP can
     attribute impact to specific slots which map back to player names.
 
-    Uses parallel processing for speed.
+    OPTIMIZED: Uses bulk data fetching to avoid N+1 query problem.
+    Previously made ~80,000+ DB queries, now makes just 2 bulk queries.
 
     Args:
         engine: SQLAlchemy engine
         df: DataFrame with game data (must have IS_HOME column)
-        n_jobs: Number of parallel workers (-1 = all cores)
+        n_jobs: Number of parallel workers (not used in optimized version)
         n_slots: Number of player slots per team (default: 8)
 
     Returns:
         DataFrame with player slot features added
     """
     try:
-        from joblib import Parallel, delayed
         from player_impact import (
-            get_top_players_by_impact,
-            get_player_availability_for_game,
-            ensure_player_impact_table
+            ensure_player_impact_table,
+            bulk_fetch_player_impacts,
+            bulk_fetch_player_availability
         )
     except ImportError as e:
         print(f"  Warning: Required module not available ({e}), skipping player slot features")
         return df
 
-    print("  Calculating player slot features (parallelized)...")
+    print("  Calculating player slot features (optimized bulk fetch)...")
 
     # Ensure player_impact table exists
     try:
@@ -987,65 +983,78 @@ def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n
 
     games = home_teams.merge(away_teams, on='GAME_ID', how='inner')
 
-    # Get connection string
-    connection_string = engine.url.render_as_string(hide_password=False)
+    if len(games) == 0:
+        print("    No games to process")
+        return df
 
-    # Build task list
-    tasks = []
-    for _, row in games.iterrows():
+    # Get date range and team IDs for bulk fetching
+    min_date = df['GAME_DATE'].min()
+    max_date = df['GAME_DATE'].max()
+    if hasattr(min_date, 'strftime'):
+        min_date_str = min_date.strftime('%Y-%m-%d')
+        max_date_str = max_date.strftime('%Y-%m-%d')
+    else:
+        min_date_str = str(min_date)[:10]
+        max_date_str = str(max_date)[:10]
+
+    all_team_ids = list(set(games['HOME_TEAM_ID'].tolist() + games['AWAY_TEAM_ID'].tolist()))
+    all_game_ids = games['GAME_ID'].unique().tolist()
+
+    print(f"    Date range: {min_date_str} to {max_date_str}")
+    print(f"    Teams: {len(all_team_ids)}, Games: {len(all_game_ids)}")
+
+    # STEP 1: Bulk fetch all player impacts (single query)
+    print("    Step 1/3: Bulk fetching player impacts...")
+    impacts_by_team, sorted_dates = bulk_fetch_player_impacts(
+        engine, all_team_ids, min_date_str, max_date_str
+    )
+
+    if not impacts_by_team:
+        print("    WARNING: No player impacts found in cache!")
+        print("    Run `python player_impact.py` or `populate_player_impact_table()` to populate the cache.")
+        print("    Continuing with default values...")
+
+    # STEP 2: Bulk fetch all player availability (single query)
+    print("    Step 2/3: Bulk fetching player availability...")
+    availability_lookup = bulk_fetch_player_availability(engine, all_game_ids)
+
+    # STEP 3: Process all games using in-memory lookups (no DB queries)
+    print("    Step 3/3: Processing games with in-memory lookups...")
+
+    total_games = len(games)
+    results = []
+    error_count = 0
+
+    for idx, row in games.iterrows():
         game_id = row['GAME_ID']
         game_date = row['GAME_DATE']
         if hasattr(game_date, 'strftime'):
-            game_date = game_date.strftime('%Y-%m-%d')
+            game_date_str = game_date.strftime('%Y-%m-%d')
         else:
-            game_date = str(game_date)[:10]
+            game_date_str = str(game_date)[:10]
 
-        tasks.append((
-            game_id, game_date,
-            int(row['HOME_TEAM_ID']), int(row['AWAY_TEAM_ID']),
-            connection_string
-        ))
+        home_team_id = int(row['HOME_TEAM_ID'])
+        away_team_id = int(row['AWAY_TEAM_ID'])
 
-    total_tasks = len(tasks)
-    print(f"    Processing {total_tasks} games for player slot features...")
-
-    # Determine number of jobs
-    import os
-    if n_jobs == -1:
-        n_jobs = os.cpu_count() or 4
-    elif n_jobs == -2:
-        n_jobs = max(1, (os.cpu_count() or 4) - 1)
-
-    # Limit to avoid DB connection issues
-    n_jobs = min(n_jobs, 8)
-    print(f"    Using {n_jobs} parallel workers...")
-
-    # Process in batches
-    batch_size = 200
-    results = []
-
-    for i in range(0, len(tasks), batch_size):
-        batch = tasks[i:i + batch_size]
-        batch_results = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_process_player_slots_for_game)(task) for task in batch
+        # Process this game using bulk data (no DB queries!)
+        game_id, features, error = _process_player_slots_for_game_bulk(
+            game_id, game_date_str, home_team_id, away_team_id,
+            impacts_by_team, sorted_dates, availability_lookup, n_slots
         )
-        results.extend(batch_results)
-        print(f"    Processed {min(i + batch_size, total_tasks)}/{total_tasks} games...")
+
+        if error:
+            error_count += 1
+        else:
+            results.append((game_id, features))
+
+        # Progress update every 1000 games
+        if (len(results) + error_count) % 1000 == 0:
+            print(f"      Processed {len(results) + error_count}/{total_games} games...")
 
     # Apply results to dataframe
     print("    Applying player slot results...")
-    results_dict = {r[0]: (r[3], r[4]) for r in results}  # game_id -> (features, error)
 
-    error_count = 0
-    success_count = 0
-
-    for game_id, (features, error) in results_dict.items():
-        if error:
-            error_count += 1
-            continue
-
-        success_count += 1
-
+    for game_id, features in results:
         # Apply features to both home and away rows for this game
         mask = df['GAME_ID'] == game_id
 
@@ -1053,6 +1062,7 @@ def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n
             if col in df.columns:
                 df.loc[mask, col] = value
 
+    success_count = len(results)
     print(f"  Player slot features calculated: {success_count} games succeeded, {error_count} errors")
 
     # Also create derived features
@@ -1160,9 +1170,10 @@ def create_matchup_features(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================================
 
 def build_feature_dataset(engine,
-                          start_date: str = '2015-01-01',
+                          start_date: str = '2022-01-01',
                           end_date: str = '2025-12-31',
-                          include_player_features: bool = True) -> pd.DataFrame:
+                          include_player_features: bool = True,
+                          include_legacy_injury_features: bool = False) -> pd.DataFrame:
     """
     Main function to build the complete feature dataset.
 
@@ -1172,6 +1183,8 @@ def build_feature_dataset(engine,
     start_date : Filter games after this date
     end_date : Filter games before this date
     include_player_features : Whether to include player-level projection features
+    include_legacy_injury_features : Whether to include legacy injury impact features (default False)
+                                     The new player slot features provide better integrated roster modeling.
 
     Returns:
     --------
@@ -1332,7 +1345,7 @@ def build_feature_dataset(engine,
 
     # Step 8b: Calculate player projection features (optional, can be slow)
     if include_player_features:
-        print("\n[9/9] Calculating player projection features...")
+        print("\n[9/11] Calculating player projection features...")
         try:
             game_df = calculate_player_projection_features(engine, game_df)
             # Verify features were added
@@ -1345,17 +1358,20 @@ def build_feature_dataset(engine,
             print(f"  ✗ Error calculating player features: {e}")
             print("    Continuing without player features...")
 
-        # Step 8c: Calculate injury impact features (legacy - kept for compatibility)
-        print("\n[10/11] Calculating injury impact features (legacy)...")
-        try:
-            game_df = calculate_injury_impact_features(engine, game_df)
-            # Verify features were added
-            injury_cols = [c for c in game_df.columns if 'INJURY_IMPACT' in c]
-            if injury_cols:
-                print(f"  ✓ Added {len(injury_cols)} injury impact columns")
-        except Exception as e:
-            print(f"  ✗ Error calculating injury features: {e}")
-            print("    Continuing without injury features...")
+        # Step 8c: Calculate injury impact features (legacy - skipped by default)
+        if include_legacy_injury_features:
+            print("\n[10/11] Calculating injury impact features (legacy)...")
+            try:
+                game_df = calculate_injury_impact_features(engine, game_df)
+                # Verify features were added
+                injury_cols = [c for c in game_df.columns if 'INJURY_IMPACT' in c]
+                if injury_cols:
+                    print(f"  ✓ Added {len(injury_cols)} injury impact columns")
+            except Exception as e:
+                print(f"  ✗ Error calculating injury features: {e}")
+                print("    Continuing without injury features...")
+        else:
+            print("\n[10/11] Skipping legacy injury impact features (use --include-legacy-injury to enable)")
 
         # Step 8d: Calculate player slot features (NEW - integrated roster model)
         print("\n[11/11] Calculating player slot features (integrated roster model)...")
@@ -1372,7 +1388,7 @@ def build_feature_dataset(engine,
             print(f"  ✗ Error calculating player slot features: {e}")
             print("    Continuing without player slot features...")
     else:
-        print("\n[9/9] Skipping player projection features (--no-player-features flag)")
+        print("\n[9/11] Skipping player projection features (--no-player-features flag)")
         print("[10/11] Skipping injury impact features (--no-player-features flag)")
         print("[11/11] Skipping player slot features (--no-player-features flag)")
 
@@ -1471,8 +1487,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generate ML features from NBA game data')
     parser.add_argument('--no-player-features', action='store_true',
                        help='Skip player projection features (faster)')
-    parser.add_argument('--start-date', type=str, default='2015-01-01',
-                       help='Start date for data (default: 2015-01-01)')
+    parser.add_argument('--include-legacy-injury', action='store_true',
+                       help='Include legacy injury impact features (skipped by default)')
+    parser.add_argument('--start-date', type=str, default='2022-01-01',
+                       help='Start date for data (default: 2022-01-01)')
     parser.add_argument('--end-date', type=str, default='2025-12-31',
                        help='End date for data (default: 2025-12-31)')
     args = parser.parse_args()
@@ -1485,7 +1503,8 @@ if __name__ == '__main__':
         engine,
         start_date=args.start_date,
         end_date=args.end_date,
-        include_player_features=not args.no_player_features
+        include_player_features=not args.no_player_features,
+        include_legacy_injury_features=args.include_legacy_injury
     )
 
     # Prepare ML-ready dataset

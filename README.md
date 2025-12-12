@@ -52,15 +52,17 @@ Run scripts in this order for a complete pipeline:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  1. schema_exploration.py     (Optional) Explore database structure         │
 │         ↓                                                                   │
-│  2. feature_engineering.py    Generate ML features → nba_ml_features.csv   │
+│  2. player_impact.py          Populate player impact cache (for slot features)│
 │         ↓                                                                   │
-│  3. baseline_models.py        Train scikit-learn models → models/*.joblib  │
+│  3. feature_engineering.py    Generate ML features → nba_ml_features.csv   │
 │         ↓                                                                   │
-│  4. pytorch_nba_models.py     Train PyTorch models → models/*.pt           │
+│  4. baseline_models.py        Train scikit-learn models → models/*.joblib  │
 │         ↓                                                                   │
-│  5. predict_games.py          Make predictions (requires trained models)   │
+│  5. pytorch_nba_models.py     Train PyTorch models → models/*.pt           │
 │         ↓                                                                   │
-│  6. dataExploration.py        Launch dashboard (requires trained models)   │
+│  6. predict_games.py          Make predictions (requires trained models)   │
+│         ↓                                                                   │
+│  7. dataExploration.py        Launch dashboard (requires trained models)   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -70,15 +72,27 @@ Run scripts in this order for a complete pipeline:
 # Step 1: (Optional) Explore your database
 python schema_exploration.py
 
-# Step 2: Generate features from raw game data
+# Step 2: Populate player impact cache for historical dates
+# This is REQUIRED for player slot features to have non-zero values
+# Takes ~2 minutes per date
+python -c "
+from player_impact import create_engine, populate_player_impact_table
+engine = create_engine()
+for date in ['2022-01-01', '2022-07-01', '2023-01-01', '2023-07-01', '2024-01-01', '2024-07-01']:
+    print(f'Populating {date}...')
+    populate_player_impact_table(engine, as_of_date=date)
+"
+# Creates: rows in player_impact MySQL table
+
+# Step 3: Generate features from raw game data
 python feature_engineering.py
 # Creates: nba_ml_features.csv
 
-# Step 3: Train scikit-learn models
+# Step 4: Train scikit-learn models
 python baseline_models.py
 # Creates: models/rf_classifier.joblib, models/rf_regressor.joblib, models/scaler.joblib
 
-# Step 4: Train PyTorch models
+# Step 5: Train PyTorch models
 python pytorch_nba_models.py
 # Creates: models/nn_classifier.pt, models/nn_regressor.pt, models/nn_config.joblib
 ```
@@ -97,10 +111,11 @@ python dataExploration.py
 
 | Scenario | Scripts to Re-run |
 |----------|-------------------|
-| New games added to database | `feature_engineering.py` → `baseline_models.py` → `pytorch_nba_models.py` |
+| New games added to database | `player_impact.py` (for new date) → `feature_engineering.py` → `baseline_models.py` → `pytorch_nba_models.py` |
 | Changed feature engineering logic | `feature_engineering.py` → `baseline_models.py` → `pytorch_nba_models.py` |
 | Want to tune model hyperparameters | `baseline_models.py` and/or `pytorch_nba_models.py` |
 | Just making predictions | `predict_games.py` only (uses saved models) |
+| Weekly/monthly refresh | `player_impact.py` (for current date) - keeps player impacts current |
 
 ---
 
@@ -111,13 +126,33 @@ python dataExploration.py
 | `predict_games.py` | **Main prediction script** - Predicts winners and margins using RF or NN |
 | `feature_engineering.py` | Builds 550+ ML features including player slot features |
 | `player_projections.py` | Player-level projections with opponent adjustments |
-| `player_impact.py` | Historical player impact estimation + SQL table management |
+| `player_impact.py` | **Cache management** - Populates player impact table (run BEFORE feature_engineering.py) |
 | `prediction_tracker.py` | Logs predictions and tracks accuracy over time |
 | `evaluate_impact_approaches.py` | Validates impact estimation approaches |
 | `baseline_models.py` | Trains and evaluates scikit-learn models |
 | `pytorch_nba_models.py` | PyTorch neural network implementation (educational) |
 | `dataExploration.py` | Interactive Dash app with 6 tabs including predictions |
 | `schema_exploration.py` | Utility to explore database structure |
+
+### player_impact.py CLI
+
+```bash
+# Check cache status (default if no args)
+python player_impact.py
+python player_impact.py --status
+
+# Populate cache for today
+python player_impact.py --populate
+
+# Populate for a specific date
+python player_impact.py --populate --date 2024-01-15
+
+# Populate for multiple dates
+python player_impact.py -p -d 2023-01-01 -d 2023-07-01 -d 2024-01-01
+
+# Show team impact report
+python player_impact.py --report --team 1610612747
+```
 
 ---
 
@@ -169,11 +204,67 @@ Captures the impact of schedule density on performance:
 3. **Non-linear effects**: Losing 2nd-best player when star is out has different impact
 4. **No post-hoc adjustment**: Roster is integrated into prediction, not bolted on after
 
-**Player Impact Table** (`player_impact` in MySQL):
+**⚠️ IMPORTANT: Player Impact Cache Dependency**
+
+Player slot features require a **pre-populated cache** in the `player_impact` MySQL table. Without this cache, all slot features will be zeros and model performance will suffer.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  player_impact.py                                                        │
+│  populate_player_impact_table() ───WRITES───► player_impact table       │
+│                                                     │                    │
+│  (Run FIRST, for multiple historical dates)         │                    │
+└─────────────────────────────────────────────────────│────────────────────┘
+                                                      │
+                                                      ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  feature_engineering.py                                                  │
+│  bulk_fetch_player_impacts() ◄───READS──── player_impact table          │
+│           │                                                              │
+│           ▼                                                              │
+│  calculate_player_slot_features() → SLOT features in nba_ml_features.csv│
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**How the Cache Works**:
+
+1. **Computing impacts is expensive** (~2 min per date): For each player, it compares team performance WITH vs WITHOUT them across their game history.
+
+2. **Cache uses "compute dates"**: You populate the cache for specific dates (e.g., 2023-01-01, 2023-07-01). Each record stores a player's impact *as of* that date.
+
+3. **Lookup finds most recent date**: When processing a game on 2023-05-15, the system finds the most recent compute_date ≤ 2023-05-15 (in this case, 2023-01-01).
+
+4. **Player impacts are stable**: A player's historical WITH/WITHOUT impact doesn't change dramatically week-to-week, so caching every 6 months is usually sufficient.
+
+**Recommended Cache Dates** (covers typical training data):
+```python
+dates = ['2022-01-01', '2022-07-01',   # 2021-22 season
+         '2023-01-01', '2023-07-01',   # 2022-23 season
+         '2024-01-01', '2024-07-01',   # 2023-24 season
+         '2024-12-11']                  # Current
+```
+
+**Symptoms of Empty/Missing Cache**:
+- Warning: `"No player impacts found in cache!"`
+- All `SLOT_*_IMPACT` features are 0.0
+- Model performance is worse than expected (MAE ~12 instead of ~9)
+
+**Player Impact Table Schema** (`player_impact` in MySQL):
 ```sql
-PRIMARY KEY (player_id, team_id, compute_date)
--- Allows tracking impact trends over time
--- Run populate_player_impact_table() daily to refresh
+CREATE TABLE player_impact (
+    player_id BIGINT NOT NULL,
+    team_id BIGINT NOT NULL,
+    compute_date DATE NOT NULL,
+    player_name VARCHAR(100),
+    impact FLOAT,              -- Weighted impact score
+    raw_impact FLOAT,          -- Unweighted historical impact
+    confidence VARCHAR(20),    -- HIGH/MEDIUM/LOW/INSUFFICIENT
+    method VARCHAR(20),        -- 'historical' or 'advanced'
+    avg_minutes FLOAT,
+    avg_usage FLOAT,
+    importance_multiplier FLOAT,
+    PRIMARY KEY (player_id, team_id, compute_date)
+);
 ```
 
 ### Player Projection Features (9 features per team)
@@ -947,3 +1038,82 @@ LAL @ BOS                 BOS         62.0%     58.2%     +3.5 pts   +/-8.2
 12. **Betting lines**: Compare predictions to Vegas spreads
 13. **Ensemble methods**: Combine RF and NN predictions
 14. **Travel distance**: Calculate miles traveled for road trips
+
+---
+
+## Troubleshooting
+
+### Player Slot Features All Zeros / Poor Model Performance
+
+**Symptom**: Model MAE is ~12 instead of expected ~9, or you see the warning:
+```
+WARNING: No player impacts found in cache!
+Run `python player_impact.py` or `populate_player_impact_table()` to populate the cache.
+```
+
+**Cause**: The `player_impact` cache table is empty or doesn't have data for your training date range.
+
+**Solution**: Populate the cache for historical dates before running feature_engineering.py:
+```bash
+python -c "
+from player_impact import create_engine, populate_player_impact_table
+engine = create_engine()
+for date in ['2022-01-01', '2022-07-01', '2023-01-01', '2023-07-01', '2024-01-01', '2024-07-01']:
+    print(f'Populating {date}...')
+    populate_player_impact_table(engine, as_of_date=date)
+"
+# Then regenerate features and retrain
+python feature_engineering.py
+python baseline_models.py
+python pytorch_nba_models.py
+```
+
+**Verify cache status**:
+```bash
+python -c "
+from player_impact import create_engine
+from sqlalchemy import text
+engine = create_engine()
+with engine.connect() as conn:
+    result = conn.execute(text('SELECT compute_date, COUNT(*) FROM player_impact GROUP BY compute_date'))
+    for row in result: print(f'{row[0]}: {row[1]} players')
+"
+```
+
+### Feature Count Mismatch Error
+
+**Symptom**: Error when loading saved model - expected X features but got Y.
+
+**Cause**: You regenerated `nba_ml_features.csv` with different features than the saved model was trained on.
+
+**Solution**: Retrain models after regenerating features:
+```bash
+python baseline_models.py
+python pytorch_nba_models.py
+```
+
+### PyTorch DLL Error on Windows
+
+**Symptom**: `OSError: [WinError 1114] DLL initialization routine failed`
+
+**Cause**: NumPy loaded before PyTorch on Windows.
+
+**Solution**: PyTorch must be imported first. This is handled automatically in `predict_games.py`. If writing your own script:
+```python
+# CORRECT - PyTorch first
+import torch
+import numpy as np
+import pandas as pd
+
+# WRONG - Will fail on Windows
+import numpy as np
+import torch  # OSError!
+```
+
+### Slow Feature Engineering
+
+**Symptom**: `calculate_player_slot_features` takes hours instead of seconds.
+
+**Cause**: You're using an old version that makes per-game database queries instead of bulk fetching.
+
+**Solution**: Ensure you have the optimized `bulk_fetch_player_impacts()` function in `player_impact.py` and the corresponding changes in `feature_engineering.py`. The optimized version makes just 2 database queries regardless of game count.

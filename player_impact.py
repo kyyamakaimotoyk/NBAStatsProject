@@ -1119,37 +1119,351 @@ def get_player_availability_for_game(engine, game_id, team_id):
     return result
 
 
-# Example usage
+# =============================================================================
+# BULK DATA FETCHING FOR PERFORMANCE
+# =============================================================================
+
+def bulk_fetch_player_impacts(engine, team_ids, start_date, end_date):
+    """
+    Bulk fetch all player impacts for multiple teams across a date range.
+
+    This fetches all cached impacts from the player_impact table in a single query,
+    avoiding the N+1 query problem when processing many games.
+
+    IMPORTANT: We fetch compute_dates UP TO end_date (not restricted by start_date)
+    because games need to look up the most recent compute_date BEFORE the game date.
+    A game on 2024-01-20 should use impacts computed on 2024-01-15, not impacts
+    from within the game date range.
+
+    Args:
+        engine: SQLAlchemy engine
+        team_ids: List of team IDs to fetch impacts for
+        start_date: Start of game date range (for logging only)
+        end_date: End of game date range (YYYY-MM-DD) - fetch impacts up to this date
+
+    Returns:
+        Dict structure for fast lookups:
+        {
+            team_id: {
+                'YYYY-MM-DD': [  # compute_date
+                    {'player_id': int, 'player_name': str, 'impact': float, ...},
+                    ...
+                ],
+                ...
+            },
+            ...
+        }
+
+        Also returns a sorted list of all compute_dates for efficient "most recent" lookups.
+    """
+    if not team_ids:
+        return {}, []
+
+    team_ids_str = ','.join(map(str, team_ids))
+
+    # Fetch ALL compute_dates up to end_date so we can find the most recent
+    # compute_date before any game date in the range
+    query = f"""
+        SELECT
+            player_id, team_id, compute_date, player_name,
+            impact, raw_impact, confidence, method,
+            games_with, games_without, avg_minutes, avg_usage,
+            importance_multiplier
+        FROM player_impact
+        WHERE team_id IN ({team_ids_str})
+          AND compute_date <= '{end_date}'
+        ORDER BY team_id, compute_date, ABS(impact) DESC
+    """
+
+    with engine.connect() as conn:
+        df = pd.read_sql(text(query), conn)
+
+    if len(df) == 0:
+        return {}, []
+
+    # Build nested dict structure
+    impacts_by_team = {}
+    all_compute_dates = set()
+
+    for team_id in df['team_id'].unique():
+        team_df = df[df['team_id'] == team_id]
+        impacts_by_team[int(team_id)] = {}
+
+        for compute_date in team_df['compute_date'].unique():
+            date_str = str(compute_date)[:10]
+            all_compute_dates.add(date_str)
+
+            date_df = team_df[team_df['compute_date'] == compute_date]
+            players = []
+
+            for i, row in date_df.iterrows():
+                players.append({
+                    'player_id': int(row['player_id']),
+                    'player_name': row['player_name'],
+                    'impact': float(row['impact']) if pd.notna(row['impact']) else 0.0,
+                    'raw_impact': float(row['raw_impact']) if pd.notna(row['raw_impact']) else 0.0,
+                    'confidence': row['confidence'],
+                    'method': row['method'],
+                    'avg_minutes': float(row['avg_minutes']) if pd.notna(row['avg_minutes']) else 0.0,
+                })
+
+            impacts_by_team[int(team_id)][date_str] = players
+
+    # Sort compute dates for binary search
+    sorted_dates = sorted(all_compute_dates)
+
+    print(f"    Bulk loaded {len(df)} player impact records for {len(impacts_by_team)} teams")
+    print(f"    Date range in cache: {sorted_dates[0] if sorted_dates else 'N/A'} to {sorted_dates[-1] if sorted_dates else 'N/A'}")
+
+    return impacts_by_team, sorted_dates
+
+
+def bulk_fetch_player_availability(engine, game_ids):
+    """
+    Bulk fetch player availability for all games in a single query.
+
+    Args:
+        engine: SQLAlchemy engine
+        game_ids: List of game IDs to fetch availability for
+
+    Returns:
+        Dict structure for fast lookups:
+        {
+            (game_id, team_id): {
+                player_id: {'available': bool, 'comment': str, 'minutes': float},
+                ...
+            },
+            ...
+        }
+    """
+    if not game_ids:
+        return {}
+
+    # Convert to strings and create IN clause
+    game_ids_str = ','.join(f"'{gid}'" for gid in game_ids)
+
+    query = f"""
+        SELECT
+            p.gameId as game_id,
+            p.teamId as team_id,
+            p.personId as player_id,
+            CONCAT(p.firstName, ' ', p.familyName) as player_name,
+            p.minutes,
+            COALESCE(track.comment, '') as comment
+        FROM boxscoretraditionalv3_player p
+        LEFT JOIN boxscoreplayertrackv3_player track
+            ON p.gameId = track.gameId AND p.personId = track.personId
+        WHERE p.gameId IN ({game_ids_str})
+    """
+
+    with engine.connect() as conn:
+        df = pd.read_sql(text(query), conn)
+
+    if len(df) == 0:
+        return {}
+
+    # Build nested dict structure
+    availability = {}
+
+    for _, row in df.iterrows():
+        game_id = row['game_id']
+        team_id = int(row['team_id'])
+        player_id = int(row['player_id'])
+        comment = row['comment'] or ''
+
+        key = (game_id, team_id)
+        if key not in availability:
+            availability[key] = {}
+
+        # Determine if player was OUT
+        is_out = (
+            comment.startswith('DNP') or
+            comment.startswith('DND') or
+            comment.startswith('NWT')
+        )
+
+        # Parse minutes
+        minutes = parse_minutes(row['minutes'])
+
+        availability[key][player_id] = {
+            'available': not is_out,
+            'comment': comment,
+            'minutes': minutes,
+            'player_name': row['player_name']
+        }
+
+    print(f"    Bulk loaded availability for {len(availability)} team-games ({len(df)} player records)")
+
+    return availability
+
+
+def get_top_players_for_team_date(impacts_by_team, sorted_dates, team_id, game_date, top_n=8):
+    """
+    Get top N players by impact for a team as of a specific date.
+
+    Uses the pre-fetched bulk data for fast in-memory lookup.
+    Finds the most recent compute_date on or before game_date.
+
+    Args:
+        impacts_by_team: Dict from bulk_fetch_player_impacts
+        sorted_dates: Sorted list of compute dates
+        team_id: Team ID to look up
+        game_date: Game date (YYYY-MM-DD string)
+        top_n: Number of players to return
+
+    Returns:
+        List of player dicts with 'slot' field added, or empty slots if not found
+    """
+    # Default empty result
+    empty_result = [
+        {
+            'player_id': 0,
+            'player_name': '',
+            'impact': 0.0,
+            'raw_impact': 0.0,
+            'confidence': 'INSUFFICIENT',
+            'method': 'none',
+            'avg_minutes': 0.0,
+            'slot': i + 1
+        }
+        for i in range(top_n)
+    ]
+
+    if team_id not in impacts_by_team:
+        return empty_result
+
+    team_data = impacts_by_team[team_id]
+    if not team_data:
+        return empty_result
+
+    # Find most recent compute_date <= game_date using binary search
+    import bisect
+    game_date_str = str(game_date)[:10]
+
+    # Get dates available for this team
+    team_dates = sorted(team_data.keys())
+    if not team_dates:
+        return empty_result
+
+    # Find position where game_date would be inserted
+    pos = bisect.bisect_right(team_dates, game_date_str)
+
+    if pos == 0:
+        # No compute_date before game_date
+        return empty_result
+
+    # Use the date just before the insertion point
+    best_date = team_dates[pos - 1]
+    players = team_data[best_date]
+
+    # Take top N and add slot numbers
+    result = []
+    for i, p in enumerate(players[:top_n]):
+        result.append({
+            **p,
+            'slot': i + 1
+        })
+
+    # Pad with empty slots if needed
+    while len(result) < top_n:
+        result.append({
+            'player_id': 0,
+            'player_name': '',
+            'impact': 0.0,
+            'raw_impact': 0.0,
+            'confidence': 'INSUFFICIENT',
+            'method': 'none',
+            'avg_minutes': 0.0,
+            'slot': len(result) + 1
+        })
+
+    return result
+
+
+# CLI interface
 if __name__ == '__main__':
+    import argparse
+    from datetime import datetime
+
+    parser = argparse.ArgumentParser(
+        description='Player Impact Cache Management',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Populate cache for today's date
+  python player_impact.py --populate
+
+  # Populate cache for a specific date
+  python player_impact.py --populate --date 2024-01-15
+
+  # Populate cache for multiple dates
+  python player_impact.py --populate --date 2023-01-01 --date 2023-07-01 --date 2024-01-01
+  python player_impact.py -p -d 2025-01-01 -d 2025-06-01 --d 2025-12-09
+
+  # Show team impact report
+  python player_impact.py --report --team 1610612759
+
+  # Check cache status
+  python player_impact.py --status
+        """
+    )
+
+    parser.add_argument('--populate', '-p', action='store_true',
+                        help='Populate the player_impact cache table')
+    parser.add_argument('--date', '-d', action='append', dest='dates',
+                        help='Date(s) to populate (YYYY-MM-DD). Can be specified multiple times. Default: today')
+    parser.add_argument('--report', '-r', action='store_true',
+                        help='Show team impact report')
+    parser.add_argument('--team', '-t', type=int, default=1610612759,
+                        help='Team ID for report (default: 1610612759 = Spurs)')
+    parser.add_argument('--status', '-s', action='store_true',
+                        help='Show cache status (dates and record counts)')
+
+    args = parser.parse_args()
+
     engine = create_engine()
 
-    # Example: Spurs (team_id 1610612759) - to see McLaughlin vs Wembanyama
-    print_team_impact_report(engine, 1610612759, "San Antonio Spurs", verbose=True)
+    # Default action: show status if no action specified
+    if not args.populate and not args.report and not args.status:
+        args.status = True
 
-    # Example: Get specific player impacts
-    print("\n" + "="*90)
-    print("INDIVIDUAL PLAYER ANALYSIS")
-    print("="*90)
+    if args.status:
+        print("=" * 60)
+        print("PLAYER IMPACT CACHE STATUS")
+        print("=" * 60)
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(
+                    'SELECT COUNT(*) as cnt, COUNT(DISTINCT compute_date) as dates, '
+                    'MIN(compute_date) as min_date, MAX(compute_date) as max_date '
+                    'FROM player_impact'
+                ))
+                row = result.fetchone()
+                print(f"Total records: {row[0]:,}")
+                print(f"Unique dates: {row[1]}")
+                print(f"Date range: {row[2]} to {row[3]}")
 
-    # Jordan McLaughlin - should be dampened due to low importance
-    jm_id = get_player_id_by_name(engine, "Jordan McLaughlin")
-    if jm_id:
-        impact = get_player_historical_impact(engine, jm_id, 1610612759)
-        print(f"\nJordan McLaughlin (role player):")
-        print(f"  Raw Impact: {impact.get('raw_impact', 0):+.1f}")
-        print(f"  Importance Mult: {impact.get('importance_multiplier', 1):.2f}x")
-        print(f"  Weighted Impact: {impact['impact']:+.1f}")
-        print(f"  Avg Minutes: {impact.get('avg_minutes', 0):.1f}, Usage: {impact.get('avg_usage', 0)*100:.1f}%")
-        print(f"  Method: {impact['method']}, Confidence: {impact['confidence']}")
+                print("\nRecords by compute date:")
+                result = conn.execute(text(
+                    'SELECT compute_date, COUNT(*) as players '
+                    'FROM player_impact GROUP BY compute_date ORDER BY compute_date'
+                ))
+                for row in result:
+                    print(f"  {row[0]}: {row[1]} players")
+        except Exception as e:
+            print(f"Error checking status: {e}")
+            print("The player_impact table may not exist yet.")
 
-    # Victor Wembanyama - should be amplified due to high importance
-    wemby_id = 1641705
-    impact = get_player_historical_impact(engine, wemby_id, 1610612759)
-    print(f"\nVictor Wembanyama (star):")
-    print(f"  Raw Impact: {impact.get('raw_impact', 0):+.1f}")
-    print(f"  Importance Mult: {impact.get('importance_multiplier', 1):.2f}x")
-    print(f"  Weighted Impact: {impact['impact']:+.1f}")
-    print(f"  Avg Minutes: {impact.get('avg_minutes', 0):.1f}, Usage: {impact.get('avg_usage', 0)*100:.1f}%")
-    print(f"  Method: {impact['method']}, Confidence: {impact['confidence']}")
+    if args.populate:
+        # Use provided dates or default to today
+        dates = args.dates if args.dates else [datetime.now().strftime('%Y-%m-%d')]
+
+        for date in dates:
+            print(f"\n>>> Populating cache for {date}...")
+            result = populate_player_impact_table(engine, as_of_date=date)
+            print(f"    Result: {result}")
+
+    if args.report:
+        print_team_impact_report(engine, args.team, f"Team {args.team}", verbose=True)
 
     engine.dispose()

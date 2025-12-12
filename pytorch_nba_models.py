@@ -531,12 +531,34 @@ def load_and_prepare_data():
 
     print(f"Loaded {len(df)} games")
 
-    # Get feature columns
-    feature_patterns = ['_L5', '_L10', 'STREAK', 'REST', 'WIN_PCT']
+    # Get feature columns - comprehensive list matching feature_engineering.py
+    # Includes:
+    # - Rolling statistics (_L5, _L10)
+    # - Fatigue features (IS_BACK_TO_BACK, GAMES_LAST, etc.)
+    # - Player projection features (PROJ_*, WEIGHTED_AVG_*, etc.)
+    # - Player slot features (SLOT_*_IMPACT, SLOT_*_AVAILABLE, etc.)
+    feature_patterns = [
+        # Rolling statistics
+        '_L5', '_L10',
+        # Basic derived features
+        'STREAK', 'REST_DAYS', 'WIN_PCT',
+        # Fatigue features
+        'IS_BACK_TO_BACK', 'IS_3_IN_4_NIGHTS', 'GAMES_LAST',
+        'AVG_REST_LAST', 'ROAD_TRIP_LENGTH',
+        # Player projection features
+        'PROJ_PTS_FROM_PLAYERS', 'PROJ_REB_FROM_PLAYERS', 'PROJ_AST_FROM_PLAYERS',
+        'WEIGHTED_AVG_USAGE', 'WEIGHTED_AVG_TS_PCT', 'WEIGHTED_AVG_PIE',
+        'ROSTER_DEPTH_SCORE', 'STAR_PLAYER_IMPACT', 'TOP_3_SCORER_SHARE',
+        # Player slot features (integrated roster model)
+        '_SLOT_', '_IMPACT', '_AVAILABLE',
+        'TOTAL_AVAILABLE_IMPACT', 'TOTAL_MISSING_IMPACT', 'PLAYERS_OUT'
+    ]
     feature_cols = [col for col in df.columns
                    if any(pattern in col for pattern in feature_patterns)]
+    # Exclude identifiers and PLAYER_ID columns (those are for embedding models)
     feature_cols = [col for col in feature_cols
-                   if 'TARGET' not in col and 'TEAM_ID' not in col and 'GAME_ID' not in col]
+                   if 'TARGET' not in col and 'TEAM_ID' not in col
+                   and 'GAME_ID' not in col and 'PLAYER_ID' not in col]
 
     print(f"Using {len(feature_cols)} features")
 

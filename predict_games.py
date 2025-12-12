@@ -901,14 +901,26 @@ def _prepare_training_data(engine):
         ml_df.to_csv('nba_ml_features.csv', index=False)
 
     # Feature patterns must match those in feature_engineering.py
-    # Includes fatigue features and player projection features
-    feature_patterns = ['_L5', '_L10', 'STREAK', 'REST_DAYS', 'WIN_PCT',
-                        'IS_BACK_TO_BACK', 'IS_3_IN_4_NIGHTS', 'GAMES_LAST',
-                        'AVG_REST_LAST', 'ROAD_TRIP_LENGTH',
-                        'PROJ_PTS_FROM_PLAYERS', 'PROJ_REB_FROM_PLAYERS', 'PROJ_AST_FROM_PLAYERS',
-                        'WEIGHTED_AVG_USAGE', 'WEIGHTED_AVG_TS_PCT', 'WEIGHTED_AVG_PIE',
-                        'ROSTER_DEPTH_SCORE', 'STAR_PLAYER_IMPACT', 'TOP_3_SCORER_SHARE']
+    # Includes fatigue features, player projection features, and player slot features
+    feature_patterns = [
+        # Rolling statistics
+        '_L5', '_L10',
+        # Basic derived features
+        'STREAK', 'REST_DAYS', 'WIN_PCT',
+        # Fatigue features
+        'IS_BACK_TO_BACK', 'IS_3_IN_4_NIGHTS', 'GAMES_LAST',
+        'AVG_REST_LAST', 'ROAD_TRIP_LENGTH',
+        # Player projection features
+        'PROJ_PTS_FROM_PLAYERS', 'PROJ_REB_FROM_PLAYERS', 'PROJ_AST_FROM_PLAYERS',
+        'WEIGHTED_AVG_USAGE', 'WEIGHTED_AVG_TS_PCT', 'WEIGHTED_AVG_PIE',
+        'ROSTER_DEPTH_SCORE', 'STAR_PLAYER_IMPACT', 'TOP_3_SCORER_SHARE',
+        # Player slot features (integrated roster model)
+        '_SLOT_', '_IMPACT', '_AVAILABLE',
+        'TOTAL_AVAILABLE_IMPACT', 'TOTAL_MISSING_IMPACT', 'PLAYERS_OUT'
+    ]
     feature_cols = [col for col in ml_df.columns if any(p in col for p in feature_patterns)]
+    # Exclude PLAYER_ID columns (those are for embedding models, not RF)
+    feature_cols = [col for col in feature_cols if 'PLAYER_ID' not in col]
 
     X = ml_df[feature_cols].copy()
     y_clf = ml_df['TARGET_WIN']

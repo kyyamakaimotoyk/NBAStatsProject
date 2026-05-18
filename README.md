@@ -21,25 +21,50 @@ pip install sqlalchemy pandas numpy scikit-learn matplotlib joblib
 pip install torch torchvision  # For PyTorch models
 pip install nba_api  # For fetching live schedules
 pip install dash dash-bootstrap-components plotly  # For visualization app
+pip install python-dotenv  # For environment-variable config (see Database Setup below)
 ```
 
 **Windows Note**: PyTorch must be imported before NumPy/Pandas due to DLL conflicts. This is handled automatically in `predict_games.py`. If you encounter `OSError: [WinError 1114] DLL initialization failed`, ensure PyTorch is imported first in your scripts.
 
+### Database Setup (env vars)
+
+MySQL credentials live in environment variables — never in source. To set up:
+
+1. **Copy the template**:
+   ```bash
+   cp .env.example .env   # or `copy` on Windows
+   ```
+
+2. **Fill in `.env`** with your MySQL credentials. The required variables are:
+   ```
+   NBA_DB_HOST=localhost
+   NBA_DB_PORT=3306
+   NBA_DB_USER=your_mysql_username
+   NBA_DB_PASSWORD=your_mysql_password
+   NBA_DB_NAME=nba_data
+   ```
+
+3. **`.env` is gitignored** (see `.gitignore`). `.env.example` is committed as the template; never put real credentials in `.env.example`.
+
+4. All scripts read these vars via `db.get_engine()`. `python-dotenv` auto-loads `.env` on import — no manual `set` / `export` needed.
+
+> ⚠️ **If you forked this repo from a public commit history**: rotate your MySQL user's password. Earlier commits in this repo's history contained credentials in plain text. Removing them from current files does **not** remove them from git history.
+
 ### Predict Today's Games
 
 ```bash
-python predict_games.py                    # Today's games (Random Forest)
-python predict_games.py --model nn         # Today's games (Neural Network)
-python predict_games.py --model nn-embed   # Today's games (NN with player embeddings)
-python predict_games.py --model both       # Compare both models side-by-side
-python predict_games.py --tomorrow         # Tomorrow's games
-python predict_games.py --date 2024-12-25  # Specific date
-python predict_games.py --no-plot          # Skip histogram visualization
-python predict_games.py --no-shap          # Skip SHAP calculations (faster)
+python modeling/predict_games.py                    # Today's games (Random Forest)
+python modeling/predict_games.py --model nn         # Today's games (Neural Network)
+python modeling/predict_games.py --model nn-embed   # Today's games (NN with player embeddings)
+python modeling/predict_games.py --model both       # Compare both models side-by-side
+python modeling/predict_games.py --tomorrow         # Tomorrow's games
+python modeling/predict_games.py --date 2024-12-25  # Specific date
+python modeling/predict_games.py --no-plot          # Skip histogram visualization
+python modeling/predict_games.py --no-shap          # Skip SHAP calculations (faster)
 
 # With injury adjustments
-python predict_games.py --injuries "LeBron James" "Anthony Davis"
-python predict_games.py --show-impacts     # Show player impact reports
+python modeling/predict_games.py --injuries "LeBron James" "Anthony Davis"
+python modeling/predict_games.py --show-impacts     # Show player impact reports
 ```
 
 ---
@@ -62,7 +87,9 @@ Run scripts in this order for a complete pipeline:
 │         ↓                                                                   │
 │  6. predict_games.py          Make predictions (requires trained models)   │
 │         ↓                                                                   │
-│  7. dataExploration.py        Launch dashboard (requires trained models)   │
+│  7. validate_models.py        (Optional) Held-out validation of saved models│
+│         ↓                                                                   │
+│  8. dataExploration.py        Launch dashboard (with Model Performance tab) │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -70,7 +97,7 @@ Run scripts in this order for a complete pipeline:
 
 ```bash
 # Step 1: (Optional) Explore your database
-python schema_exploration.py
+python data_engineering/schema_exploration.py
 
 # Step 2: Populate player impact cache for historical dates
 # This is REQUIRED for player slot features to have non-zero values
@@ -85,15 +112,15 @@ for date in ['2022-01-01', '2022-07-01', '2023-01-01', '2023-07-01', '2024-01-01
 # Creates: rows in player_impact MySQL table
 
 # Step 3: Generate features from raw game data
-python feature_engineering.py
+python data_engineering/feature_engineering.py
 # Creates: nba_ml_features.csv
 
 # Step 4: Train scikit-learn models
-python baseline_models.py
+python modeling/baseline_models.py
 # Creates: models/rf_classifier.joblib, models/rf_regressor.joblib, models/scaler.joblib
 
 # Step 5: Train PyTorch models
-python pytorch_nba_models.py
+python modeling/pytorch_nba_models.py
 # Creates: models/nn_classifier.pt, models/nn_regressor.pt, models/nn_config.joblib
 ```
 
@@ -101,10 +128,10 @@ python pytorch_nba_models.py
 
 ```bash
 # Predict today's games
-python predict_games.py --model both
+python modeling/predict_games.py --model both
 
 # Or launch the dashboard
-python dataExploration.py
+python visualization/dataExploration.py
 ```
 
 ### When to Re-run Scripts
@@ -131,27 +158,29 @@ python dataExploration.py
 | `evaluate_impact_approaches.py` | Validates impact estimation approaches |
 | `baseline_models.py` | Trains and evaluates scikit-learn models |
 | `pytorch_nba_models.py` | PyTorch neural network implementation (educational) |
-| `dataExploration.py` | Interactive Dash app with 6 tabs including predictions |
+| `dataExploration.py` | Interactive Dash app with 7 tabs (incl. Model Performance) |
+| `validate_models.py` | Held-out validation runner: re-runs saved models on a date window, logs results to `model_registry` |
 | `schema_exploration.py` | Utility to explore database structure |
+| `db.py` | Shared MySQL helper — `get_engine()` reads config from environment variables |
 
 ### player_impact.py CLI
 
 ```bash
 # Check cache status (default if no args)
-python player_impact.py
-python player_impact.py --status
+python data_engineering/player_impact.py
+python data_engineering/player_impact.py --status
 
 # Populate cache for today
-python player_impact.py --populate
+python data_engineering/player_impact.py --populate
 
 # Populate for a specific date
-python player_impact.py --populate --date 2024-01-15
+python data_engineering/player_impact.py --populate --date 2024-01-15
 
 # Populate for multiple dates
-python player_impact.py -p -d 2023-01-01 -d 2023-07-01 -d 2024-01-01
+python data_engineering/player_impact.py -p -d 2023-01-01 -d 2023-07-01 -d 2024-01-01
 
 # Show team impact report
-python player_impact.py --report --team 1610612747
+python data_engineering/player_impact.py --report --team 1610612747
 ```
 
 ---
@@ -247,7 +276,7 @@ dates = ['2022-01-01', '2022-07-01',   # 2021-22 season
 **Symptoms of Empty/Missing Cache**:
 - Warning: `"No player impacts found in cache!"`
 - All `SLOT_*_IMPACT` features are 0.0
-- Model performance is worse than expected (MAE ~12 instead of ~9)
+- Model performance is worse than expected (check the Model Performance tab — if test MAE has crept up vs the prior registered version, the cache is likely the cause)
 
 **Player Impact Table Schema** (`player_impact` in MySQL):
 ```sql
@@ -367,8 +396,8 @@ DEN @ ATL            | DEN      43.9%       -2.7      | ATL      51.2%       +1.
 **Output:** `nba_ml_features.csv` (~8,800 games, ~700 columns)
 
 ```bash
-python feature_engineering.py
-python feature_engineering.py --no-player-features  # Skip player features (faster)
+python data_engineering/feature_engineering.py
+python data_engineering/feature_engineering.py --no-player-features  # Skip player features (faster)
 ```
 
 ---
@@ -385,10 +414,7 @@ python feature_engineering.py --no-player-features  # Skip player features (fast
 5. Shows feature importance
 
 **Results:**
-| Task | Best Model | Performance |
-|------|-----------|-------------|
-| Classification | Random Forest | 70% accuracy, 0.79 AUC |
-| Regression | Random Forest | 9.3 MAE, 0.20 R² |
+Random Forest wins both classification and regression on this baseline. Current numeric metrics are not hardcoded here — they live in the `model_registry` table and are surfaced in the **Model Performance** tab of `dataExploration.py`. Run `python core/model_registry.py` for a one-shot console dump.
 
 **Top predictive features:**
 1. DIFF_netRating_L10 (net rating differential)
@@ -396,7 +422,7 @@ python feature_engineering.py --no-player-features  # Skip player features (fast
 3. DIFF_PLUS_MINUS_L10 (plus/minus differential)
 
 ```bash
-python baseline_models.py
+python modeling/baseline_models.py
 ```
 
 ---
@@ -416,15 +442,10 @@ python baseline_models.py
    - Monte Carlo Dropout for uncertainty estimation
 
 **Results:**
-| Model | Classification AUC | Regression MAE |
-|-------|-------------------|----------------|
-| Random Forest | **0.792** | **9.33** |
-| Neural Network | 0.776 | 9.94 |
-
-Neural networks perform slightly worse on this tabular data, which is typical. Tree-based models often win on structured data.
+Random Forest has consistently outperformed the PyTorch MLP on this tabular dataset across our training runs — tree-based models often win on structured data. Specific AUC/MAE numbers are not pinned here because they shift each retrain; see the **Model Performance** tab for the current registry values per model version.
 
 ```bash
-python pytorch_nba_models.py
+python modeling/pytorch_nba_models.py
 ```
 
 ---
@@ -432,14 +453,16 @@ python pytorch_nba_models.py
 ### 5. `dataExploration.py` - Visualization Dashboard
 
 **What it does:**
-Launches an interactive Dash web application with 6 tabs:
+Launches an interactive Dash web application with 8 tabs:
 
-1. **Score Distribution**: Histogram of game scores
-2. **Trends Over Time**: Points scored by season
-3. **Team Performance**: Team-by-team statistics
-4. **Rolling Feature Tracker**: Track any feature over the season for each team
-5. **Margin Correlation Analysis**: Pearson correlations with winning margin
-6. **Game Predictions**: Compare Random Forest vs Neural Network predictions
+1. **Operations** ⬅️ NEW — Pipeline orchestrator: see what's stale, run any subset of stages (fetch_data → player_impact → features → train → predict → backfill → validate), tail the log live.
+2. **Overall League Data — Scatter**: Plot any pair of league-level stats
+3. **Pearson Correlation Matrix**: Identify correlated stats with reduced matrix view
+4. **Team-by-team Data — Scatter**: Same as #2 but filterable by team
+5. **Rolling Feature Tracker**: Track any feature over the season for each team
+6. **Margin Correlation Analysis**: Pearson correlations with winning margin
+7. **Game Predictions**: Compare Random Forest vs Neural Network predictions
+8. **Model Performance** — Training claims vs live prediction performance, with hyperparameters and training-window metadata per registry row.
 
 **Game Predictions Tab Features:**
 - Date picker with Today/Tomorrow quick-select
@@ -450,13 +473,87 @@ Launches an interactive Dash web application with 6 tabs:
 - Model explanation cards
 
 ```bash
-python dataExploration.py
+python visualization/dataExploration.py
 # Open http://127.0.0.1:5000 in browser
 ```
 
 ---
 
-### 6. `schema_exploration.py` - Database Utility
+**Model Performance Tab (NEW)**
+
+Surfaces the gap between what models claimed at training time and how they're actually doing on live predictions. Reads from two MySQL tables:
+
+- `model_registry` — training-time metrics (accuracy, AUC, MAE, R²) per model version, populated by `predict_games.py` retraining and by `validate_models.py`.
+- `model_predictions` — daily predictions logged by `predict_games.py`, backfilled with actual results via `python modeling/prediction_tracker.py --backfill --lookback 200`.
+
+What you'll see:
+- **Headline cards** per model: live accuracy, MAE, RMSE, calibration error over your selected date range
+- **Rolling charts**: 10-game rolling accuracy and MAE over time
+- **Reliability diagram**: predicted win-prob deciles vs actual win rate (the real test of "is 70% really 70%?")
+- **Residual plot**: predicted margin vs (actual − predicted) — spot bias regions
+- **Margin error histogram**: distribution of |actual − predicted|
+- **Registry table**: every training run + every validation row, with the active version highlighted
+
+To make this tab useful on first load, run the backfill once so historical predictions have actuals:
+```bash
+python modeling/prediction_tracker.py --backfill --lookback 200
+```
+
+**Registry schema (extended 2026-05)** — every row in `model_registry` now also stores:
+- `train_start_date` / `train_end_date` — temporal window the model was trained on
+- `test_start_date` / `test_end_date` — temporal window the test metrics were measured on
+- `hyperparameters` (JSON) — n_estimators, max_depth, lr, dropout, hidden_dims, etc.
+- `train_metrics` (JSON) — same metrics computed on the training set, so the overfit gap is visible
+- `notes` (TEXT), `run_kind` ('train' | 'validation') — provenance
+
+These are all surfaced in the Model Performance tab's registry table (filterable / sortable / hover-for-full-value tooltips).
+
+---
+
+### 6. `pipeline.py` - One-Shot Orchestrator
+
+Sequences every script in this project from a single entry point and decides what stages need to run based on the freshness of various DB tables.
+
+```bash
+python pipeline.py status        # JSON freshness report — every input layer, last-known date, days-ago
+python pipeline.py recommend     # which stages should run, with reasons
+python pipeline.py run --stages all
+python pipeline.py run --stages features,train,predict
+python pipeline.py run --stages predict --predict-date 2026-05-18
+```
+
+Stages, in canonical order: `fetch_data → player_impact → features → train → predict → backfill → validate`. Each stage maps 1:1 to running the underlying script — pipeline.py doesn't replace any existing CLI, it just sequences them and logs to `logs/pipeline_<run_id>.log`.
+
+The dashboard's **Operations** tab uses the same orchestrator under the hood: tick stages, fill in any args, hit Run, and watch the log tail update every 3 seconds.
+
+---
+
+### 7. `validate_models.py` - Held-Out Validation Runner
+
+**What it does:**
+Re-runs the currently-saved RF and NN models against a date window from `nba_ml_features.csv`, computes accuracy / AUC / MAE / RMSE / R² / calibration, and (by default) writes the results into `model_registry` as validation rows so the dashboard can show training-vs-recent metrics side by side.
+
+Validation rows have `is_current = FALSE` and a model_version like `rf_classifier_validation_<timestamp>_<startdate>_<enddate>` so they never displace the production model.
+
+```bash
+# Default: last 60 days of available data, both models, write to registry
+python modeling/validate_models.py
+
+# Custom window
+python modeling/validate_models.py --start 2025-12-13 --end 2026-01-07
+
+# RF only
+python modeling/validate_models.py --model rf
+
+# Don't touch the registry (dry run)
+python modeling/validate_models.py --no-register
+```
+
+**Tip**: To get a true out-of-sample read, set `--start` to the day after your most recent training date (visible in the dashboard's registry table or in `model_registry.training_date`). Including pre-training games in the window will inflate the metrics.
+
+---
+
+### 7. `schema_exploration.py` - Database Utility
 
 **What it does:**
 - Lists all 36 tables in the database
@@ -465,7 +562,7 @@ python dataExploration.py
 - Shows date range and sample data
 
 ```bash
-python schema_exploration.py
+python data_engineering/schema_exploration.py
 ```
 
 ---
@@ -476,14 +573,14 @@ python schema_exploration.py
 - **Algorithm**: Ensemble of 100 decision trees
 - **Uncertainty**: Each tree votes independently; distribution shows agreement
 - **Strengths**: Great for tabular data, handles missing values, fast training
-- **Performance**: AUC 0.792, MAE 9.33 points
+- **Performance**: see Model Performance tab (current values from `model_registry`)
 
 ### Neural Network (PyTorch)
 - **Algorithm**: 3-layer MLP (128→64→32→1) with BatchNorm & Dropout (0.3)
 - **Uncertainty**: Monte Carlo Dropout (100 forward passes with dropout enabled)
 - **Target Scaling**: Regression targets normalized to mean=0, std=1 during training (see Experiments section)
 - **Strengths**: Learns complex patterns, scales to large data, GPU acceleration
-- **Performance**: AUC 0.776, MAE ~9.5 points (after target scaling fix)
+- **Performance**: see Model Performance tab (current values from `model_registry`)
 
 ### Neural Network with Player Embeddings (PyTorch) ⬅️ NEW
 - **Algorithm**: 4-layer MLP (256→128→64→1) with BatchNorm, Dropout, and player embedding layer
@@ -500,7 +597,7 @@ python schema_exploration.py
   - Matchup-specific patterns
   - Style interactions (pace, defensive schemes)
 - **Availability Masking**: OUT players' embeddings are zeroed, teaching the model absence effects
-- **Usage**: `python predict_games.py --model nn-embed`
+- **Usage**: `python modeling/predict_games.py --model nn-embed`
 
 ### Why Random Forest Wins on Tabular Data
 1. Decision trees naturally capture feature interactions
@@ -512,44 +609,132 @@ python schema_exploration.py
 
 ## Directory Structure
 
+Scripts are organized by concern. Each top-level folder is a Python package (has `__init__.py`); every script also has a sys.path bootstrap so it can be run directly (`python modeling/predict_games.py …`) from the project root. **Always run from project root** — relative paths to `models/`, `outputs/`, and `nba_ml_features.csv` assume CWD = repo root.
+
 ```
 NBAStatsProject/
-├── predict_games.py          # Main prediction script (RF + NN + SHAP)
-├── feature_engineering.py    # Feature pipeline (507 features)
-├── player_projections.py     # Player-level projections with opponent adjustments
-├── prediction_tracker.py     # Prediction logging and accuracy tracking
-├── prediction_visualizations.py  # Accuracy charts and analysis
-├── baseline_models.py        # Sklearn model training
-├── pytorch_nba_models.py     # PyTorch model training
-├── dataExploration.py        # Dash visualization app (6 tabs)
-├── schema_exploration.py     # Database utility
-├── nba_ml_features.csv       # Generated feature dataset
-├── models/                   # Saved trained models
-│   ├── rf_classifier.joblib  # Random Forest classifier
-│   ├── rf_regressor.joblib   # Random Forest regressor
-│   ├── nn_classifier.pt      # PyTorch classifier weights
-│   ├── nn_regressor.pt       # PyTorch regressor weights
-│   ├── nn_embed_classifier.pt   # PyTorch embedding classifier weights (NEW)
-│   ├── nn_embed_regressor.pt    # PyTorch embedding regressor weights (NEW)
-│   ├── nn_embed_config.joblib   # Embedding model config (player_to_idx, etc.) (NEW)
-│   ├── scaler.joblib         # Imputer + StandardScaler for features
-│   ├── feature_names.joblib  # List of feature names
-│   └── nn_config.joblib      # Neural network config (input_dim, target_scaler)
-├── DATABASE_SCHEMA.md        # Database documentation
-└── README.md                 # This file
+├── core/                              # Shared infrastructure
+│   ├── db.py                          # get_engine() — reads MySQL config from .env
+│   └── model_registry.py              # Versioned model registry helpers (training/validation rows)
+│
+├── data_engineering/                  # Raw data fetch → feature CSV pipeline
+│   ├── main_refactored.py             # NBA API → MySQL ingest (boxscores)
+│   ├── feature_engineering.py         # Builds nba_ml_features.csv (~500 features)
+│   ├── player_impact.py               # Player impact cache (compute_date-snapshotted)
+│   ├── player_projections.py          # Per-player projections with opponent adjustments
+│   ├── injury_data.py                 # Live injury feed (NBA/ESPN scraper)
+│   ├── schema_exploration.py          # Database introspection utility
+│   ├── verify_imported_games.py       # Data-sanity script for importedgamesmemory
+│   └── add_v3_columns.py              # One-shot schema migration helper
+│
+├── modeling/                          # Training, prediction, evaluation
+│   ├── predict_games.py               # MAIN prediction CLI (RF + NN + SHAP + backfill range)
+│   ├── prediction_tracker.py          # Prediction logging + actuals backfill
+│   ├── validate_models.py             # Held-out validation runner
+│   ├── baseline_models.py             # Sklearn baselines (tutorial-style)
+│   ├── pytorch_nba_models.py          # PyTorch training script (tutorial-style)
+│   ├── evaluate_impact_approaches.py  # Compares historical vs advanced impact methods
+│   └── featureSelection.py            # SelectKBest experiment
+│
+├── visualization/                     # Dashboards + plotting
+│   ├── dataExploration.py             # Dash app (8 tabs incl. Operations + Model Performance)
+│   ├── data_exploration_tutorial.py   # SQLAlchemy + pandas tutorial script
+│   └── prediction_visualizations.py   # One-off matplotlib charts
+│
+├── orchestration/                     # Top-level runners
+│   └── pipeline.py                    # Status / recommend / run; backs the Operations tab
+│
+├── tests/
+│   └── test_prediction_tracking.py
+│
+├── deprecated/                        # Superseded scripts kept for reference
+│   ├── main.py                        # Old monolithic importer
+│   ├── main2.py                       # Older variant
+│   ├── NBADataImporter.py             # Old class (superseded by main_refactored.py; has a pre-existing syntax bug at L96)
+│   └── importedgamesmemory_discrepancies_*.csv
+│
+├── sql/
+│   └── create_predictions_table.sql   # model_predictions DDL
+│
+├── docs/
+│   └── DATABASE_SCHEMA.md             # Database documentation
+│
+├── outputs/                           # Generated artifacts (gitignored)
+│   ├── predictions_history/           # Per-day prediction PNGs (predictions_YYYYMMDD.png)
+│   └── impact_evaluation_results.csv
+│
+├── models/                            # Saved trained model artifacts
+│   ├── rf_classifier.joblib
+│   ├── rf_regressor.joblib
+│   ├── nn_classifier.pt
+│   ├── nn_regressor.pt
+│   ├── nn_embed_classifier.pt
+│   ├── nn_embed_regressor.pt
+│   ├── nn_embed_config.joblib
+│   ├── scaler.joblib
+│   ├── feature_names.joblib
+│   └── nn_config.joblib
+│
+├── logs/                              # Pipeline run logs (gitignored)
+│   └── pipeline_<run_id>.log
+│
+├── .env                               # MySQL credentials (gitignored)
+├── .env.example                       # Template for .env (committed)
+├── .gitignore
+├── nba_ml_features.csv                # Generated feature CSV (stays at root for CWD-relative reads)
+├── requirements.txt
+└── README.md
+```
+
+### Where things live (TL;DR)
+
+| You want to… | Folder |
+|---|---|
+| Pull new NBA games into MySQL | `data_engineering/` |
+| Rebuild the feature CSV | `data_engineering/` |
+| Train, predict, validate, log | `modeling/` |
+| See the dashboard / Operations tab | `visualization/` |
+| Run the end-to-end pipeline | `orchestration/` |
+| Read shared DB / registry helpers | `core/` |
+| Look at a generated chart | `outputs/predictions_history/` |
+| Run a SQL DDL | `sql/` |
+| See the schema docs | `docs/` |
+
+### Common commands (run from project root)
+
+```bash
+# Status & orchestration
+python orchestration/pipeline.py status                  # what's stale across every layer
+python orchestration/pipeline.py recommend               # suggested stages
+python orchestration/pipeline.py run --stages all        # full end-to-end
+python orchestration/pipeline.py run --stages predict --predict-start 2026-04-01 --predict-no-shap
+
+# Dashboard (Operations + Model Performance tabs)
+python visualization/dataExploration.py
+
+# Individual scripts (each still has its full CLI)
+python data_engineering/main_refactored.py
+python data_engineering/feature_engineering.py
+python data_engineering/player_impact.py --populate --date 2026-05-01
+python modeling/predict_games.py --date 2026-05-18
+python modeling/predict_games.py --start-date 2026-04-01           # backfill range, point-in-time
+python modeling/validate_models.py --days 60
+python modeling/prediction_tracker.py --backfill --lookback 200
 ```
 
 ---
 
 ## Database Connection
 
-The project connects to a local MySQL database:
-- Host: localhost
-- Port: 3306
-- Database: nba_data
-- Prediction tracking table: `model_predictions`
+The project connects to a local MySQL database. Configuration is **read from environment variables** (see [Database Setup](#database-setup-env-vars) above). Defaults expected:
 
-Connection details are in each script's `create_engine()` function.
+- Host: `localhost`
+- Port: `3306`
+- Database: `nba_data`
+- Prediction tracking table: `model_predictions`
+- Model registry table: `model_registry`
+
+All scripts call `db.get_engine()` from `core/db.py`, which reads the `NBA_DB_*` env vars and constructs a SQLAlchemy engine. Each script also exposes a thin `create_engine()` wrapper for backwards compatibility — that wrapper now just delegates to `core.db.get_engine()`.
 
 ---
 
@@ -562,8 +747,8 @@ Connection details are in each script's `create_engine()` function.
 
 ### Prediction Tracking
 ```bash
-python predict_games.py --backfill      # Update past predictions with actual results
-python predict_games.py --accuracy-report  # Show accuracy metrics
+python modeling/predict_games.py --backfill      # Update past predictions with actual results
+python modeling/predict_games.py --accuracy-report  # Show accuracy metrics
 ```
 
 ### Player Projections (Option B: Full Roster Aggregation)
@@ -885,11 +1070,11 @@ New (Integrated):
 python -c "from player_impact import *; populate_player_impact_table(create_engine())"
 
 # Regenerate training data with new features
-python feature_engineering.py
+python data_engineering/feature_engineering.py
 
 # Retrain models to use new features
-python baseline_models.py
-python pytorch_nba_models.py
+python modeling/baseline_models.py
+python modeling/pytorch_nba_models.py
 ```
 
 **Key Files Modified**:
@@ -956,7 +1141,7 @@ python pytorch_nba_models.py
 **Usage**:
 ```bash
 # Train and predict with embedding model
-python predict_games.py --model nn-embed
+python modeling/predict_games.py --model nn-embed
 
 # Models saved to:
 # - models/nn_embed_classifier.pt
@@ -1038,6 +1223,8 @@ LAL @ BOS                 BOS         62.0%     58.2%     +3.5 pts   +/-8.2
 12. **Betting lines**: Compare predictions to Vegas spreads
 13. **Ensemble methods**: Combine RF and NN predictions
 14. **Travel distance**: Calculate miles traveled for road trips
+15. **LLM dashboard commentary**: On the Model Performance tab, call out to an LLM to read the current registry/predictions and write an independent, plain-English assessment of how the models are doing (calibration, drift, regression vs prior version) without me hand-curating numbers in markdown.
+16. **Vegas spread benchmark**: Once a line-of-the-day data source is available, add a "vs Vegas" tab comparing our margin predictions to closing spreads — currently parked, no data source.
 
 ---
 
@@ -1045,10 +1232,10 @@ LAL @ BOS                 BOS         62.0%     58.2%     +3.5 pts   +/-8.2
 
 ### Player Slot Features All Zeros / Poor Model Performance
 
-**Symptom**: Model MAE is ~12 instead of expected ~9, or you see the warning:
+**Symptom**: Model MAE has regressed vs prior registered versions (compare in the Model Performance tab), or you see the warning:
 ```
 WARNING: No player impacts found in cache!
-Run `python player_impact.py` or `populate_player_impact_table()` to populate the cache.
+Run `python data_engineering/player_impact.py` or `populate_player_impact_table()` to populate the cache.
 ```
 
 **Cause**: The `player_impact` cache table is empty or doesn't have data for your training date range.
@@ -1063,9 +1250,9 @@ for date in ['2022-01-01', '2022-07-01', '2023-01-01', '2023-07-01', '2024-01-01
     populate_player_impact_table(engine, as_of_date=date)
 "
 # Then regenerate features and retrain
-python feature_engineering.py
-python baseline_models.py
-python pytorch_nba_models.py
+python data_engineering/feature_engineering.py
+python modeling/baseline_models.py
+python modeling/pytorch_nba_models.py
 ```
 
 **Verify cache status**:
@@ -1088,8 +1275,8 @@ with engine.connect() as conn:
 
 **Solution**: Retrain models after regenerating features:
 ```bash
-python baseline_models.py
-python pytorch_nba_models.py
+python modeling/baseline_models.py
+python modeling/pytorch_nba_models.py
 ```
 
 ### PyTorch DLL Error on Windows

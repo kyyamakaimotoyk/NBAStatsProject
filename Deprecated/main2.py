@@ -28,16 +28,12 @@ def sqlGameIdExistChecker(sqlTable, tableParameters, dbConnection, game):
     return resultList  # outputs empty list if gameId not found in table
 
 def connectToKaiDB():
-    # Connect to DB, probably define a function here
-    host = 'localhost'
-    user = 'kaiyamamoto'
-    password = 'KN!yoWMhiH8cBvD'
-    port = '3306'
-    database = 'nba_data'
-
-    databaseConnection = sql.create_engine('mysql://{0}:{1}@{2}:{3}/{4}'.format(user, password, host, port, database))
-    # connection = databaseConnection.connect()
-    return databaseConnection
+    # MySQL config now lives in environment variables (see db.py / .env.example).
+    # NOTE: this file is in Deprecated/ and is kept for reference only.
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from core.db import get_engine
+    return get_engine()
 
 def parallelProcess1(importedGamesMemory_df, games):
     databaseConnection = connectToKaiDB()

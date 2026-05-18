@@ -6,7 +6,16 @@
       "Bash(python predict_games.py:*)",
       "Bash(python:*)",
       "WebSearch",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(git -C D:/Kai/PycharmProjects/NBAStatsProject log --all --oneline -- prediction_tracker.py)",
+      "Bash(git -C D:/Kai/PycharmProjects/NBAStatsProject remote -v)",
+      "Bash(git -C D:/Kai/PycharmProjects/NBAStatsProject log --all --oneline)",
+      "Bash(git -C D:/Kai/PycharmProjects/NBAStatsProject log --all -p -S \"KN!yoWMhiH8cBvD\" --oneline)",
+      "Bash(git -C D:/Kai/PycharmProjects/NBAStatsProject ls-files __pycache__ .idea)",
+      "Bash(git rm *)",
+      "Bash(D:/Kai/PycharmProjects/NBAStatsProject/.venv/Scripts/python.exe *)",
+      "Bash(git check-ignore *)",
+      "Bash(.venv/Scripts/python.exe -c 'from db import get_engine; eng = get_engine\\(\\); print\\('\\\\''engine OK:'\\\\'', eng\\); from sqlalchemy import text; *)"
     ],
     "deny": [],
     "ask": []

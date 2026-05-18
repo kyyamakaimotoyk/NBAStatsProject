@@ -20,14 +20,12 @@ if __name__ == '__main__':
     pd.set_option('display.max_columns', None)
     pd.set_option('display.width', None)
 
-    # Connect to DB, probably define a function here
-    host = 'localhost'
-    user = 'kaiyamamoto'
-    password = 'KN!yoWMhiH8cBvD'
-    port = '3306'
-    database = 'nba_data'
-
-    databaseConnection = sql.create_engine('mysql://{0}:{1}@{2}:{3}/{4}'.format(user, password, host, port, database))
+    # MySQL config now lives in environment variables (see db.py / .env.example).
+    # NOTE: this file is in Deprecated/ and is kept for reference only.
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from core.db import get_engine
+    databaseConnection = get_engine()
     connection = databaseConnection.connect()
 
 

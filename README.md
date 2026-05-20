@@ -296,6 +296,62 @@ CREATE TABLE player_impact (
 );
 ```
 
+### Pre-Game Injury Report Source (E7, 2026-05-19) ⬅️ NEW
+
+**Why this matters**: Before E7, the `*_SLOT_X_AVAILABLE` features were derived from `boxscoretraditionalv3_player` — the **post-game** boxscore. For a 2022 training row, the model effectively "knew" pre-game whether each star player ended up showing up, which is post-hoc information it wouldn't have at real prediction time. Literature flags this pattern as commonly inflating training accuracy 2–5pp.
+
+**Data source**: NBA's official mandated **pre-game injury report PDFs**, hosted at `https://ak-static.cms.nba.com/referee/injury/`. These are released by the league at scheduled intervals before each game day (5 PM ET day-before, then hourly through game day, then a "final" report ~30 min before tipoff). We pull the latest report available on each game date — the one closest to "what the world knew right before tipoff."
+
+**Acquisition**: `data_engineering/historical_injury_scraper.py` wraps the [`nbainjuries`](https://pypi.org/project/nbainjuries/) PyPI package and inserts the parsed rows into a new MySQL table `historical_injury_report`. The scraper handles BOTH historical URL formats (NBA changed convention on 2025-12-22 from hourly `Injury-Report_YYYY-MM-DD_HHPM.pdf` to 15-min granularity `Injury-Report_YYYY-MM-DD_HH_MMPM.pdf` — see `historical_injury_scraper.py:_gen_url_*_format`).
+
+```bash
+# First-time population (one-shot, ~30 min for full 2022-2026 window)
+python data_engineering/historical_injury_scraper.py --start-date 2022-01-01
+
+# Re-runnable / idempotent (uses INSERT IGNORE on the unique (game_date, team_name, player_name) key)
+python data_engineering/historical_injury_scraper.py --start-date 2025-12-22
+```
+
+**Schema** (`historical_injury_report` in MySQL):
+```sql
+CREATE TABLE historical_injury_report (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    game_date DATE NOT NULL,
+    report_timestamp DATETIME NOT NULL,        -- when the report was published (closest to tipoff)
+    team_name VARCHAR(50) NOT NULL,            -- as printed in the PDF (e.g., 'Los Angeles Lakers')
+    team_id BIGINT NULL,                       -- resolved against nba_teams.id (may be NULL if unresolved)
+    matchup VARCHAR(20) NULL,                  -- e.g., 'SAC@IND'
+    player_name VARCHAR(100) NOT NULL,         -- as printed: 'Last, First' format
+    player_id BIGINT NULL,                     -- resolved against nba_players.id
+    status VARCHAR(20) NOT NULL,               -- Out / Doubtful / Questionable / Probable / Available
+    reason TEXT NULL,                          -- 'Injury/Illness - Right Knee; Soreness', etc.
+    source VARCHAR(50) NOT NULL DEFAULT 'nba_official_pdf',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_game_date (game_date),
+    INDEX idx_team_player (team_id, player_id),
+    INDEX idx_status (status),
+    UNIQUE KEY unique_player_game (game_date, team_name, player_name)
+);
+```
+
+**Example row** (game on 2025-12-08, Pacers vs Kings):
+| game_date | report_timestamp | team_name | player_name | status | reason |
+|---|---|---|---|---|---|
+| 2025-12-08 | 2025-12-08 20:30 | Indiana Pacers | Haliburton, Tyrese | Out | Injury/Illness - Right Achilles Tendon; Strain |
+| 2025-12-08 | 2025-12-08 20:30 | Sacramento Kings | Sabonis, Domantas | Out | Injury/Illness - Left Knee; Partial Meniscus Tear |
+| 2025-12-08 | 2025-12-08 20:30 | Sacramento Kings | Murray, Keegan | Questionable | Injury/Illness - Right Trapezius; Soreness |
+
+**How features consume this**: `data_engineering/player_impact.py:bulk_fetch_pregame_availability()` is the leak-free replacement for the older `bulk_fetch_player_availability()` (which still reads post-game boxscore data and is retained as a legacy path). `calculate_player_slot_features` takes an `availability_source` parameter (default `'pregame'`); modes:
+- `'pregame'` — `*_SLOT_X_AVAILABLE = 0` if the player appears in `historical_injury_report` with status Out or Doubtful, else 1. **Point-in-time correct for training.** (default)
+- `'postgame'` — legacy boxscore-derived. Retained for A/B comparison only.
+- `'auto'` — `'pregame'` for dates the table covers, `'postgame'` fallback for dates it doesn't. Useful if extending to seasons before 2022 (which the official PDF archive doesn't cover).
+
+**Backfilled-prediction flow**: When `modeling/predict_games.py --start-date X` regenerates historical predictions, `_fetch_historical_injuries_for_date()` queries `historical_injury_report` per game date instead of calling the live ESPN feed (`--auto-injuries` is automatically sourced from history in backfill mode). This makes backfilled `model_predictions` rows comparable to "true live" rows from the same era.
+
+**Coverage as of 2026-05-19**: 106,755 rows, 969 distinct game-dates spanning 2022-01-01 → 2026-05-13. The ~71 game-dates in this window NOT in the table are All-Star breaks, preseason, and other off-days where no league injury report was published (expected gaps). Player-name resolution rate ≈ 97%; team-name resolution rate ≈ 97%. Unresolved names are typically current-season rookies missing from `nba_players` (refresh that table to pick them up).
+
+---
+
 ### Player Projection Features (9 features per team)
 
 Aggregates individual player stats with opponent adjustments:
@@ -567,6 +623,63 @@ python data_engineering/schema_exploration.py
 
 ---
 
+## Validation Methodology
+
+Three layered evaluation paths, each answering a different question. Knowing which one is used for any given number matters more than the number itself.
+
+### 1. Training-time 80/20 temporal split (what lands in `model_registry`)
+
+When `pipeline.py run --stages train` (or `predict_games.py` triggering retrain) runs, the data flow inside each `load_or_train_*` function:
+
+1. Read `nba_ml_features.csv`.
+2. Sort by `GAME_DATE`, split: first 80% rows = train, last 20% = test. **No shuffling** — temporal order preserved.
+3. Train on the 80% chunk, evaluate on the 20% chunk → these are the `test_*` columns in the new `model_registry` row (test_accuracy, test_auc, test_mae, test_rmse, test_r2, test_precision, test_recall, test_f1).
+4. Also compute the same metrics on the 80% training chunk itself → stored in `train_metrics` JSON. The train-vs-test gap quantifies overfitting.
+5. Retrain on the **full 100% dataset** for production; this is the model that gets saved to `models/bundles/<key>_<version>.joblib`.
+
+This is what every E1–E8 baseline number above the master table refers to (except those tagged "walk-forward"). The metrics characterize the *production model*'s expected performance, even though the production model itself was trained on slightly more data than the model whose metrics were measured.
+
+### 2. Walk-forward validation across multiple windows (`experiments/e2_walk_forward.py`)
+
+The "is the 75% real?" check. For each of 5 windows (W1–W5):
+1. Slice `nba_ml_features.csv` to rows with `GAME_DATE < window.start` → training set.
+2. Slice to rows in `[window.start, window.end]` → test set.
+3. Fit a **fresh** SimpleImputer + StandardScaler on the training slice (never sees the test slice).
+4. Train fresh RF / NN / XGB models with the current production hyperparameters.
+5. Predict on the test slice. Compute accuracy / AUC / precision / recall / F1 / MAE / R².
+
+Crucial: each model is trained **strictly on data before** its test window. No memorization possible. This is what the master experiment table's W5 numbers refer to. Re-runnable any time hyperparameters change; output JSON at `outputs/e2_walk_forward_results.json`.
+
+```bash
+python experiments/e2_walk_forward.py
+```
+
+### 3. Live-prediction tracking (`model_predictions` table + Model Performance tab)
+
+For predictions actually made via `predict_games.py` (either daily live, or backfilled via `--start-date`):
+1. Every prediction logged to `model_predictions` table at prediction time (timestamp, model_version, win_probability, predicted_margin, etc.).
+2. `prediction_tracker.py --backfill` joins each row against the now-completed boxscore and fills in `actual_winner`, `actual_margin`, `is_correct`, `margin_error`.
+3. The dashboard's **Model Performance** tab reads from this table and renders rolling accuracy, MAE, ROC curve, confusion matrix, reliability diagram per model over any selected date range.
+
+Live tracking is the only path that catches concept drift (the world changes; the model doesn't). The other two paths only tell you "how well does the model fit historical data."
+
+### When to trust which number
+
+| Question | Use |
+|---|---|
+| "Did my hyperparameter change move the needle?" | (2) walk-forward, multiple windows, average across seeds. The 80/20 temporal split is too noisy for this. |
+| "How will this model do in production over the next month?" | (2) walk-forward W5 (most-recent window) as best proxy. |
+| "How is the live model actually doing right now?" | (3) Model Performance tab, last 30 days. |
+| "Quick sanity check during a retrain" | (1) `model_registry.test_*` values. Acknowledge the production model's metrics are not literally these numbers. |
+
+### Caveats specific to this project
+
+- **Pre-E7 (before 2026-05-19): every metric was inflated by a feature-engineering leak** (`_AVAILABLE` features derived from post-game boxscore). The leak fix (E7) re-measures everything; expect 2–5pp accuracy drop on apples-to-apples comparison.
+- **The "actual home win" derivation** for the dashboard's reliability diagram / confusion matrix uses `(actual_winner == home_team)` — i.e., we treat home-team wins as the positive class. Flip the comparison if you want to evaluate "predicted away-team wins" as the positive class instead.
+- **All single-seed runs of NN are noisy** at this dataset size; differences <2pp between two NN runs of the same config are usually within seed variance even after `torch.manual_seed(42)` (BatchNorm + DataLoader order interact in subtle ways).
+
+---
+
 ## Model Comparison
 
 ### Random Forest (scikit-learn)
@@ -604,6 +717,55 @@ python data_engineering/schema_exploration.py
 2. Handles heterogeneous features well (counts, percentages, binary)
 3. Less tuning required than neural networks
 4. Sample size (~8,000 games) favors simpler models
+
+---
+
+## Model Bundles & Rollback
+
+Every training run writes a **single versioned bundle** to `models/bundles/<key>_<version>.joblib` containing the full artifact set needed to reproduce that model's predictions:
+
+- For sklearn families (RF): `{classifier, regressor, scaler_tuple, feature_names, feature_count, hyperparameters_*, metadata}`
+- For PyTorch families (NN, NN-embed): `{classifier_state_dict, regressor_state_dict, classifier_class, regressor_class, input_dim, target_scaler, scaler_tuple, feature_names, hyperparameters_*, metadata}`
+
+Both the `<type>_classifier` and `<type>_regressor` rows in `model_registry` reference the same bundle file in their `file_path` column, so loading a specific historical version reconstructs the exact (classifier, regressor, scaler, features) tuple that produced those metrics.
+
+A `models/bundles/<key>_current.joblib` pointer is updated on every retrain — `load_model_bundle(key)` with no `version` argument loads the latest. Atomicity is guaranteed by `os.replace` on a `.tmp` file, so a killed training process can't leave a half-written bundle.
+
+Legacy fixed-name files (`models/rf_classifier.joblib` etc.) are also still written for any reader that hasn't been migrated; they're not the source of truth anymore.
+
+---
+
+## Adding a New Model Type
+
+Models are dispatched through a central registry, so neither `pipeline.py` nor `dataExploration.py` needs to know that "xgboost" or "lightgbm" exists. To add one (replace `xgb` with your key):
+
+**1. Append a spec to `modeling/model_types.py:MODEL_TYPES`:**
+```python
+ModelTypeSpec(
+    key='xgb',
+    display_name='XGBoost',
+    classifier_registry_type='xgb_classifier',
+    regressor_registry_type='xgb_regressor',
+    color='#f1c40f',              # any hex color for charts
+    description='Gradient-boosted trees with depth control',
+    framework='xgboost',
+),
+```
+
+**2. In `modeling/predict_games.py`, write `load_or_train_xgb_models(engine, force_retrain=False)`:**
+- Mirror `load_or_train_rf_models`: try `load_model_bundle('xgb')` first, fall back to retraining.
+- On save, build an `xgb_bundle = {classifier, regressor, scaler_tuple, feature_names, ...}` dict and call `save_model_bundle('xgb', xgb_bundle)`.
+- Call `register_model()` twice (one for classifier, one for regressor), passing the bundle path as `file_path` and the hyperparameters dict including `player_impact_snapshot_date`.
+
+**3. Write `predict_with_xgb(...)` returning the standard dict** (`win_prob`, `margin_mean`, `margin_std`, `margin_samples`, `shap_feature_importance`).
+
+**4. Register both in the dispatch tables at the bottom of `modeling/predict_games.py`:**
+```python
+LOADER_DISPATCH['xgb'] = load_or_train_xgb_models
+PREDICT_DISPATCH['xgb'] = lambda data, matchup, **kw: predict_with_xgb(*data, matchup, **kw)
+```
+
+Done. The Operations tab's `--model` dropdown gains an `xgb` option, the dashboard's Game Predictions tab loads + plots XGBoost predictions alongside RF/NN, the comparison table gains XGBoost columns, and `python orchestration/pipeline.py run --stages predict --predict-model xgb` works — all with zero edits to `orchestration/pipeline.py` or `visualization/dataExploration.py`.
 
 ---
 

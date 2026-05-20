@@ -61,3 +61,15 @@ outputs/*.csv
 # Local-only test outputs
 tmp/
 scratch/
+
+# ---------------------------------------------------------------------------
+# Transient experiment artifacts (regenerable; large)
+# ---------------------------------------------------------------------------
+# Per-experiment feature-CSV backups and ablation variants
+nba_ml_features.csv.backup_*
+nba_ml_features_no_e7.csv
+# Versioned model bundles accumulate every train run (~tens of MB each);
+# the fixed-path models/*.joblib + *.pt are the committed source of truth.
+models/bundles/
+# Smoke-test scratch outputs
+outputs/*smoketest*.json

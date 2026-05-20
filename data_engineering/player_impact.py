@@ -1229,9 +1229,105 @@ def bulk_fetch_player_impacts(engine, team_ids, start_date, end_date):
     return impacts_by_team, sorted_dates
 
 
+def bulk_fetch_pregame_availability(engine, game_ids):
+    """
+    Bulk fetch PRE-GAME player availability from the historical_injury_report table.
+
+    This is the leak-free alternative to `bulk_fetch_player_availability` (which reads
+    post-game boxscore data). Use this for training-feature generation and for
+    backfilled-prediction generation (anywhere the model is supposed to predict the
+    outcome of a game using only data available *before* tipoff).
+
+    The historical_injury_report table is populated by
+    `data_engineering/historical_injury_scraper.py` from the NBA's official PDF reports
+    and contains rows only for players flagged in the report. Players NOT in the report
+    are healthy/available and should be treated as such by the caller — i.e., this
+    function only returns dict entries for *unavailable* players, mirroring the existing
+    callsite contract at `feature_engineering.py:903-908` where missing-from-dict
+    defaults to available.
+
+    Args:
+        engine: SQLAlchemy engine
+        game_ids: List of game IDs to fetch availability for
+
+    Returns:
+        Dict in the same shape as bulk_fetch_player_availability, but populated only
+        with players who were Out or Doubtful per the official pre-game report:
+        {
+            (game_id, team_id): {
+                player_id: {'available': False, 'comment': str, 'minutes': 0.0,
+                             'player_name': str, 'source': 'pregame_injury_report'},
+                ...
+            },
+            ...
+        }
+    """
+    if not game_ids:
+        return {}
+
+    game_ids_str = ','.join(f"'{gid}'" for gid in game_ids)
+    # Join historical_injury_report -> game_list on (game_date, team_id) so we can key
+    # the resulting dict by (game_id, team_id) — matching the existing function's contract.
+    # Filter to status Out/Doubtful: those are the players the model should consider unavailable.
+    # Questionable/Probable/Available are not returned (caller's default = available).
+    query = f"""
+        SELECT
+            gl.GAME_ID as game_id,
+            gl.TEAM_ID as team_id,
+            hir.player_id,
+            hir.player_name,
+            hir.status,
+            hir.reason
+        FROM historical_injury_report hir
+        JOIN game_list gl
+            ON gl.GAME_DATE = hir.game_date
+            AND gl.TEAM_ID = hir.team_id
+        WHERE gl.GAME_ID IN ({game_ids_str})
+          AND hir.player_id IS NOT NULL
+          AND hir.status IN ('Out', 'Doubtful')
+    """
+
+    with engine.connect() as conn:
+        df = pd.read_sql(text(query), conn)
+
+    if len(df) == 0:
+        print(f"    PREGAME availability: 0 unavailable players in historical_injury_report "
+              f"for these {len(game_ids)} game_ids (table may be empty for this date range)")
+        return {}
+
+    availability = {}
+    for _, row in df.iterrows():
+        # Key MUST match the (int, int) shape produced by the legacy postgame fetcher and
+        # expected by calculate_player_slot_features's lookup site (the caller pulls
+        # game_id and team_id directly from a pandas dataframe sourced from game_list,
+        # both of which are int64). Earlier draft cast game_id to str which silently
+        # broke every lookup — feature build completed with all _AVAILABLE = 1.0.
+        key = (int(row['game_id']), int(row['team_id']))
+        if key not in availability:
+            availability[key] = {}
+        availability[key][int(row['player_id'])] = {
+            'available': False,  # if a player is in this dict, they were flagged Out/Doubtful
+            'comment': f"INJURY_REPORT: {row['status']} - {row['reason']}",
+            'minutes': 0.0,
+            'player_name': row['player_name'],
+            'source': 'pregame_injury_report',
+        }
+
+    print(f"    Bulk loaded PREGAME availability for {len(availability)} team-games "
+          f"({len(df)} player records marked unavailable from official injury reports)")
+    return availability
+
+
 def bulk_fetch_player_availability(engine, game_ids):
     """
     Bulk fetch player availability for all games in a single query.
+
+    .. note::
+       This reads from the POST-game boxscore (`boxscoretraditionalv3_player`), so it's
+       not point-in-time correct — the model would know pre-game whether each player
+       ended up showing up. Use `bulk_fetch_pregame_availability` for training and
+       backfill; this function is retained for the legacy code path and for any future
+       sanity-check comparisons.
 
     Args:
         engine: SQLAlchemy engine

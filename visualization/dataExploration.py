@@ -936,16 +936,17 @@ if ML_FEATURES_AVAILABLE:
 # TAB 6: Game Predictions (Comparing Scikit-learn vs PyTorch)
 ########################################################################################################################
 
-# Import prediction functions
+# Import prediction functions via the generic dispatchers so adding a new model type
+# to modeling.model_types.MODEL_TYPES is picked up here automatically with no edits.
 try:
     from modeling.predict_games import (
         get_scheduled_games, get_team_rolling_stats, build_matchup_features,
-        load_or_train_rf_models, load_or_train_pytorch_models,
-        predict_with_rf, predict_with_pytorch,
+        load_model_by_key, predict_with_loaded_model,
         create_engine as pred_create_engine,
         NBA_API_AVAILABLE, PYTORCH_AVAILABLE, SHAP_AVAILABLE,
         get_top_shap_features, format_feature_impact
     )
+    from modeling.model_types import MODEL_TYPES as _MODEL_SPECS
     PREDICTIONS_AVAILABLE = True
 except (ImportError, OSError) as e:
     print(f"Warning: Could not import prediction functions: {e}")
@@ -953,34 +954,90 @@ except (ImportError, OSError) as e:
     NBA_API_AVAILABLE = False
     PYTORCH_AVAILABLE = False
     SHAP_AVAILABLE = False
+    _MODEL_SPECS = []
 
-# Pre-load BOTH models if available
-rf_models = None
-nn_models = None
+# Pre-load every registered model type. Keys with no loaded model (e.g. nn-embed when its
+# bundle hasn't been trained yet, or NN when PyTorch is missing) stay as None and are
+# skipped throughout the prediction pipeline.
+loaded_models = {spec.key: None for spec in _MODEL_SPECS}
 
 if PREDICTIONS_AVAILABLE:
     try:
         pred_engine = pred_create_engine()
-
-        # Load Random Forest models
-        print("Loading Random Forest models...")
-        rf_models = load_or_train_rf_models(pred_engine)
-        print("Random Forest models loaded successfully")
-
-        # Load PyTorch models if available
-        if PYTORCH_AVAILABLE:
-            print("Loading PyTorch models...")
-            nn_models = load_or_train_pytorch_models(pred_engine)
-            print("PyTorch models loaded successfully")
-        else:
-            print("PyTorch not available - only Random Forest models loaded")
-
+        for spec in _MODEL_SPECS:
+            if spec.framework == 'pytorch' and not PYTORCH_AVAILABLE:
+                print(f"Skipping {spec.display_name}: PyTorch unavailable")
+                continue
+            try:
+                print(f"Loading {spec.display_name} ({spec.key})...")
+                loaded_models[spec.key] = load_model_by_key(spec.key, pred_engine)
+                print(f"  {spec.display_name} loaded")
+            except Exception as e:
+                print(f"  Warning: could not load {spec.key}: {e}")
+                loaded_models[spec.key] = None
         pred_engine.dispose()
     except Exception as e:
         print(f"Warning: Could not load prediction models: {e}")
         import traceback
         traceback.print_exc()
         PREDICTIONS_AVAILABLE = False
+
+# ============================================================================
+# E5 helper: Vegas line lookup for the margin-chart overlay + comparison plots.
+# ============================================================================
+
+def _fetch_vegas_lines_for_games(game_date_str, team_pairs):
+    """For a date + list of (home_abbrev, away_abbrev) tuples, return
+    {(home_abbrev, away_abbrev): {home_spread, total, bookmaker, source}}.
+
+    Sources in `vegas_lines` may include kaggle_sbr (historical Pinnacle/SBR consensus)
+    and espn_draftkings / espn_consensus (current-day). When multiple rows exist for
+    the same matchup, we prefer DraftKings > consensus > other.
+    """
+    if not team_pairs:
+        return {}
+    try:
+        from sqlalchemy import text as _t
+        eng = get_engine()
+        try:
+            rows = []
+            with eng.connect() as conn:
+                # Pull all candidate rows for this date, then dedupe in Python
+                result = conn.execute(_t("""
+                    SELECT home_team_abbrev, away_team_abbrev, source, bookmaker,
+                           home_spread, total
+                    FROM vegas_lines
+                    WHERE game_date = :gd
+                """), {'gd': game_date_str}).fetchall()
+                rows = list(result)
+        finally:
+            eng.dispose()
+    except Exception as e:
+        print(f"[vegas] lookup failed: {e}")
+        return {}
+
+    # Preferred source order — DK > consensus > kaggle > anything else
+    SOURCE_PRIORITY = {'espn_draftkings': 0, 'espn_consensus': 1,
+                       'espn_fanduel': 1, 'espn_espnbet': 1,
+                       'kaggle_sbr': 2, 'espn_teamrankings': 3}
+
+    by_pair = {}
+    for r in rows:
+        key = (r[0], r[1])  # (home, away)
+        prio = SOURCE_PRIORITY.get(r[2], 99)
+        existing = by_pair.get(key)
+        if existing is None or prio < existing['_prio']:
+            by_pair[key] = {
+                '_prio': prio,
+                'source': r[2],
+                'bookmaker': r[3],
+                'home_spread': r[4],
+                'total': r[5],
+            }
+
+    # Strip the priority field before returning
+    return {k: {kk: vv for kk, vv in v.items() if kk != '_prio'} for k, v in by_pair.items()}
+
 
 # UI Components for Predictions Tab
 predictionDatePicker = html.Div([
@@ -1071,316 +1128,353 @@ def make_predictions(n_clicks, game_date):
                 []
             )
 
-        # Create engine for database queries
+        # Determine which models are actually loaded and usable for this run
+        active_specs = [s for s in _MODEL_SPECS if loaded_models.get(s.key) is not None]
+        if not active_specs:
+            return (
+                dbc.Alert("No models are loaded. Check console for load errors.", color='warning'),
+                [], go.Figure(), go.Figure(), [])
+
+        # Per-game prediction loop. predictions_by_key[key] is a list of dicts (one per game),
+        # each carrying the standard fields plus the matchup teams. Lists stay aligned by index.
+        predictions_by_key = {s.key: [] for s in active_specs}
+
         engine = pred_create_engine()
-
-        rf_predictions = []
-        nn_predictions = []
-
         for _, game in games.iterrows():
             home_id = game['HOME_TEAM_ID']
             away_id = game['AWAY_TEAM_ID']
             home_team = game['HOME_TEAM']
             away_team = game['AWAY_TEAM']
 
-            # Get team features
             home_features = get_team_rolling_stats(engine, home_id, game_date)
             away_features = get_team_rolling_stats(engine, away_id, game_date)
-
             if home_features is None or away_features is None:
                 continue
-
-            # Build matchup features
             matchup = build_matchup_features(home_features, away_features)
 
-            # Random Forest prediction
-            if rf_models:
-                clf, reg, scaler, feature_names = rf_models
-                rf_result = predict_with_rf(clf, reg, scaler, feature_names, matchup)
-                rf_predictions.append({
+            for spec in active_specs:
+                try:
+                    result = predict_with_loaded_model(spec.key, loaded_models[spec.key], matchup)
+                except Exception as e:
+                    print(f"  Warning: {spec.key} prediction failed for {away_team} @ {home_team}: {e}")
+                    continue
+                predictions_by_key[spec.key].append({
                     'home_team': home_team,
                     'away_team': away_team,
-                    'win_prob': rf_result['win_prob'],
-                    'margin_mean': rf_result['margin_mean'],
-                    'margin_std': rf_result['margin_std'],
-                    'margin_samples': rf_result['margin_samples']
+                    'win_prob': result['win_prob'],
+                    # E13: isotonic-calibrated classifier probability (RF/XGB). Falls back
+                    # to the margin-derived win_prob for models without a calibrated head.
+                    'win_prob_calibrated': result.get('win_prob_classifier', result['win_prob']),
+                    'margin_mean': result['margin_mean'],
+                    'margin_std': result['margin_std'],
+                    'margin_samples': result['margin_samples'],
+                    # E14: split-conformal prediction intervals [lo, hi] (may be None for
+                    # older bundles trained before E14).
+                    'margin_interval_80': result.get('margin_interval_80'),
+                    'margin_interval_90': result.get('margin_interval_90'),
+                    'shap_feature_importance': result.get('shap_feature_importance', {}),
                 })
-
-            # Neural Network prediction (if available)
-            if nn_models:
-                clf, reg, scaler, feature_names, target_scaler = nn_models
-                nn_result = predict_with_pytorch(clf, reg, scaler, feature_names, matchup,
-                                                 target_scaler=target_scaler)
-                nn_predictions.append({
-                    'home_team': home_team,
-                    'away_team': away_team,
-                    'win_prob': nn_result['win_prob'],
-                    'margin_mean': nn_result['margin_mean'],
-                    'margin_std': nn_result['margin_std'],
-                    'margin_samples': nn_result['margin_samples']
-                })
-
         engine.dispose()
 
-        if not rf_predictions:
+        # Empty-out check: if no model produced any predictions, bail
+        if not any(predictions_by_key.values()):
             return (
                 dbc.Alert("Could not generate predictions (missing team data)", color='warning'),
-                [],
-                go.Figure(),
-                go.Figure(),
-                []
-            )
+                [], go.Figure(), go.Figure(), [])
 
-        # Build comparison results table
+        # ---------- Comparison table (one column group per active model) ----------
+        # Reference the longest prediction list as the matchup spine so we don't drop rows
+        # when one model failed on a particular game.
+        spine_key = max(active_specs, key=lambda s: len(predictions_by_key[s.key])).key
+        n_games = len(predictions_by_key[spine_key])
+
+        def _pred_for(spec_key, idx):
+            preds = predictions_by_key.get(spec_key, [])
+            return preds[idx] if idx < len(preds) else None
+
+        def _pick(pred):
+            if pred is None: return None
+            # Pick + Win% use the E13 isotonic-calibrated probability (the validated one).
+            return pred['home_team'] if pred['win_prob_calibrated'] > 0.5 else pred['away_team']
+
+        # Header rows: top row spans column groups, bottom row labels per-model cells
+        header_top = [html.Th("Matchup", rowSpan=2, style={'verticalAlign': 'middle'})]
+        header_bot = []
+        for spec in active_specs:
+            bg_top = f'rgba({int(spec.color[1:3], 16)}, {int(spec.color[3:5], 16)}, {int(spec.color[5:7], 16)}, 0.3)'
+            bg_bot = f'rgba({int(spec.color[1:3], 16)}, {int(spec.color[3:5], 16)}, {int(spec.color[5:7], 16)}, 0.2)'
+            header_top.append(html.Th(spec.display_name, colSpan=3,
+                                      style={'textAlign': 'center', 'backgroundColor': bg_top}))
+            header_bot += [
+                html.Th("Pick", style={'backgroundColor': bg_bot}),
+                html.Th("Win%", style={'backgroundColor': bg_bot}),
+                html.Th("Margin", style={'backgroundColor': bg_bot}),
+            ]
+        header_top.append(html.Th("Agreement", rowSpan=2, style={'verticalAlign': 'middle'}))
+
         table_rows = []
-        for i, rf_pred in enumerate(rf_predictions):
-            nn_pred = nn_predictions[i] if i < len(nn_predictions) else None
+        for i in range(n_games):
+            row_preds = {spec.key: _pred_for(spec.key, i) for spec in active_specs}
+            spine = row_preds[spine_key]
+            if spine is None:
+                continue
+            matchup_label = f"{spine['away_team']} @ {spine['home_team']}"
+            picks = [_pick(p) for p in row_preds.values() if p is not None]
 
-            rf_pick = rf_pred['home_team'] if rf_pred['win_prob'] > 0.5 else rf_pred['away_team']
-            nn_pick = nn_pred['home_team'] if nn_pred and nn_pred['win_prob'] > 0.5 else (nn_pred['away_team'] if nn_pred else '-')
+            # Agreement badge: AGREE if all non-null models pick the same team, else show majority split
+            if len(set(picks)) <= 1:
+                agree_badge = dbc.Badge("AGREE", color="success")
+            else:
+                # Show the split as "majority X / minority Y"
+                from collections import Counter
+                cnt = Counter(picks)
+                top = cnt.most_common()
+                if len(top) == 2 and top[0][1] == top[1][1]:
+                    agree_badge = dbc.Badge("SPLIT", color="warning")
+                else:
+                    agree_badge = dbc.Badge(f"MAJORITY {top[0][0]}", color="danger")
 
-            # Check if models agree
-            agree = rf_pick == nn_pick if nn_pred else True
-            agree_badge = dbc.Badge("AGREE", color="success") if agree else dbc.Badge("DISAGREE", color="danger")
-
-            table_rows.append(html.Tr([
-                html.Td(f"{rf_pred['away_team']} @ {rf_pred['home_team']}"),
-                # Random Forest columns
-                html.Td(rf_pick, style={'fontWeight': 'bold', 'color': '#3498db'}),
-                html.Td(f"{rf_pred['win_prob']:.1%}"),
-                html.Td(f"{rf_pred['margin_mean']:+.1f}"),
-                # Neural Network columns
-                html.Td(nn_pick if nn_pred else '-', style={'fontWeight': 'bold', 'color': '#e74c3c'}),
-                html.Td(f"{nn_pred['win_prob']:.1%}" if nn_pred else '-'),
-                html.Td(f"{nn_pred['margin_mean']:+.1f}" if nn_pred else '-'),
-                # Agreement
-                html.Td(agree_badge)
-            ]))
+            cells = [html.Td(matchup_label)]
+            for spec in active_specs:
+                p = row_preds[spec.key]
+                if p is None:
+                    cells += [html.Td('-'), html.Td('-'), html.Td('-')]
+                else:
+                    # Margin cell shows the point estimate + the conformal 80% interval
+                    # (E14) when available, e.g. "+4.6 (80%: -14..+23)".
+                    iv80 = p.get('margin_interval_80')
+                    if iv80:
+                        margin_txt = f"{p['margin_mean']:+.1f}  (80%: {iv80[0]:+.0f}..{iv80[1]:+.0f})"
+                    else:
+                        margin_txt = f"{p['margin_mean']:+.1f}"
+                    cells += [
+                        html.Td(_pick(p), style={'fontWeight': 'bold', 'color': spec.color}),
+                        html.Td(f"{p['win_prob_calibrated']:.1%}"),
+                        html.Td(margin_txt),
+                    ]
+            cells.append(html.Td(agree_badge))
+            table_rows.append(html.Tr(cells))
 
         results_table = dbc.Table([
-            html.Thead([
-                html.Tr([
-                    html.Th("Matchup", rowSpan=2, style={'verticalAlign': 'middle'}),
-                    html.Th("Random Forest (sklearn)", colSpan=3, style={'textAlign': 'center', 'backgroundColor': 'rgba(52, 152, 219, 0.3)'}),
-                    html.Th("Neural Network (PyTorch)", colSpan=3, style={'textAlign': 'center', 'backgroundColor': 'rgba(231, 76, 60, 0.3)'}),
-                    html.Th("", rowSpan=2)
-                ]),
-                html.Tr([
-                    html.Th("Pick", style={'backgroundColor': 'rgba(52, 152, 219, 0.2)'}),
-                    html.Th("Win%", style={'backgroundColor': 'rgba(52, 152, 219, 0.2)'}),
-                    html.Th("Margin", style={'backgroundColor': 'rgba(52, 152, 219, 0.2)'}),
-                    html.Th("Pick", style={'backgroundColor': 'rgba(231, 76, 60, 0.2)'}),
-                    html.Th("Win%", style={'backgroundColor': 'rgba(231, 76, 60, 0.2)'}),
-                    html.Th("Margin", style={'backgroundColor': 'rgba(231, 76, 60, 0.2)'}),
-                ])
-            ]),
+            html.Thead([html.Tr(header_top), html.Tr(header_bot)]),
             html.Tbody(table_rows)
         ], bordered=True, hover=True, responsive=True, striped=True, className='mt-3')
 
-        # Build SIDE-BY-SIDE probability chart
+        # ---------- Probability chart (one bar trace per model, grouped by matchup) ----------
+        matchups = [f"{predictions_by_key[spine_key][i]['away_team']} @ {predictions_by_key[spine_key][i]['home_team']}"
+                    for i in range(n_games)]
         fig_prob = go.Figure()
-
-        matchups = [f"{p['away_team']} @ {p['home_team']}" for p in rf_predictions]
-
-        # Random Forest bars (blue)
-        fig_prob.add_trace(go.Bar(
-            name='Random Forest',
-            x=[p['win_prob'] for p in rf_predictions],
-            y=matchups,
-            orientation='h',
-            marker_color='#3498db',
-            text=[f"RF: {p['win_prob']:.1%}" for p in rf_predictions],
-            textposition='inside',
-            offsetgroup=0
-        ))
-
-        # Neural Network bars (red) - if available
-        if nn_predictions:
+        for offset, spec in enumerate(active_specs):
+            preds = predictions_by_key[spec.key]
+            xs = [(_pred_for(spec.key, i) or {}).get('win_prob_calibrated') for i in range(n_games)]
+            raws = [(_pred_for(spec.key, i) or {}).get('win_prob') for i in range(n_games)]
+            labels = [f"{spec.key.upper()}: {x:.1%}" if x is not None else "" for x in xs]
+            # Hover shows both the calibrated (displayed) and the raw margin-derived prob.
+            customdata = [[(r if r is not None else float('nan'))] for r in raws]
             fig_prob.add_trace(go.Bar(
-                name='Neural Network',
-                x=[p['win_prob'] for p in nn_predictions],
-                y=matchups,
+                name=spec.display_name,
+                x=xs, y=matchups,
                 orientation='h',
-                marker_color='#e74c3c',
-                text=[f"NN: {p['win_prob']:.1%}" for p in nn_predictions],
+                marker_color=spec.color,
+                text=labels,
                 textposition='inside',
-                offsetgroup=1
+                offsetgroup=offset,
+                customdata=customdata,
+                hovertemplate='%{y}<br>Calibrated P(home win): %{x:.1%}'
+                              '<br>Raw (margin-derived): %{customdata[0]:.1%}<extra></extra>',
             ))
-
         fig_prob.update_layout(
-            title=f'Win Probability Comparison: RF vs NN ({game_date})',
+            title=f'Win Probability — isotonic-calibrated (E13) ({", ".join(s.display_name for s in active_specs)}) — {game_date}',
             barmode='group',
             xaxis_title='Home Team Win Probability',
             xaxis=dict(tickformat='.0%', range=[0, 1]),
             yaxis_title='',
             template='minty_dark',
-            height=max(400, len(rf_predictions) * 60),
+            height=max(400, n_games * 60 * max(1, len(active_specs) // 2 + 1)),
             margin=dict(l=150),
-            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
         )
-
         fig_prob.add_vline(x=0.5, line_dash="dash", line_color="white", opacity=0.5,
                           annotation_text="50%", annotation_position="top")
 
-        # Build SIDE-BY-SIDE margin distribution chart
+        # ---------- Margin distribution chart (one violin per (model, matchup)) ----------
+        # E5: Also overlay the Vegas spread per matchup as a gold marker, so users can
+        # see at a glance whether our model agrees with the line. Vegas data comes from
+        # vegas_lines table (populated by ESPN fetcher for current games + Kaggle for historical).
+        vegas_lookup = _fetch_vegas_lines_for_games(
+            game_date,
+            [(predictions_by_key[spine_key][i]['home_team'],
+              predictions_by_key[spine_key][i]['away_team']) for i in range(n_games)]
+        )
+
         fig_margin = go.Figure()
-
-        for i, rf_pred in enumerate(rf_predictions):
-            matchup = f"{rf_pred['away_team']} @ {rf_pred['home_team']}"
-            nn_pred = nn_predictions[i] if i < len(nn_predictions) else None
-
-            # RF distribution (blue)
-            fig_margin.add_trace(go.Violin(
-                y=[f"{matchup} "] * len(rf_pred['margin_samples']),  # Extra space to separate
-                x=rf_pred['margin_samples'],
-                name=f'RF: {matchup}',
-                orientation='h',
-                side='positive',
-                meanline_visible=True,
-                box_visible=True,
-                points=False,
-                showlegend=(i == 0),
-                legendgroup='RF',
-                fillcolor='rgba(52, 152, 219, 0.5)',
-                line_color='#3498db'
-            ))
-
-            # NN distribution (red) - if available
-            if nn_pred:
+        vegas_legend_added = False
+        for i in range(n_games):
+            spine_pred = predictions_by_key[spine_key][i]
+            matchup_label = f"{spine_pred['away_team']} @ {spine_pred['home_team']}"
+            for spec in active_specs:
+                p = _pred_for(spec.key, i)
+                if p is None or len(p.get('margin_samples', [])) == 0:
+                    continue
+                rgba_fill = f'rgba({int(spec.color[1:3], 16)}, {int(spec.color[3:5], 16)}, {int(spec.color[5:7], 16)}, 0.5)'
                 fig_margin.add_trace(go.Violin(
-                    y=[f"{matchup}"] * len(nn_pred['margin_samples']),
-                    x=nn_pred['margin_samples'],
-                    name=f'NN: {matchup}',
+                    y=[matchup_label] * len(p['margin_samples']),
+                    x=p['margin_samples'],
+                    name=f"{spec.key.upper()}: {matchup_label}",
                     orientation='h',
                     side='positive',
                     meanline_visible=True,
                     box_visible=True,
                     points=False,
                     showlegend=(i == 0),
-                    legendgroup='NN',
-                    fillcolor='rgba(231, 76, 60, 0.5)',
-                    line_color='#e74c3c'
+                    legendgroup=spec.key,
+                    fillcolor=rgba_fill,
+                    line_color=spec.color,
                 ))
-
+                # E14: split-conformal prediction intervals, drawn ON the category baseline
+                # (below the side='positive' violin). Thick bar = 80% (validated ~75-78%
+                # coverage), dotted line = 90% (~91%). The violin shows the model's *internal*
+                # spread; the conformal bar shows *total* predictive uncertainty incl. the
+                # irreducible game variance — and is the honest range for XGB (whose violin is
+                # a degenerate spike).
+                iv90 = p.get('margin_interval_90')
+                iv80 = p.get('margin_interval_80')
+                if iv90:
+                    fig_margin.add_trace(go.Scatter(
+                        x=iv90, y=[matchup_label, matchup_label], mode='lines',
+                        line=dict(color=spec.color, width=1.5, dash='dot'),
+                        showlegend=(i == 0), legendgroup=f'{spec.key}_ci',
+                        name=f"{spec.key.upper()} 90% interval",
+                        hovertemplate=f"{spec.key.upper()} 90 pct interval: "
+                                      f"{iv90[0]:+.0f} .. {iv90[1]:+.0f}<extra></extra>",
+                    ))
+                if iv80:
+                    fig_margin.add_trace(go.Scatter(
+                        x=iv80, y=[matchup_label, matchup_label], mode='lines',
+                        line=dict(color=spec.color, width=6), opacity=0.65,
+                        showlegend=False, legendgroup=f'{spec.key}_ci',
+                        name=f"{spec.key.upper()} 80% interval",
+                        hovertemplate=f"{spec.key.upper()} 80 pct interval: "
+                                      f"{iv80[0]:+.0f} .. {iv80[1]:+.0f}<extra></extra>",
+                    ))
+            # Vegas marker: ESPN uses convention "spread of -7.5 from the favored team's perspective"
+            # — vegas_lines.home_spread is already home-perspective (negative = home favored). To
+            # overlay on a "+ = home wins" margin axis, we want the MARGIN value Vegas predicts:
+            # margin = -home_spread (so home_spread=-7.5 means Vegas predicts home wins by 7.5).
+            vegas = vegas_lookup.get((spine_pred['home_team'], spine_pred['away_team']))
+            if vegas is not None and vegas.get('home_spread') is not None:
+                vegas_margin = -vegas['home_spread']
+                bookmaker = vegas.get('bookmaker', 'Vegas')
+                fig_margin.add_trace(go.Scatter(
+                    x=[vegas_margin], y=[matchup_label],
+                    mode='markers+text',
+                    marker=dict(symbol='diamond-tall', size=18,
+                                color='gold', line=dict(width=2, color='black')),
+                    text=[f' Vegas {vegas_margin:+.1f}'],
+                    textposition='middle right',
+                    textfont=dict(color='gold', size=11),
+                    name=f'Vegas line ({bookmaker})',
+                    showlegend=not vegas_legend_added,
+                    legendgroup='vegas',
+                    hovertemplate=f'<b>Vegas ({bookmaker})</b><br>'
+                                  f'Spread (home perspective): {vegas["home_spread"]:+.1f}<br>'
+                                  f'Implied margin: {vegas_margin:+.1f}<extra></extra>',
+                ))
+                vegas_legend_added = True
         fig_margin.update_layout(
-            title=f'Margin Distribution Comparison: RF (blue) vs NN (red) ({game_date})',
+            title=f'Margin: model distribution + conformal interval + Vegas line — {game_date}',
             xaxis_title='Point Margin (+ = Home Team Wins)',
             yaxis_title='',
             template='minty_dark',
-            height=max(400, len(rf_predictions) * 100),
-            margin=dict(l=150),
-            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            height=max(400, n_games * 100),
+            margin=dict(l=150, b=90),
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
         )
-
         fig_margin.add_vline(x=0, line_dash="dash", line_color="yellow", opacity=0.7,
                             annotation_text="Even", annotation_position="top")
+        # Caption: explain the interval semantics + the honest coverage caveat (E14).
+        fig_margin.add_annotation(
+            xref='paper', yref='paper', x=0, y=-0.14, showarrow=False, align='left',
+            font=dict(size=10, color='lightgray'),
+            text=("Thick bar = 80% prediction interval, dotted = 90% (split-conformal, E14). "
+                  "Validated coverage on held-out games: ~91% of margins land inside the 90% band. "
+                  "Bands are wide (±18-25 pts) because NBA margin variance is irreducibly large."),
+        )
 
-        # Build SHAP Feature Importance visualizations
+        # ---------- SHAP cards (one column per active model, per game) ----------
         shap_components = []
-
         if SHAP_AVAILABLE:
-            for i, rf_pred in enumerate(rf_predictions):
-                nn_pred = nn_predictions[i] if i < len(nn_predictions) else None
+            col_width = max(2, 12 // max(1, len(active_specs)))  # divide row across active models
+            for i in range(n_games):
+                spine_pred = predictions_by_key[spine_key][i]
+                matchup_label = f"{spine_pred['away_team']} @ {spine_pred['home_team']}"
 
-                # Create card for each game's SHAP explanation
-                matchup = f"{rf_pred['away_team']} @ {rf_pred['home_team']}"
+                shap_cols = []
+                any_shap_present = False
+                for spec in active_specs:
+                    p = _pred_for(spec.key, i)
+                    shap_dict = (p or {}).get('shap_feature_importance', {})
+                    if not shap_dict:
+                        shap_cols.append(dbc.Col(html.Div(f"{spec.display_name}: SHAP unavailable",
+                                                          style={'opacity': 0.6}), width=col_width))
+                        continue
+                    top = get_top_shap_features(shap_dict, top_n=10)
+                    if not top:
+                        shap_cols.append(dbc.Col(html.Div(f"{spec.display_name}: no SHAP features",
+                                                          style={'opacity': 0.6}), width=col_width))
+                        continue
+                    any_shap_present = True
+                    fnames = [f.replace('DIFF_', '').replace('HOME_', 'H_').replace('AWAY_', 'A_')[:20]
+                              for f, _, _ in top]
+                    svals = [v for _, v, _ in top]
+                    bar_colors = ['#2ecc71' if v > 0 else '#e74c3c' for v in svals]
+                    fig_shap = go.Figure()
+                    fig_shap.add_trace(go.Bar(
+                        x=svals, y=fnames, orientation='h',
+                        marker_color=bar_colors,
+                        text=[f'{v:+.2f}' for v in svals], textposition='outside',
+                        name=spec.display_name,
+                    ))
+                    fig_shap.update_layout(
+                        title=f'{spec.display_name}: Top Features — {matchup_label}',
+                        xaxis_title='SHAP Value (Impact on Point Margin)',
+                        yaxis_title='',
+                        template='minty_dark', height=400,
+                        yaxis=dict(autorange='reversed'),
+                        margin=dict(l=150),
+                    )
+                    fig_shap.add_vline(x=0, line_dash="dash", line_color="white", opacity=0.5)
+                    shap_cols.append(dbc.Col(dcc.Graph(figure=fig_shap), width=col_width))
 
-                # Get SHAP features for both models
-                rf_shap = rf_pred.get('shap_feature_importance', {})
-                nn_shap = nn_pred.get('shap_feature_importance', {}) if nn_pred else {}
-
-                if rf_shap:
-                    # Create SHAP bar chart for RF
-                    top_features_rf = get_top_shap_features(rf_shap, top_n=10)
-
-                    if top_features_rf:
-                        feature_names = [f.replace('DIFF_', '').replace('HOME_', 'H_').replace('AWAY_', 'A_')[:20] for f, _, _ in top_features_rf]
-                        shap_values = [v for _, v, _ in top_features_rf]
-
-                        fig_shap_rf = go.Figure()
-                        colors = ['#2ecc71' if v > 0 else '#e74c3c' for v in shap_values]
-
-                        fig_shap_rf.add_trace(go.Bar(
-                            x=shap_values,
-                            y=feature_names,
-                            orientation='h',
-                            marker_color=colors,
-                            text=[f'{v:+.2f}' for v in shap_values],
-                            textposition='outside',
-                            name='Random Forest'
-                        ))
-
-                        fig_shap_rf.update_layout(
-                            title=f'RF: Top Features - {matchup}',
-                            xaxis_title='SHAP Value (Impact on Point Margin)',
-                            yaxis_title='',
-                            template='minty_dark',
-                            height=400,
-                            yaxis=dict(autorange='reversed'),
-                            margin=dict(l=150)
-                        )
-                        fig_shap_rf.add_vline(x=0, line_dash="dash", line_color="white", opacity=0.5)
-
-                        # Create NN SHAP chart if available
-                        fig_shap_nn = go.Figure()
-                        if nn_shap:
-                            top_features_nn = get_top_shap_features(nn_shap, top_n=10)
-                            if top_features_nn:
-                                nn_feature_names = [f.replace('DIFF_', '').replace('HOME_', 'H_').replace('AWAY_', 'A_')[:20] for f, _, _ in top_features_nn]
-                                nn_shap_values = [v for _, v, _ in top_features_nn]
-                                nn_colors = ['#2ecc71' if v > 0 else '#e74c3c' for v in nn_shap_values]
-
-                                fig_shap_nn.add_trace(go.Bar(
-                                    x=nn_shap_values,
-                                    y=nn_feature_names,
-                                    orientation='h',
-                                    marker_color=nn_colors,
-                                    text=[f'{v:+.2f}' for v in nn_shap_values],
-                                    textposition='outside',
-                                    name='Neural Network'
-                                ))
-
-                                fig_shap_nn.update_layout(
-                                    title=f'NN: Top Features - {matchup}',
-                                    xaxis_title='SHAP Value (Impact on Point Margin)',
-                                    yaxis_title='',
-                                    template='minty_dark',
-                                    height=400,
-                                    yaxis=dict(autorange='reversed'),
-                                    margin=dict(l=150)
-                                )
-                                fig_shap_nn.add_vline(x=0, line_dash="dash", line_color="white", opacity=0.5)
-
-                        # Add to components
-                        shap_components.append(
-                            dbc.Card([
-                                dbc.CardHeader(f"Feature Importance: {matchup}", style={'fontWeight': 'bold'}),
-                                dbc.CardBody([
-                                    dbc.Row([
-                                        dbc.Col(dcc.Graph(figure=fig_shap_rf), width=6),
-                                        dbc.Col(dcc.Graph(figure=fig_shap_nn) if nn_shap else html.Div("NN SHAP not available"), width=6),
-                                    ]),
-                                    html.Hr(),
-                                    html.Div([
-                                        html.P([
-                                            html.Strong("How to read: "),
-                                            html.Span("Green bars = helps home team win. Red bars = helps away team win. ", style={'color': '#95DFC9'}),
-                                            html.Span("Longer bars = stronger impact on the prediction.", style={'color': '#FA7851'})
-                                        ]),
-                                        html.P([
-                                            html.Strong("Example: "),
-                                            "If 'DIFF_netRating_L10' is +2.5 (green), the home team's better net rating over last 10 games adds ~2.5 points to the predicted margin."
-                                        ])
-                                    ], style={'fontSize': '12px', 'backgroundColor': 'rgba(255,255,255,0.05)', 'padding': '10px', 'borderRadius': '5px'})
-                                ])
-                            ], className='mb-3')
-                        )
+                if any_shap_present:
+                    shap_components.append(dbc.Card([
+                        dbc.CardHeader(f"Feature Importance: {matchup_label}", style={'fontWeight': 'bold'}),
+                        dbc.CardBody([
+                            dbc.Row(shap_cols),
+                            html.Hr(),
+                            html.Div([
+                                html.P([
+                                    html.Strong("How to read: "),
+                                    html.Span("Green bars = helps home team win. Red bars = helps away team win. ",
+                                              style={'color': '#95DFC9'}),
+                                    html.Span("Longer bars = stronger impact on the prediction.",
+                                              style={'color': '#FA7851'}),
+                                ]),
+                                html.P([
+                                    html.Strong("Example: "),
+                                    "If 'DIFF_netRating_L10' is +2.5 (green), the home team's better net rating "
+                                    "over last 10 games adds ~2.5 points to the predicted margin."
+                                ]),
+                            ], style={'fontSize': '12px', 'backgroundColor': 'rgba(255,255,255,0.05)',
+                                       'padding': '10px', 'borderRadius': '5px'})
+                        ])
+                    ], className='mb-3'))
 
         # Status message
-        nn_status = " and Neural Network" if nn_predictions else " (Neural Network not available)"
+        loaded_summary = ", ".join(s.display_name for s in active_specs)
         shap_status = " with SHAP explanations" if SHAP_AVAILABLE else ""
         status = dbc.Alert(
-            f"Generated Random Forest{nn_status} predictions{shap_status} for {len(rf_predictions)} games on {game_date}",
+            f"Generated {loaded_summary} predictions{shap_status} for {n_games} games on {game_date}",
             color='success'
         )
 
@@ -1538,7 +1632,13 @@ def _reliability_bins(df, n_bins=10):
     return grouped
 
 
-_MODEL_COLOR = {'rf': '#3498db', 'nn': '#e74c3c'}
+# Pull the color map from the central MODEL_TYPES registry so adding a new model type
+# (xgb, lightgbm, ensemble, ...) automatically gets a chart color here without edits.
+try:
+    from modeling.model_types import color_map as _model_color_map
+    _MODEL_COLOR = _model_color_map()
+except ImportError:
+    _MODEL_COLOR = {'rf': '#3498db', 'nn': '#e74c3c'}
 
 
 def _engine_for_queries():
@@ -1613,6 +1713,9 @@ def init_model_perf_date_range(_n):
         Output('modelPerfReliabilityChart', 'figure'),
         Output('modelPerfResidualChart', 'figure'),
         Output('modelPerfErrorHistChart', 'figure'),
+        Output('modelPerfRocChart', 'figure'),
+        Output('modelPerfConfusionChart', 'figure'),
+        Output('modelPerfVegasChart', 'figure'),
         Output('modelPerfStatus', 'children'),
     ],
     [
@@ -1628,7 +1731,7 @@ def update_model_perf(start_date, end_date, models_selected, _n_clicks):
         if not start_date or not end_date:
             empty_fig = go.Figure().update_layout(template='plotly_dark', title='No data')
             return (html.Div('Pick a date range to begin.'), html.Div(),
-                    empty_fig, empty_fig, empty_fig, empty_fig,
+                    empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig,
                     dbc.Alert('Waiting for date range', color='secondary'))
 
         registry_df = _load_registry_df(eng)
@@ -1787,13 +1890,163 @@ def update_model_perf(start_date, end_date, models_selected, _n_clicks):
             height=380, margin=dict(l=40, r=20, t=50, b=40),
         )
 
+        # ---------------- ROC curves ----------------
+        # One curve per model — shows the full threshold sweep. The closer to the
+        # top-left corner, the better; the diagonal is the random baseline.
+        roc_fig = go.Figure()
+        roc_fig.add_trace(go.Scatter(
+            x=[0, 1], y=[0, 1], mode='lines',
+            line=dict(color='gray', dash='dash'),
+            name='Random (AUC=0.5)', hoverinfo='skip',
+        ))
+        if not preds_df.empty:
+            try:
+                from sklearn.metrics import roc_curve as _roc_curve, auc as _sk_auc
+                for mt, sub in preds_df.groupby('model_type'):
+                    sub2 = sub.copy()
+                    sub2['actual_home_win'] = (sub2['actual_winner'] == sub2['home_team']).astype(int)
+                    if sub2['actual_home_win'].nunique() < 2:
+                        continue
+                    fpr, tpr, _ = _roc_curve(sub2['actual_home_win'], sub2['home_win_probability'])
+                    auc_val = _sk_auc(fpr, tpr)
+                    color = _MODEL_COLOR.get(mt, '#888')
+                    roc_fig.add_trace(go.Scatter(
+                        x=fpr, y=tpr, mode='lines',
+                        line=dict(color=color, width=2),
+                        name=f'{mt.upper()} (AUC={auc_val:.3f})',
+                        hovertemplate='FPR=%{x:.2f}<br>TPR=%{y:.2f}<extra></extra>',
+                    ))
+            except Exception as e:
+                print(f"[model_perf] ROC failed: {e}")
+        roc_fig.update_layout(
+            template='plotly_dark',
+            title='ROC curves — true-positive rate vs false-positive rate (closer to top-left = better ranking)',
+            xaxis=dict(title='False positive rate', range=[0, 1], tickformat='.0%'),
+            yaxis=dict(title='True positive rate', range=[0, 1], tickformat='.0%'),
+            height=420, margin=dict(l=40, r=20, t=50, b=40),
+            legend=dict(x=0.6, y=0.1),
+        )
+
+        # ---------------- Confusion matrices ----------------
+        # One 2x2 heatmap per model side-by-side. Each cell shows count + percentage.
+        # Rows = actual, columns = predicted, so the diagonal is correct predictions.
+        from plotly.subplots import make_subplots as _make_subplots
+        if preds_df.empty:
+            cm_fig = go.Figure().update_layout(template='plotly_dark', title='No data')
+        else:
+            model_types_in_data = sorted(preds_df['model_type'].unique())
+            n_models = len(model_types_in_data)
+            cm_fig = _make_subplots(rows=1, cols=max(1, n_models),
+                                     subplot_titles=[mt.upper() for mt in model_types_in_data],
+                                     horizontal_spacing=0.15)
+            for i, mt in enumerate(model_types_in_data):
+                sub = preds_df[preds_df['model_type'] == mt].copy()
+                actual_home_win = (sub['actual_winner'] == sub['home_team']).astype(int)
+                pred_home_win = (sub['home_win_probability'] >= 0.5).astype(int)
+                # Confusion matrix: actual rows, predicted cols. [actual=0, pred=0], [actual=0, pred=1], etc.
+                tn = int(((actual_home_win == 0) & (pred_home_win == 0)).sum())
+                fp = int(((actual_home_win == 0) & (pred_home_win == 1)).sum())
+                fn = int(((actual_home_win == 1) & (pred_home_win == 0)).sum())
+                tp = int(((actual_home_win == 1) & (pred_home_win == 1)).sum())
+                total = tn + fp + fn + tp
+                z = [[tn, fp], [fn, tp]]
+                text = [
+                    [f'TN<br>{tn}<br>({tn/total:.1%})' if total else 'TN<br>0',
+                     f'FP<br>{fp}<br>({fp/total:.1%})' if total else 'FP<br>0'],
+                    [f'FN<br>{fn}<br>({fn/total:.1%})' if total else 'FN<br>0',
+                     f'TP<br>{tp}<br>({tp/total:.1%})' if total else 'TP<br>0'],
+                ]
+                color = _MODEL_COLOR.get(mt, '#888')
+                cm_fig.add_trace(go.Heatmap(
+                    z=z,
+                    x=['Pred: away wins', 'Pred: home wins'],
+                    y=['Actual: away wins', 'Actual: home wins'],
+                    text=text, texttemplate='%{text}',
+                    colorscale=[[0, 'rgba(40,40,40,0.3)'], [1, color]],
+                    showscale=False,
+                    hovertemplate='%{y}<br>%{x}<br>Count: %{z}<extra></extra>',
+                ), row=1, col=i + 1)
+            cm_fig.update_layout(
+                template='plotly_dark',
+                title='Confusion matrix — diagonal = correct, off-diagonal = mistakes',
+                height=380, margin=dict(l=40, r=20, t=70, b=40),
+            )
+            # Tighten axis labels
+            for k in range(1, n_models + 1):
+                cm_fig.update_yaxes(autorange='reversed', row=1, col=k)
+
+        # ---------------- E5: Model vs Vegas vs Actual (margin MAE comparison) ----------------
+        # For every backfilled prediction in the window that has a matched vegas_lines row,
+        # compute |model_predicted_margin - actual_margin| and |vegas_implied_margin - actual_margin|.
+        # Show the per-model MAE alongside Vegas as a horizontal bar chart, with a count
+        # of paired games. This is the user-visible "are we beating Vegas?" answer.
+        vegas_fig = go.Figure()
+        try:
+            vegas_df = pd.read_sql(_sql_text("""
+                SELECT mp.model_type, mp.game_date, mp.home_team, mp.away_team,
+                       mp.predicted_margin, mp.actual_margin,
+                       vl.home_spread, vl.source AS vegas_source, vl.bookmaker
+                FROM model_predictions mp
+                JOIN vegas_lines vl
+                  ON vl.game_date = mp.game_date
+                 AND vl.home_team_abbrev = mp.home_team
+                 AND vl.away_team_abbrev = mp.away_team
+                WHERE mp.actual_winner IS NOT NULL
+                  AND mp.actual_margin IS NOT NULL
+                  AND vl.home_spread IS NOT NULL
+                  AND mp.game_date BETWEEN :start AND :end
+            """), eng, params={'start': start_date, 'end': end_date})
+
+            if not vegas_df.empty:
+                # Vegas implied margin = -home_spread (convention: home_spread negative = home favored)
+                vegas_df['vegas_margin'] = -vegas_df['home_spread']
+                vegas_df['model_err'] = (vegas_df['predicted_margin'] - vegas_df['actual_margin']).abs()
+                vegas_df['vegas_err'] = (vegas_df['vegas_margin'] - vegas_df['actual_margin']).abs()
+
+                # Per-model MAE
+                model_mae = vegas_df.groupby('model_type')['model_err'].mean().to_dict()
+                vegas_mae = vegas_df['vegas_err'].mean()
+                n_paired = len(vegas_df)
+
+                # Build bar chart: x=MAE, y=label
+                labels = list(model_mae.keys()) + ['Vegas']
+                values = [model_mae[k] for k in model_mae] + [vegas_mae]
+                colors_bar = [_MODEL_COLOR.get(k, '#888') for k in model_mae] + ['gold']
+                vegas_fig.add_trace(go.Bar(
+                    x=values, y=[lbl.upper() for lbl in labels],
+                    orientation='h', marker_color=colors_bar,
+                    text=[f'{v:.2f} pts' for v in values],
+                    textposition='outside',
+                    hovertemplate='%{y}<br>MAE: %{x:.3f} pts<extra></extra>',
+                ))
+                vegas_fig.update_layout(
+                    template='plotly_dark',
+                    title=f'Margin MAE: model vs Vegas — {n_paired} paired games '
+                          f'({vegas_df["game_date"].min().date()} to {vegas_df["game_date"].max().date()})',
+                    xaxis_title='Mean absolute error (points; lower = better)',
+                    yaxis_title='',
+                    height=max(280, (len(labels) + 1) * 50),
+                    margin=dict(l=80, r=80, t=60, b=40),
+                    showlegend=False,
+                )
+                vegas_fig.add_vline(x=vegas_mae, line_dash='dash', line_color='gold', opacity=0.6,
+                                    annotation_text='Vegas baseline', annotation_position='top')
+            else:
+                vegas_fig.update_layout(template='plotly_dark',
+                                        title='No paired (model prediction + Vegas line + actual) data in this date range')
+        except Exception as e:
+            print(f"[model_perf] Vegas comparison failed: {e}")
+            vegas_fig.update_layout(template='plotly_dark',
+                                    title=f'Vegas comparison error: {e}')
+
         status = dbc.Alert(
             f"Loaded {len(preds_df)} backfilled predictions across "
             f"{preds_df['game_date'].nunique() if not preds_df.empty else 0} dates "
             f"(models: {', '.join(models_selected) if models_selected else 'none'}).",
             color='info'
         )
-        return headline, registry_table, rolling_fig, rel_fig, resid_fig, hist_fig, status
+        return (headline, registry_table, rolling_fig, rel_fig, resid_fig, hist_fig,
+                roc_fig, cm_fig, vegas_fig, status)
     finally:
         eng.dispose()
 
@@ -2361,6 +2614,13 @@ app.layout = html.Div(
                 dbc.Row([
                     dbc.Col(dcc.Graph(id='modelPerfReliabilityChart'), width=6),
                     dbc.Col(dcc.Graph(id='modelPerfResidualChart'), width=6),
+                ]),
+                dbc.Row([
+                    dbc.Col(dcc.Graph(id='modelPerfRocChart'), width=6),
+                    dbc.Col(dcc.Graph(id='modelPerfConfusionChart'), width=6),
+                ]),
+                dbc.Row([
+                    dbc.Col(dcc.Graph(id='modelPerfVegasChart'), width=12),
                 ]),
                 dbc.Row([
                     dbc.Col(dcc.Graph(id='modelPerfErrorHistChart'), width=12),

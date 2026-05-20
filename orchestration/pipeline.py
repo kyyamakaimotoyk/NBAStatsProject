@@ -42,6 +42,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from core.db import get_engine
+from modeling.model_types import cli_choices as _model_cli_choices, model_keys as _model_keys
 
 
 # ============================================================================
@@ -326,14 +327,19 @@ class TrainStage(StageSpec):
         # CWD will be the project root (set in run_stage_blocking), and the bootstrap inside
         # predict_games.py adds the project root to sys.path so its own cross-folder imports work.
         # But the -c subprocess starts fresh, so we must also seed sys.path before the import here.
+        # E8 cleanup: XGBoost added — was previously omitted, causing the production XGB bundle
+        # to drift behind RF/NN whenever this stage ran.
         code = (
             "import sys, os; "
             "sys.path.insert(0, os.getcwd()); "
             "from core.db import get_engine; "
-            "from modeling.predict_games import load_or_train_rf_models, load_or_train_pytorch_models, PYTORCH_AVAILABLE; "
+            "from modeling.predict_games import (load_or_train_rf_models, load_or_train_pytorch_models, "
+            "                                     load_or_train_xgb_models, PYTORCH_AVAILABLE, XGBOOST_AVAILABLE); "
             "eng = get_engine(); "
             "print('[pipeline.train] Forcing RF retrain...'); "
             "load_or_train_rf_models(eng, force_retrain=True); "
+            "print('[pipeline.train] Forcing XGB retrain...') if XGBOOST_AVAILABLE else print('[pipeline.train] xgboost unavailable, skipping XGB'); "
+            "XGBOOST_AVAILABLE and load_or_train_xgb_models(eng, force_retrain=True); "
             "print('[pipeline.train] Forcing NN retrain...') if PYTORCH_AVAILABLE else print('[pipeline.train] PyTorch unavailable, skipping NN'); "
             "PYTORCH_AVAILABLE and load_or_train_pytorch_models(eng, force_retrain=True); "
             "print('[pipeline.train] done.')"
@@ -355,8 +361,10 @@ class PredictStage(StageSpec):
          'help': 'Backfill mode: first date in the range to predict.'},
         {'name': 'end_date', 'cli': '--end-date', 'type': 'date',
          'help': 'Backfill mode: last date in the range (defaults to today).'},
+        # `choices` derived from modeling.model_types.MODEL_TYPES so adding a new model
+        # type updates this dropdown automatically (no edit to pipeline.py needed).
         {'name': 'model', 'cli': '--model', 'type': 'choice',
-         'choices': ['rf', 'nn', 'nn-embed', 'both'], 'default': 'both', 'help': 'Which model(s)'},
+         'choices': _model_cli_choices(), 'default': 'both', 'help': 'Which model(s)'},
         {'name': 'no_shap', 'cli': '--no-shap', 'type': 'flag', 'help': 'Skip SHAP (much faster — recommended for backfill)'},
         {'name': 'no_plot', 'cli': '--no-plot', 'type': 'flag', 'help': 'Skip histogram plots (forced on in backfill)'},
         {'name': 'no_log', 'cli': '--no-log', 'type': 'flag', 'help': 'Skip logging predictions to DB'},

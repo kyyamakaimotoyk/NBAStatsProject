@@ -24,7 +24,20 @@ Usage:
 # work regardless of CWD. sys/os are stdlib and don't conflict with the PyTorch-first ordering.
 import sys as _sys
 import os as _os
-_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+_PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path.insert(0, _PROJECT_ROOT)
+
+# Force CWD to project root. Several CWD-relative paths live in this file
+# ('nba_ml_features.csv', 'models/rf_classifier.joblib', etc.); if the IDE launches a script
+# from its own folder, those checks silently miss the existing artifacts and trigger a full
+# feature rebuild + model retrain. Anchoring CWD here makes every relative path resolve
+# correctly regardless of how the dashboard or pipeline launches us.
+if _os.getcwd() != _PROJECT_ROOT:
+    _os.chdir(_PROJECT_ROOT)
+
+# Absolute path to the feature CSV — kept explicit even after the chdir above so future
+# refactors that move file ops around don't reintroduce the silent-rebuild bug.
+FEATURES_CSV_PATH = _os.path.join(_PROJECT_ROOT, 'nba_ml_features.csv')
 
 # PyTorch - MUST be imported FIRST before numpy/pandas on Windows to avoid DLL conflicts
 try:
@@ -62,6 +75,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import joblib
 import os
+import shutil
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -144,6 +158,137 @@ except ImportError:
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
+from sklearn.isotonic import IsotonicRegression
+
+
+# ============================================================================
+# PROBABILITY CALIBRATION (E13, 2026-05-19)
+# ============================================================================
+# The E13 diagnostic (docs/e13_calibration_report.md) found RF's predict_proba
+# was systematically UNDERCONFIDENT in the 0.5-0.8 range: a "55% home win" from
+# RF corresponded to a real ~70% win rate (ECE 0.13). The over-regularized
+# RF (max_depth=5, min_samples_leaf=20 from E1) shrinks probabilities toward
+# 0.5. Isotonic recalibration roughly halves RF ECE (0.13 -> 0.07) and improves
+# the Brier score. XGB was milder (ECE 0.09) but also benefits.
+#
+# This wrapper makes calibration transparent to every consumer: it exposes the
+# same predict_proba / predict interface, so all existing call sites get
+# calibrated probabilities without any signature change. Non-prediction
+# attributes (feature_importances_, classes_, ...) delegate to the base model,
+# and SHAP runs on the regressor (not the classifier), so nothing downstream
+# breaks.
+
+class IsotonicCalibratedClassifier:
+    """Wraps a fitted binary classifier + an IsotonicRegression calibrator.
+
+    `predict_proba` passes the base model's P(class=1) through the isotonic
+    map (learned on a held-out calibration slice) so the reported probability
+    matches the empirical win frequency. `predict` thresholds the *calibrated*
+    probability at 0.5.
+    """
+
+    def __init__(self, base_estimator, calibrator: IsotonicRegression):
+        self._base = base_estimator
+        self._calibrator = calibrator
+        # Surface classes_ so sklearn-style consumers keep working
+        self.classes_ = getattr(base_estimator, 'classes_', np.array([0, 1]))
+
+    def predict_proba(self, X):
+        raw = self._base.predict_proba(X)
+        p1 = np.clip(self._calibrator.predict(raw[:, 1]), 0.0, 1.0)
+        return np.column_stack([1.0 - p1, p1])
+
+    def predict(self, X):
+        return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
+
+    def __getattr__(self, name):
+        # Only invoked when normal attribute lookup fails. Two guards prevent the
+        # classic pickle recursion: dunder probes (e.g. pickle's __setstate__ /
+        # __reduce_ex__ lookups) raise AttributeError immediately, and `_base` is
+        # read from __dict__ directly so an unpickle-in-progress (where _base
+        # isn't set yet) raises cleanly instead of recursing.
+        if name.startswith('__') and name.endswith('__'):
+            raise AttributeError(name)
+        base = self.__dict__.get('_base')
+        if base is None:
+            raise AttributeError(name)
+        return getattr(base, name)
+
+
+def _fit_isotonic_calibrator(eval_probs, y_eval):
+    """Fit an isotonic map from raw P(home win) -> calibrated P(home win) using
+    out-of-sample eval predictions (the 80/20 holdout the eval model didn't
+    train on). Returns a fitted IsotonicRegression."""
+    iso = IsotonicRegression(out_of_bounds='clip')
+    iso.fit(np.asarray(eval_probs, dtype=float), np.asarray(y_eval, dtype=float))
+    return iso
+
+
+# ============================================================================
+# PREDICTION INTERVALS — split conformal (E14, 2026-05-19)
+# ============================================================================
+# The point regressor emits a single margin ("home by 6.2"). Split conformal
+# adds a validated range: take the eval model's |residuals| on its 20% holdout,
+# the (1-alpha) quantile q is the interval half-width, and [pred-q, pred+q] then
+# covers ~(1-alpha) of real margins. E14 (docs/e14_intervals_report.md) validated
+# empirical coverage on W5 (90% interval -> ~91-92% real coverage) and found that
+# adaptive-width CQR did NOT beat constant-width split conformal here (NBA margin
+# variance is ~homoscedastic), so we ship the simpler method.
+#
+# Half-widths are computed at train time and carried on a thin ConformalRegressor
+# wrapper. SHAP runs on the *regressor*, so the two TreeExplainer call sites
+# unwrap via `getattr(reg, '_base', reg)`.
+
+def _compute_conformal_halfwidths(eval_pred, y_eval, levels=(0.80, 0.90)):
+    """Finite-sample-corrected (1-level) residual quantiles from the eval
+    holdout. Returns {'80': q80, '90': q90}."""
+    resid = np.abs(np.asarray(y_eval, dtype=float) - np.asarray(eval_pred, dtype=float))
+    n = len(resid)
+    srt = np.sort(resid)
+    hw = {}
+    for lvl in levels:
+        k = min(int(np.ceil((n + 1) * lvl)), n)
+        hw[str(int(round(lvl * 100)))] = float(srt[k - 1])
+    return hw
+
+
+class ConformalRegressor:
+    """Wraps a fitted point regressor + split-conformal half-widths. `predict`
+    is unchanged (point estimate); `predict_interval(X, level)` returns
+    (lo, hi) arrays for the requested coverage level (80 or 90)."""
+
+    def __init__(self, base_estimator, halfwidths: dict):
+        self._base = base_estimator
+        self.conformal_halfwidths = halfwidths  # {'80': q, '90': q}
+
+    def predict(self, X):
+        return self._base.predict(X)
+
+    def predict_interval(self, X, level=80):
+        p = self._base.predict(X)
+        q = self.conformal_halfwidths[str(int(level))]
+        return p - q, p + q
+
+    def __getattr__(self, name):
+        # Same pickle-safe delegation guard as IsotonicCalibratedClassifier.
+        if name.startswith('__') and name.endswith('__'):
+            raise AttributeError(name)
+        base = self.__dict__.get('_base')
+        if base is None:
+            raise AttributeError(name)
+        return getattr(base, name)
+
+
+def _margin_intervals_from_reg(reg, X_scaled):
+    """Return {'80': [lo, hi], '90': [lo, hi]} for the single row in X_scaled if
+    the regressor carries conformal half-widths; else {} (older bundles)."""
+    if not hasattr(reg, 'predict_interval'):
+        return {}
+    out = {}
+    for lvl in (80, 90):
+        lo, hi = reg.predict_interval(X_scaled, level=lvl)
+        out[str(lvl)] = [float(lo[0]), float(hi[0])]
+    return out
 
 
 # ============================================================================
@@ -154,6 +299,191 @@ def create_engine():
     """Create database connection engine. Reads MySQL config from environment via db.get_engine()."""
     from core.db import get_engine
     return get_engine()
+
+
+# ============================================================================
+# VERSIONED MODEL SAVING + DATA PROVENANCE HELPERS
+# ============================================================================
+
+# Model bundles live here. One file per (model_type_key, version) holds the entire
+# training-run artifact set atomically: classifier, regressor, scaler, feature_names,
+# (target_scaler for NN), hyperparameters, metadata. This is what enables full rollback —
+# loading bundle 'rf_20260518.joblib' gives you everything needed to predict with that
+# specific historical model, regardless of what subsequent retrains overwrote.
+BUNDLES_DIR = os.path.join('models', 'bundles')
+
+
+def save_model_bundle(model_type_key: str, bundle: dict, version: str = None) -> str:
+    """Write a complete training-run bundle to models/bundles/<key>_<version>.joblib atomically.
+
+    The bundle dict layout is whatever the model family needs — sklearn families typically
+    store the live model objects, PyTorch families store state_dicts plus a class hint so
+    the loader can reconstruct. The only required key is 'feature_names' (used by the
+    loader's "do features still match?" gate). Metadata is auto-populated.
+
+    Also writes/overwrites a "current" pointer at models/bundles/<key>_current.joblib so
+    the next load_model_bundle(key) call (no version) returns this one.
+
+    Returns the versioned path (for register_model file_path).
+    """
+    if version is None:
+        version = datetime.now().strftime('%Y%m%d')
+    os.makedirs(BUNDLES_DIR, exist_ok=True)
+
+    # Avoid clobbering same-day runs by adding _2, _3, ...
+    versioned_path = os.path.join(BUNDLES_DIR, f'{model_type_key}_{version}.joblib')
+    base = versioned_path
+    suffix = 1
+    while os.path.exists(versioned_path):
+        name, ext = os.path.splitext(base)
+        versioned_path = f'{name}_{suffix}{ext}'
+        suffix += 1
+
+    enriched = dict(bundle)
+    enriched.setdefault('metadata', {})
+    enriched['metadata'].update({
+        'model_type_key': model_type_key,
+        'version': version,
+        'created_at': datetime.now().isoformat(timespec='seconds'),
+        'bundle_path': versioned_path,
+    })
+
+    # Atomic write: dump to .tmp, then rename. Prevents half-written bundles if the process
+    # is killed mid-save (e.g., Ctrl-C during a long training run).
+    tmp_path = versioned_path + '.tmp'
+    joblib.dump(enriched, tmp_path)
+    os.replace(tmp_path, versioned_path)
+
+    # Update the "current" pointer. Best-effort copy — if it fails (e.g., file locked on
+    # Windows), the versioned save is still good and the user can manually re-point.
+    current_path = os.path.join(BUNDLES_DIR, f'{model_type_key}_current.joblib')
+    try:
+        shutil.copy2(versioned_path, current_path)
+    except Exception as e:
+        print(f"  Warning: could not update {model_type_key} current pointer: {e}")
+
+    return versioned_path
+
+
+def load_model_bundle(model_type_key: str, version: str = None) -> dict:
+    """Load a bundle. version=None means the 'current' pointer (latest).
+
+    Returns the bundle dict, or None if the file is missing. Caller is responsible for
+    reconstructing live model objects from state_dicts when needed (PyTorch families).
+    """
+    if version is None:
+        path = os.path.join(BUNDLES_DIR, f'{model_type_key}_current.joblib')
+    else:
+        path = os.path.join(BUNDLES_DIR, f'{model_type_key}_{version}.joblib')
+    if not os.path.exists(path):
+        return None
+    return joblib.load(path)
+
+
+def list_model_versions(model_type_key: str):
+    """Available versioned bundles for a model type, sorted oldest -> newest.
+
+    Excludes the 'current' pointer (which is a copy of the latest version, not its own
+    version). Use this from the dashboard's rollback UI or for a "delete bundles older
+    than N" rotation script.
+    """
+    if not os.path.exists(BUNDLES_DIR):
+        return []
+    prefix = f'{model_type_key}_'
+    versions = []
+    for fname in os.listdir(BUNDLES_DIR):
+        if (fname.startswith(prefix) and fname.endswith('.joblib')
+                and fname != f'{prefix}current.joblib'):
+            versions.append(fname[len(prefix):-len('.joblib')])
+    return sorted(versions)
+
+
+def _save_versioned_and_current(model, model_type: str, feature_names, extension: str,
+                                  current_path: str) -> str:
+    """Write the model to a date-versioned filename via save_model_with_version() *and*
+    overwrite the fixed `current_path` so existing loaders keep working unchanged.
+
+    Returns the versioned path — pass this into register_model() as `file_path` so the
+    registry row points at the archived weights (instead of the fixed-name file that the
+    next retrain will overwrite).
+    """
+    if not MODEL_REGISTRY_AVAILABLE:
+        # Fallback: no versioning available, just save to current_path directly.
+        if extension == 'joblib':
+            joblib.dump(model, current_path)
+        elif extension == 'pt':
+            torch.save(model.state_dict(), current_path)
+        return current_path
+
+    versioned_path = save_model_with_version(model, model_type, feature_names or [], extension=extension)
+    # Best-effort copy — same file on Windows is fine, the loader just reads from current_path.
+    try:
+        shutil.copy2(versioned_path, current_path)
+    except shutil.SameFileError:
+        pass
+    return versioned_path
+
+
+def _fetch_historical_injuries_for_date(engine, game_date_str):
+    """For backfilled predictions (predict_games.py --start-date X), source pre-game
+    injuries from the historical_injury_report table instead of the live ESPN feed.
+
+    Returns a list of dicts in the same shape as `get_current_injuries()` from
+    `data_engineering/injury_data.py`, so the existing merge logic in main() can
+    consume either source interchangeably. Names are normalized from the report's
+    "Last, First" PDF format to "First Last" to match ESPN's convention.
+
+    Only Out/Doubtful entries are returned (matches the status filter applied to the
+    live feed at the auto_injury_data merge site in main).
+
+    Returns [] if the table doesn't exist or the date has no records — both are
+    legitimate (table empty before E7 scraper runs; no report on All-Star break days).
+    """
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT t.abbreviation AS team_abbrev,
+                       hir.player_name AS player_name,
+                       hir.status AS status
+                FROM historical_injury_report hir
+                JOIN nba_teams t ON t.id = hir.team_id
+                WHERE hir.game_date = :gd
+                  AND hir.status IN ('Out', 'Doubtful')
+            """), {'gd': game_date_str}).fetchall()
+    except Exception as e:
+        # Most likely cause: historical_injury_report table doesn't exist yet.
+        # Quiet failure so the backfill path stays usable before E7's scraper runs.
+        print(f"  (historical_injury_report unavailable for {game_date_str}: {e})")
+        return []
+
+    result = []
+    for r in rows:
+        name = r[1]
+        if name and ',' in name:
+            # PDF format is "Last, First"; convert to "First Last" for ESPN-style matching
+            parts = name.split(',', 1)
+            name = f"{parts[1].strip()} {parts[0].strip()}"
+        result.append({
+            'player_name': name,
+            'status': r[2].upper(),  # matches ESPN convention used in auto_injury_data merge
+            'team_abbrev': r[0],
+        })
+    return result
+
+
+def _player_impact_snapshot(engine):
+    """Return the latest compute_date in player_impact, as an ISO string, so the training
+    run can record which player_impact snapshot was active when it ran. Stored inside the
+    hyperparameters JSON so two model versions with otherwise-identical hyperparams but
+    different impact data are distinguishable in the registry."""
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text('SELECT MAX(compute_date) FROM player_impact')).fetchone()
+        if row and row[0] is not None:
+            return str(row[0])
+    except Exception:
+        pass
+    return None
 
 
 # ============================================================================
@@ -793,7 +1123,8 @@ def load_or_train_rf_models(engine, force_retrain=False):
         force_retrain: If True, always retrain even if models exist
     """
     from sklearn.model_selection import train_test_split
-    from sklearn.metrics import accuracy_score, roc_auc_score, mean_absolute_error, r2_score
+    from sklearn.metrics import (accuracy_score, roc_auc_score, mean_absolute_error, r2_score,
+                                 precision_score, recall_score, f1_score)
 
     clf_path = 'models/rf_classifier.joblib'
     reg_path = 'models/rf_regressor.joblib'
@@ -803,17 +1134,30 @@ def load_or_train_rf_models(engine, force_retrain=False):
     # Check if retraining is needed
     need_retrain = force_retrain
 
-    if not need_retrain and all(os.path.exists(p) for p in [clf_path, reg_path, scaler_path, features_path]):
-        saved_features = joblib.load(features_path)
-
-        # Check feature count against current data
+    # PRIMARY: try to load from bundle (full rollback-fidelity artifact).
+    bundle = load_model_bundle('rf') if not need_retrain else None
+    if bundle is not None:
+        saved_features = bundle['feature_names']
         ml_df, current_features, _, _, _, _ = _prepare_training_data(engine)
+        if len(current_features) != len(saved_features):
+            print(f"\nFeature count changed: {len(saved_features)} -> {len(current_features)}; retraining RF.")
+            need_retrain = True
+        else:
+            print(f"Loading Random Forest from bundle (version {bundle['metadata']['version']})...")
+            return (bundle['classifier'], bundle['regressor'],
+                    bundle['scaler_tuple'], saved_features)
 
+    # LEGACY FALLBACK: pre-bundle saves from fixed paths. Lets the very first run after this
+    # refactor still pick up existing artifacts; the next retrain will materialize a bundle.
+    if (not need_retrain
+            and all(os.path.exists(p) for p in [clf_path, reg_path, scaler_path, features_path])):
+        saved_features = joblib.load(features_path)
+        ml_df, current_features, _, _, _, _ = _prepare_training_data(engine)
         if len(current_features) != len(saved_features):
             print(f"\nFeature count changed: {len(saved_features)} -> {len(current_features)}")
             need_retrain = True
         else:
-            print("Loading pre-trained Random Forest models...")
+            print("Loading pre-trained Random Forest models (legacy fixed-path artifacts)...")
             clf = joblib.load(clf_path)
             reg = joblib.load(reg_path)
             scaler = joblib.load(scaler_path)
@@ -831,46 +1175,122 @@ def load_or_train_rf_models(engine, force_retrain=False):
     y_reg_train, y_reg_test = y_reg.values[:split_idx], y_reg.values[split_idx:]
 
     train_start, train_end, test_start, test_end = _split_window_dates(ml_df, split_idx)
+    pi_snapshot = _player_impact_snapshot(engine)
 
     imputer, scaler = scaler_tuple
 
-    # Hyperparameters captured as a dict so the registry has a faithful record of what produced this model
-    rf_clf_hp = {'n_estimators': 100, 'max_depth': 10, 'random_state': 42, 'class': 'RandomForestClassifier'}
-    rf_reg_hp = {'n_estimators': 100, 'max_depth': 10, 'random_state': 42, 'class': 'RandomForestRegressor'}
+    # Hyperparameters captured as a dict so the registry has a faithful record of what produced this model.
+    # `player_impact_snapshot_date` is the latest compute_date in player_impact at training time — two models
+    # with identical hyperparams but different impact snapshots are now distinguishable in the registry.
+    # Experiment 1 (2026-05-18): tightened from max_depth=10/leaf=1 to max_depth=5/leaf=20 to attack the
+    # 24pp train/test gap from baseline runs 11-12. See docs/model_tuning_log.md.
+    rf_clf_hp = {'n_estimators': 100, 'max_depth': 5, 'min_samples_leaf': 20, 'random_state': 42,
+                 'class': 'RandomForestClassifier', 'player_impact_snapshot_date': pi_snapshot}
+    rf_reg_hp = {'n_estimators': 100, 'max_depth': 5, 'min_samples_leaf': 20, 'random_state': 42,
+                 'class': 'RandomForestRegressor', 'player_impact_snapshot_date': pi_snapshot}
 
-    # Train classifier
+    # Train classifier (on the 80% train split — used for evaluation metrics)
     print("  Training RF classifier...")
-    clf = RandomForestClassifier(n_estimators=rf_clf_hp['n_estimators'], max_depth=rf_clf_hp['max_depth'],
+    clf = RandomForestClassifier(n_estimators=rf_clf_hp['n_estimators'],
+                                 max_depth=rf_clf_hp['max_depth'],
+                                 min_samples_leaf=rf_clf_hp['min_samples_leaf'],
                                  random_state=rf_clf_hp['random_state'], n_jobs=-1)
     clf.fit(X_train, y_clf_train)
 
-    # Evaluate classifier (test set + train set for overfit gap)
+    # Evaluate classifier (test set + train set for overfit gap). Precision/recall/F1 use the
+    # default 0.5 threshold; for the home-team-wins task that matches how the model is consumed.
     clf_pred = clf.predict(X_test)
     clf_prob = clf.predict_proba(X_test)[:, 1]
     clf_accuracy = accuracy_score(y_clf_test, clf_pred)
     clf_auc = roc_auc_score(y_clf_test, clf_prob)
+    clf_precision = precision_score(y_clf_test, clf_pred, zero_division=0)
+    clf_recall = recall_score(y_clf_test, clf_pred, zero_division=0)
+    clf_f1 = f1_score(y_clf_test, clf_pred, zero_division=0)
     clf_train_pred = clf.predict(X_train)
     clf_train_prob = clf.predict_proba(X_train)[:, 1]
     clf_train_acc = accuracy_score(y_clf_train, clf_train_pred)
     clf_train_auc = roc_auc_score(y_clf_train, clf_train_prob)
+    clf_train_precision = precision_score(y_clf_train, clf_train_pred, zero_division=0)
+    clf_train_recall = recall_score(y_clf_train, clf_train_pred, zero_division=0)
+    clf_train_f1 = f1_score(y_clf_train, clf_train_pred, zero_division=0)
 
     # Train regressor
     print("  Training RF regressor...")
-    reg = RandomForestRegressor(n_estimators=rf_reg_hp['n_estimators'], max_depth=rf_reg_hp['max_depth'],
+    reg = RandomForestRegressor(n_estimators=rf_reg_hp['n_estimators'],
+                                max_depth=rf_reg_hp['max_depth'],
+                                min_samples_leaf=rf_reg_hp['min_samples_leaf'],
                                 random_state=rf_reg_hp['random_state'], n_jobs=-1)
     reg.fit(X_train, y_reg_train)
 
     # Evaluate regressor (test set + train set for overfit gap)
     reg_pred = reg.predict(X_test)
     reg_mae = mean_absolute_error(y_reg_test, reg_pred)
+    reg_rmse = float(np.sqrt(np.mean((reg_pred - y_reg_test) ** 2)))
     reg_r2 = r2_score(y_reg_test, reg_pred)
     reg_train_pred = reg.predict(X_train)
     reg_train_mae = mean_absolute_error(y_reg_train, reg_train_pred)
+    reg_train_rmse = float(np.sqrt(np.mean((reg_train_pred - y_reg_train) ** 2)))
     reg_train_r2 = r2_score(y_reg_train, reg_train_pred)
 
-    # Compare with previous models and register new ones
+    # Retrain on full data for production model (this is the model that actually gets saved).
+    # The test/train metrics above describe expected performance; the saved weights below are
+    # the production version trained on more data. Hyperparams MUST mirror the eval-time ones
+    # (read from rf_clf_hp/rf_reg_hp) or the saved model won't match the registered metrics.
+    print("\n  Retraining on full dataset for production...")
+    clf = RandomForestClassifier(n_estimators=rf_clf_hp['n_estimators'],
+                                 max_depth=rf_clf_hp['max_depth'],
+                                 min_samples_leaf=rf_clf_hp['min_samples_leaf'],
+                                 random_state=rf_clf_hp['random_state'], n_jobs=-1)
+    clf.fit(X_scaled, y_clf)
+    reg = RandomForestRegressor(n_estimators=rf_reg_hp['n_estimators'],
+                                max_depth=rf_reg_hp['max_depth'],
+                                min_samples_leaf=rf_reg_hp['min_samples_leaf'],
+                                random_state=rf_reg_hp['random_state'], n_jobs=-1)
+    reg.fit(X_scaled, y_reg)
+
+    # E13 isotonic calibration: fit on the eval clf's out-of-sample 20% holdout
+    # predictions (clf_prob/y_clf_test computed above — the eval clf never saw
+    # those games), then wrap the full-data production clf so its predict_proba
+    # returns calibrated probabilities. AUC is unchanged (isotonic is monotonic);
+    # ECE/Brier improve. See docs/e13_calibration_report.md.
+    rf_calibrator = _fit_isotonic_calibrator(clf_prob, y_clf_test)
+    clf = IsotonicCalibratedClassifier(clf, rf_calibrator)
+    print("  RF classifier wrapped with isotonic calibrator (E13).")
+
+    # E14 split-conformal: half-widths from the eval regressor's holdout residuals
+    rf_halfwidths = _compute_conformal_halfwidths(reg_pred, y_reg_test)
+    reg = ConformalRegressor(reg, rf_halfwidths)
+    print(f"  RF regressor wrapped with conformal intervals (E14): "
+          f"80%=+/-{rf_halfwidths['80']:.1f}, 90%=+/-{rf_halfwidths['90']:.1f} pts.")
+
+    # Save: bundle (versioned, full rollback fidelity) is the source of truth. Fixed-path
+    # artifacts are also written for backward compat with any caller that still loads them
+    # directly. Both classifier and regressor registry rows point at the same bundle.
+    os.makedirs('models', exist_ok=True)
+    rf_bundle = {
+        'classifier': clf,
+        'regressor': reg,
+        'scaler_tuple': (imputer, scaler),
+        'feature_names': feature_cols,
+        'feature_count': len(feature_cols),
+        'hyperparameters_classifier': rf_clf_hp,
+        'hyperparameters_regressor': rf_reg_hp,
+        'clf_calibrator': rf_calibrator,
+        'calibration_method': 'isotonic_on_20pct_holdout',
+        'conformal_halfwidths': rf_halfwidths,
+        'conformal_method': 'split_conformal_on_20pct_holdout',
+    }
+    bundle_path = save_model_bundle('rf', rf_bundle)
+    joblib.dump(clf, clf_path)
+    joblib.dump(reg, reg_path)
+    joblib.dump((imputer, scaler), scaler_path)
+    joblib.dump(feature_cols, features_path)
+    # Both classifier and regressor registry rows reference the same bundle file
+    clf_versioned_path = bundle_path
+    reg_versioned_path = bundle_path
+
+    # Compare with previous models and register new ones (now we know the versioned paths)
     if MODEL_REGISTRY_AVAILABLE:
-        # Compare classifier
         is_better_clf, clf_report = compare_models(
             engine, 'rf_classifier',
             {'accuracy': clf_accuracy, 'auc': clf_auc},
@@ -878,7 +1298,6 @@ def load_or_train_rf_models(engine, force_retrain=False):
         )
         print(clf_report)
 
-        # Compare regressor
         is_better_reg, reg_report = compare_models(
             engine, 'rf_regressor',
             {'mae': reg_mae, 'r2': reg_r2},
@@ -886,46 +1305,35 @@ def load_or_train_rf_models(engine, force_retrain=False):
         )
         print(reg_report)
 
-        # Register new models
         register_model(
             engine, 'rf_classifier', len(feature_cols),
-            len(X_train), len(X_test), clf_path, feature_cols,
+            len(X_train), len(X_test), clf_versioned_path, feature_cols,
             accuracy=clf_accuracy, auc=clf_auc,
+            precision=clf_precision, recall=clf_recall, f1=clf_f1,
             train_start_date=train_start, train_end_date=train_end,
             test_start_date=test_start, test_end_date=test_end,
             hyperparameters=rf_clf_hp,
-            train_metrics={'accuracy': clf_train_acc, 'auc': clf_train_auc},
+            train_metrics={'accuracy': clf_train_acc, 'auc': clf_train_auc,
+                           'precision': clf_train_precision, 'recall': clf_train_recall, 'f1': clf_train_f1},
             run_kind='train',
         )
         register_model(
             engine, 'rf_regressor', len(feature_cols),
-            len(X_train), len(X_test), reg_path, feature_cols,
-            mae=reg_mae, r2=reg_r2,
+            len(X_train), len(X_test), reg_versioned_path, feature_cols,
+            mae=reg_mae, rmse=reg_rmse, r2=reg_r2,
             train_start_date=train_start, train_end_date=train_end,
             test_start_date=test_start, test_end_date=test_end,
             hyperparameters=rf_reg_hp,
-            train_metrics={'mae': reg_train_mae, 'r2': reg_train_r2},
+            train_metrics={'mae': reg_train_mae, 'rmse': reg_train_rmse, 'r2': reg_train_r2},
             run_kind='train',
         )
     else:
-        print(f"\n  Classifier - Accuracy: {clf_accuracy:.4f}, AUC: {clf_auc:.4f}")
+        print(f"\n  Classifier - Accuracy: {clf_accuracy:.4f}, AUC: {clf_auc:.4f}, "
+              f"Precision: {clf_precision:.4f}, Recall: {clf_recall:.4f}, F1: {clf_f1:.4f}")
         print(f"  Regressor  - MAE: {reg_mae:.2f} points, R2: {reg_r2:.4f}")
 
-    # Retrain on full data for production model
-    print("\n  Retraining on full dataset for production...")
-    clf = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
-    clf.fit(X_scaled, y_clf)
-    reg = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
-    reg.fit(X_scaled, y_reg)
-
-    # Save models
-    os.makedirs('models', exist_ok=True)
-    joblib.dump(clf, clf_path)
-    joblib.dump(reg, reg_path)
-    joblib.dump((imputer, scaler), scaler_path)
-    joblib.dump(feature_cols, features_path)
-
     print(f"  Random Forest models saved ({len(feature_cols)} features)")
+    print(f"    -> versioned: {clf_versioned_path}, {reg_versioned_path}")
     return clf, reg, (imputer, scaler), feature_cols
 
 
@@ -952,7 +1360,8 @@ def load_or_train_pytorch_models(engine, force_retrain=False):
                - feature_names: List of feature column names
                - target_scaler: StandardScaler for inverse-transforming margin predictions
     """
-    from sklearn.metrics import accuracy_score, roc_auc_score, mean_absolute_error, r2_score
+    from sklearn.metrics import (accuracy_score, roc_auc_score, mean_absolute_error, r2_score,
+                                 precision_score, recall_score, f1_score)
 
     if not PYTORCH_AVAILABLE:
         raise ImportError("PyTorch not available")
@@ -966,17 +1375,36 @@ def load_or_train_pytorch_models(engine, force_retrain=False):
     # Check if retraining is needed
     need_retrain = force_retrain
 
-    if not need_retrain and all(os.path.exists(p) for p in [clf_path, reg_path, scaler_path, features_path, config_path]):
-        saved_features = joblib.load(features_path)
-
-        # Check feature count against current data
+    # PRIMARY: load from bundle. Bundle stores state_dicts (not live module objects) so the
+    # loader has to re-instantiate NBAClassifier/NBARegressor at the saved input_dim.
+    bundle = load_model_bundle('nn') if not need_retrain else None
+    if bundle is not None:
+        saved_features = bundle['feature_names']
         ml_df, current_features, _, _, _, _ = _prepare_training_data(engine)
+        if len(current_features) != len(saved_features):
+            print(f"\nFeature count changed: {len(saved_features)} -> {len(current_features)}; retraining NN.")
+            need_retrain = True
+        else:
+            print(f"Loading PyTorch from bundle (version {bundle['metadata']['version']})...")
+            clf = NBAClassifier(bundle['input_dim'])
+            clf.load_state_dict(bundle['classifier_state_dict'])
+            clf.eval()
+            reg = NBARegressor(bundle['input_dim'])
+            reg.load_state_dict(bundle['regressor_state_dict'])
+            reg.eval()
+            return (clf, reg, bundle['scaler_tuple'], saved_features,
+                    bundle.get('target_scaler'))
 
+    # LEGACY FALLBACK
+    if (not need_retrain
+            and all(os.path.exists(p) for p in [clf_path, reg_path, scaler_path, features_path, config_path])):
+        saved_features = joblib.load(features_path)
+        ml_df, current_features, _, _, _, _ = _prepare_training_data(engine)
         if len(current_features) != len(saved_features):
             print(f"\nFeature count changed: {len(saved_features)} -> {len(current_features)}")
             need_retrain = True
         else:
-            print("Loading pre-trained PyTorch models...")
+            print("Loading pre-trained PyTorch models (legacy fixed-path artifacts)...")
             scaler = joblib.load(scaler_path)
             config = joblib.load(config_path)
 
@@ -1002,21 +1430,31 @@ def load_or_train_pytorch_models(engine, force_retrain=False):
     y_reg_train, y_reg_test = y_reg.values[:split_idx], y_reg.values[split_idx:]
 
     train_start, train_end, test_start, test_end = _split_window_dates(ml_df, split_idx)
+    pi_snapshot = _player_impact_snapshot(engine)
 
     input_dim = X_train.shape[1]
 
-    # Hyperparameters faithfully captured for the registry — mirror NBAClassifier/NBARegressor architecture
-    nn_clf_hp = {'class': 'NBAClassifier', 'hidden_dims': [128, 64, 32], 'dropout': 0.3,
-                 'epochs': 100, 'lr': 0.001, 'optimizer': 'Adam', 'loss': 'BCEWithLogits',
-                 'input_dim': int(input_dim)}
-    nn_reg_hp = {'class': 'NBARegressor', 'hidden_dims': [128, 64, 32], 'dropout': 0.3,
-                 'epochs': 100, 'lr': 0.001, 'optimizer': 'Adam', 'loss': 'MSE',
-                 'target_scaling': 'StandardScaler', 'input_dim': int(input_dim)}
+    # Hyperparameters faithfully captured for the registry — mirror NBAClassifier/NBARegressor architecture.
+    # player_impact_snapshot_date documents which player_impact compute_date was the latest at train time.
+    # Experiment 1 (2026-05-18): bumped dropout 0.3 -> 0.5 and added weight_decay=1e-4 to attack the
+    # 18pp NN train/test gap from baseline runs 13-14. See docs/model_tuning_log.md.
+    nn_clf_hp = {'class': 'NBAClassifier', 'hidden_dims': [128, 64, 32], 'dropout': 0.5,
+                 'epochs': 100, 'lr': 0.001, 'weight_decay': 1e-4,
+                 'optimizer': 'Adam', 'loss': 'BCEWithLogits',
+                 'input_dim': int(input_dim), 'player_impact_snapshot_date': pi_snapshot,
+                 'seed': 42}
+    nn_reg_hp = {'class': 'NBARegressor', 'hidden_dims': [128, 64, 32], 'dropout': 0.5,
+                 'epochs': 100, 'lr': 0.001, 'weight_decay': 1e-4,
+                 'optimizer': 'Adam', 'loss': 'MSE',
+                 'target_scaling': 'StandardScaler', 'input_dim': int(input_dim),
+                 'player_impact_snapshot_date': pi_snapshot, 'seed': 42}
 
     # Train classifier
     print("  Training NN classifier...")
-    clf = NBAClassifier(input_dim)
-    _train_pytorch_model(clf, X_train, y_clf_train, is_classifier=True)
+    clf = NBAClassifier(input_dim, dropout_rate=nn_clf_hp['dropout'])
+    _train_pytorch_model(clf, X_train, y_clf_train, is_classifier=True,
+                         lr=nn_clf_hp['lr'], weight_decay=nn_clf_hp['weight_decay'],
+                         seed=nn_clf_hp['seed'])
 
     # Evaluate classifier (test + train for overfit gap)
     clf.eval()
@@ -1032,14 +1470,23 @@ def load_or_train_pytorch_models(engine, force_retrain=False):
         clf_train_pred = (clf_train_prob > 0.5).astype(int)
     clf_accuracy = accuracy_score(y_clf_test, clf_pred)
     clf_auc = roc_auc_score(y_clf_test, clf_prob)
+    clf_precision = precision_score(y_clf_test, clf_pred, zero_division=0)
+    clf_recall = recall_score(y_clf_test, clf_pred, zero_division=0)
+    clf_f1 = f1_score(y_clf_test, clf_pred, zero_division=0)
     clf_train_acc = accuracy_score(y_clf_train, clf_train_pred)
     clf_train_auc = roc_auc_score(y_clf_train, clf_train_prob)
+    clf_train_precision = precision_score(y_clf_train, clf_train_pred, zero_division=0)
+    clf_train_recall = recall_score(y_clf_train, clf_train_pred, zero_division=0)
+    clf_train_f1 = f1_score(y_clf_train, clf_train_pred, zero_division=0)
 
     # Train regressor WITH target scaling
     print("  Training NN regressor (with target scaling)...")
-    reg = NBARegressor(input_dim)
+    reg = NBARegressor(input_dim, dropout_rate=nn_reg_hp['dropout'])
     target_scaler = StandardScaler()
-    _train_pytorch_model(reg, X_train, y_reg_train, is_classifier=False, target_scaler=target_scaler)
+    _train_pytorch_model(reg, X_train, y_reg_train, is_classifier=False,
+                         target_scaler=target_scaler,
+                         lr=nn_reg_hp['lr'], weight_decay=nn_reg_hp['weight_decay'],
+                         seed=nn_reg_hp['seed'])
 
     # Evaluate regressor (test + train for overfit gap)
     reg.eval()
@@ -1052,13 +1499,59 @@ def load_or_train_pytorch_models(engine, force_retrain=False):
         reg_train_pred_scaled = reg(X_train_tensor).numpy().flatten()
         reg_train_pred = target_scaler.inverse_transform(reg_train_pred_scaled.reshape(-1, 1)).flatten()
     reg_mae = mean_absolute_error(y_reg_test, reg_pred)
+    reg_rmse = float(np.sqrt(np.mean((reg_pred - y_reg_test) ** 2)))
     reg_r2 = r2_score(y_reg_test, reg_pred)
     reg_train_mae = mean_absolute_error(y_reg_train, reg_train_pred)
+    reg_train_rmse = float(np.sqrt(np.mean((reg_train_pred - y_reg_train) ** 2)))
     reg_train_r2 = r2_score(y_reg_train, reg_train_pred)
 
-    # Compare with previous models and register new ones
+    # Retrain on full data for production model (these are the weights that get saved).
+    # Hyperparams MUST mirror the eval-time ones (read from nn_clf_hp/nn_reg_hp) or the saved
+    # model won't match the registered metrics.
+    print("\n  Retraining on full dataset for production...")
+    input_dim = X_scaled.shape[1]
+    clf = NBAClassifier(input_dim, dropout_rate=nn_clf_hp['dropout'])
+    _train_pytorch_model(clf, X_scaled, y_clf.values, is_classifier=True,
+                         lr=nn_clf_hp['lr'], weight_decay=nn_clf_hp['weight_decay'],
+                         seed=nn_clf_hp['seed'])
+    clf.eval()
+
+    reg = NBARegressor(input_dim, dropout_rate=nn_reg_hp['dropout'])
+    target_scaler = StandardScaler()
+    _train_pytorch_model(reg, X_scaled, y_reg.values, is_classifier=False,
+                         target_scaler=target_scaler,
+                         lr=nn_reg_hp['lr'], weight_decay=nn_reg_hp['weight_decay'],
+                         seed=nn_reg_hp['seed'])
+    reg.eval()
+
+    # Save: bundle (versioned, full rollback fidelity) is the source of truth. Bundle stores
+    # state_dicts (not live module objects) since the module class needs to be reinstantiated
+    # at load time. Legacy fixed-path files also written for backward compat.
+    os.makedirs('models', exist_ok=True)
+    nn_bundle = {
+        'classifier_state_dict': clf.state_dict(),
+        'regressor_state_dict': reg.state_dict(),
+        'classifier_class': 'NBAClassifier',
+        'regressor_class': 'NBARegressor',
+        'input_dim': int(input_dim),
+        'target_scaler': target_scaler,
+        'scaler_tuple': scaler_tuple,
+        'feature_names': feature_cols,
+        'feature_count': len(feature_cols),
+        'hyperparameters_classifier': nn_clf_hp,
+        'hyperparameters_regressor': nn_reg_hp,
+    }
+    bundle_path = save_model_bundle('nn', nn_bundle)
+    torch.save(clf.state_dict(), clf_path)
+    torch.save(reg.state_dict(), reg_path)
+    joblib.dump(scaler_tuple, scaler_path)
+    joblib.dump(feature_cols, features_path)
+    joblib.dump({'input_dim': input_dim, 'target_scaler': target_scaler}, config_path)
+    clf_versioned_path = bundle_path
+    reg_versioned_path = bundle_path
+
+    # Compare with previous models and register new ones (now we know the versioned paths)
     if MODEL_REGISTRY_AVAILABLE:
-        # Compare classifier
         is_better_clf, clf_report = compare_models(
             engine, 'nn_classifier',
             {'accuracy': clf_accuracy, 'auc': clf_auc},
@@ -1066,7 +1559,6 @@ def load_or_train_pytorch_models(engine, force_retrain=False):
         )
         print(clf_report)
 
-        # Compare regressor
         is_better_reg, reg_report = compare_models(
             engine, 'nn_regressor',
             {'mae': reg_mae, 'r2': reg_r2},
@@ -1074,60 +1566,309 @@ def load_or_train_pytorch_models(engine, force_retrain=False):
         )
         print(reg_report)
 
-        # Register new models
         register_model(
             engine, 'nn_classifier', len(feature_cols),
-            len(X_train), len(X_test), clf_path, feature_cols,
+            len(X_train), len(X_test), clf_versioned_path, feature_cols,
             accuracy=clf_accuracy, auc=clf_auc,
+            precision=clf_precision, recall=clf_recall, f1=clf_f1,
             train_start_date=train_start, train_end_date=train_end,
             test_start_date=test_start, test_end_date=test_end,
             hyperparameters=nn_clf_hp,
-            train_metrics={'accuracy': clf_train_acc, 'auc': clf_train_auc},
+            train_metrics={'accuracy': clf_train_acc, 'auc': clf_train_auc,
+                           'precision': clf_train_precision, 'recall': clf_train_recall, 'f1': clf_train_f1},
             run_kind='train',
         )
         register_model(
             engine, 'nn_regressor', len(feature_cols),
-            len(X_train), len(X_test), reg_path, feature_cols,
-            mae=reg_mae, r2=reg_r2,
+            len(X_train), len(X_test), reg_versioned_path, feature_cols,
+            mae=reg_mae, rmse=reg_rmse, r2=reg_r2,
             train_start_date=train_start, train_end_date=train_end,
             test_start_date=test_start, test_end_date=test_end,
             hyperparameters=nn_reg_hp,
-            train_metrics={'mae': reg_train_mae, 'r2': reg_train_r2},
+            train_metrics={'mae': reg_train_mae, 'rmse': reg_train_rmse, 'r2': reg_train_r2},
             run_kind='train',
         )
     else:
-        print(f"\n  Classifier - Accuracy: {clf_accuracy:.4f}, AUC: {clf_auc:.4f}")
+        print(f"\n  Classifier - Accuracy: {clf_accuracy:.4f}, AUC: {clf_auc:.4f}, "
+              f"Precision: {clf_precision:.4f}, Recall: {clf_recall:.4f}, F1: {clf_f1:.4f}")
         print(f"  Regressor  - MAE: {reg_mae:.2f} points, R2: {reg_r2:.4f}")
 
-    # Retrain on full data for production model
+    print(f"  PyTorch models saved ({len(feature_cols)} features)")
+    print(f"    -> versioned: {clf_versioned_path}, {reg_versioned_path}")
+    return clf, reg, scaler_tuple, feature_cols, target_scaler
+
+
+# ============================================================================
+# MODEL TRAINING / LOADING - XGBOOST
+# ============================================================================
+
+try:
+    import xgboost as xgb
+    XGBOOST_AVAILABLE = True
+except ImportError:
+    XGBOOST_AVAILABLE = False
+    print("Warning: xgboost not installed. XGBoost models disabled (pip install xgboost).")
+
+
+def load_or_train_xgb_models(engine, force_retrain=False):
+    """Load or train XGBoost classifier + regressor pair.
+
+    Mirrors the bundle-based pattern of load_or_train_rf_models: tries to load the latest
+    bundle first, falls back to fixed-path legacy artifacts if a bundle is missing, retrains
+    fresh if neither exists or feature count changed.
+
+    Returns a 4-tuple (clf, reg, scaler_tuple, feature_names) — same shape as RF so the
+    PREDICT_DISPATCH adapter can reuse predict_with_xgb without special-casing.
+    """
+    from sklearn.metrics import (accuracy_score, roc_auc_score, mean_absolute_error, r2_score,
+                                 precision_score, recall_score, f1_score)
+
+    if not XGBOOST_AVAILABLE:
+        raise ImportError("xgboost not available; cannot load or train XGBoost models.")
+
+    clf_path = 'models/xgb_classifier.joblib'
+    reg_path = 'models/xgb_regressor.joblib'
+    scaler_path = 'models/scaler.joblib'
+    features_path = 'models/feature_names.joblib'
+
+    need_retrain = force_retrain
+
+    # PRIMARY: bundle
+    bundle = load_model_bundle('xgb') if not need_retrain else None
+    if bundle is not None:
+        saved_features = bundle['feature_names']
+        ml_df, current_features, _, _, _, _ = _prepare_training_data(engine)
+        if len(current_features) != len(saved_features):
+            print(f"\nFeature count changed: {len(saved_features)} -> {len(current_features)}; retraining XGB.")
+            need_retrain = True
+        else:
+            print(f"Loading XGBoost from bundle (version {bundle['metadata']['version']})...")
+            return (bundle['classifier'], bundle['regressor'],
+                    bundle['scaler_tuple'], saved_features)
+
+    # LEGACY FALLBACK
+    if (not need_retrain
+            and all(os.path.exists(p) for p in [clf_path, reg_path, scaler_path, features_path])):
+        saved_features = joblib.load(features_path)
+        ml_df, current_features, _, _, _, _ = _prepare_training_data(engine)
+        if len(current_features) != len(saved_features):
+            need_retrain = True
+        else:
+            print("Loading pre-trained XGBoost models (legacy fixed-path artifacts)...")
+            return joblib.load(clf_path), joblib.load(reg_path), joblib.load(scaler_path), saved_features
+
+    print("\nTraining XGBoost models...")
+    ml_df, feature_cols, X_scaled, y_clf, y_reg, scaler_tuple = _prepare_training_data(engine)
+    n_samples = len(X_scaled)
+    split_idx = int(n_samples * 0.8)
+    X_train, X_test = X_scaled[:split_idx], X_scaled[split_idx:]
+    y_clf_train, y_clf_test = y_clf.values[:split_idx], y_clf.values[split_idx:]
+    y_reg_train, y_reg_test = y_reg.values[:split_idx], y_reg.values[split_idx:]
+
+    train_start, train_end, test_start, test_end = _split_window_dates(ml_df, split_idx)
+    pi_snapshot = _player_impact_snapshot(engine)
+    imputer, scaler = scaler_tuple
+
+    # Hyperparameter notes: max_depth=4 + min_child_weight=10 give XGBoost a similar
+    # regularization profile to RF's (max_depth=5, min_samples_leaf=20). Boosting compounds
+    # capacity over rounds, so we go shallower than RF. learning_rate=0.1 is the sklearn-API
+    # default and works well at this dataset size.
+    xgb_clf_hp = {'n_estimators': 200, 'max_depth': 4, 'learning_rate': 0.1,
+                  'min_child_weight': 10, 'subsample': 0.8, 'colsample_bytree': 0.8,
+                  'reg_lambda': 1.0, 'random_state': 42, 'eval_metric': 'logloss',
+                  'class': 'XGBClassifier', 'player_impact_snapshot_date': pi_snapshot}
+    xgb_reg_hp = {'n_estimators': 200, 'max_depth': 4, 'learning_rate': 0.1,
+                  'min_child_weight': 10, 'subsample': 0.8, 'colsample_bytree': 0.8,
+                  'reg_lambda': 1.0, 'random_state': 42,
+                  'class': 'XGBRegressor', 'player_impact_snapshot_date': pi_snapshot}
+
+    print("  Training XGB classifier...")
+    clf = xgb.XGBClassifier(**{k: v for k, v in xgb_clf_hp.items()
+                                if k not in ('class', 'player_impact_snapshot_date')},
+                            n_jobs=-1, verbosity=0)
+    clf.fit(X_train, y_clf_train)
+    clf_prob = clf.predict_proba(X_test)[:, 1]
+    clf_pred = (clf_prob >= 0.5).astype(int)
+    clf_accuracy = accuracy_score(y_clf_test, clf_pred)
+    clf_auc = roc_auc_score(y_clf_test, clf_prob)
+    clf_precision = precision_score(y_clf_test, clf_pred, zero_division=0)
+    clf_recall = recall_score(y_clf_test, clf_pred, zero_division=0)
+    clf_f1 = f1_score(y_clf_test, clf_pred, zero_division=0)
+    clf_train_prob = clf.predict_proba(X_train)[:, 1]
+    clf_train_pred = (clf_train_prob >= 0.5).astype(int)
+    clf_train_acc = accuracy_score(y_clf_train, clf_train_pred)
+    clf_train_auc = roc_auc_score(y_clf_train, clf_train_prob)
+    clf_train_precision = precision_score(y_clf_train, clf_train_pred, zero_division=0)
+    clf_train_recall = recall_score(y_clf_train, clf_train_pred, zero_division=0)
+    clf_train_f1 = f1_score(y_clf_train, clf_train_pred, zero_division=0)
+
+    print("  Training XGB regressor...")
+    reg = xgb.XGBRegressor(**{k: v for k, v in xgb_reg_hp.items()
+                              if k not in ('class', 'player_impact_snapshot_date')},
+                           n_jobs=-1, verbosity=0)
+    reg.fit(X_train, y_reg_train)
+    reg_pred = reg.predict(X_test)
+    reg_mae = float(mean_absolute_error(y_reg_test, reg_pred))
+    reg_rmse = float(np.sqrt(np.mean((reg_pred - y_reg_test) ** 2)))
+    reg_r2 = float(r2_score(y_reg_test, reg_pred))
+    reg_train_pred = reg.predict(X_train)
+    reg_train_mae = float(mean_absolute_error(y_reg_train, reg_train_pred))
+    reg_train_rmse = float(np.sqrt(np.mean((reg_train_pred - y_reg_train) ** 2)))
+    reg_train_r2 = float(r2_score(y_reg_train, reg_train_pred))
+
+    # Retrain on full data for production
     print("\n  Retraining on full dataset for production...")
-    input_dim = X_scaled.shape[1]
-    clf = NBAClassifier(input_dim)
-    _train_pytorch_model(clf, X_scaled, y_clf.values, is_classifier=True)
-    clf.eval()
+    clf = xgb.XGBClassifier(**{k: v for k, v in xgb_clf_hp.items()
+                                if k not in ('class', 'player_impact_snapshot_date')},
+                            n_jobs=-1, verbosity=0)
+    clf.fit(X_scaled, y_clf)
+    reg = xgb.XGBRegressor(**{k: v for k, v in xgb_reg_hp.items()
+                              if k not in ('class', 'player_impact_snapshot_date')},
+                           n_jobs=-1, verbosity=0)
+    reg.fit(X_scaled, y_reg)
 
-    reg = NBARegressor(input_dim)
-    target_scaler = StandardScaler()
-    _train_pytorch_model(reg, X_scaled, y_reg.values, is_classifier=False, target_scaler=target_scaler)
-    reg.eval()
+    # E13 isotonic calibration (same scheme as RF): fit on the eval clf's 20%
+    # holdout predictions, wrap the production clf. See docs/e13_calibration_report.md.
+    xgb_calibrator = _fit_isotonic_calibrator(clf_prob, y_clf_test)
+    clf = IsotonicCalibratedClassifier(clf, xgb_calibrator)
+    print("  XGB classifier wrapped with isotonic calibrator (E13).")
 
-    # Save models
+    # E14 split-conformal intervals (same scheme as RF)
+    xgb_halfwidths = _compute_conformal_halfwidths(reg_pred, y_reg_test)
+    reg = ConformalRegressor(reg, xgb_halfwidths)
+    print(f"  XGB regressor wrapped with conformal intervals (E14): "
+          f"80%=+/-{xgb_halfwidths['80']:.1f}, 90%=+/-{xgb_halfwidths['90']:.1f} pts.")
+
+    # Save bundle (versioned + current pointer)
     os.makedirs('models', exist_ok=True)
-    torch.save(clf.state_dict(), clf_path)
-    torch.save(reg.state_dict(), reg_path)
-
-    # Always save updated scalers and features
-    joblib.dump(scaler_tuple, scaler_path)
+    xgb_bundle = {
+        'classifier': clf,
+        'regressor': reg,
+        'scaler_tuple': (imputer, scaler),
+        'feature_names': feature_cols,
+        'feature_count': len(feature_cols),
+        'hyperparameters_classifier': xgb_clf_hp,
+        'hyperparameters_regressor': xgb_reg_hp,
+        'clf_calibrator': xgb_calibrator,
+        'calibration_method': 'isotonic_on_20pct_holdout',
+        'conformal_halfwidths': xgb_halfwidths,
+        'conformal_method': 'split_conformal_on_20pct_holdout',
+    }
+    bundle_path = save_model_bundle('xgb', xgb_bundle)
+    joblib.dump(clf, clf_path)
+    joblib.dump(reg, reg_path)
+    joblib.dump((imputer, scaler), scaler_path)
     joblib.dump(feature_cols, features_path)
 
-    # Save config including target_scaler for margin inverse-transform
-    joblib.dump({
-        'input_dim': input_dim,
-        'target_scaler': target_scaler
-    }, config_path)
+    if MODEL_REGISTRY_AVAILABLE:
+        is_better_clf, clf_report = compare_models(
+            engine, 'xgb_classifier',
+            {'accuracy': clf_accuracy, 'auc': clf_auc}, len(feature_cols))
+        print(clf_report)
+        is_better_reg, reg_report = compare_models(
+            engine, 'xgb_regressor',
+            {'mae': reg_mae, 'r2': reg_r2}, len(feature_cols))
+        print(reg_report)
 
-    print(f"  PyTorch models saved ({len(feature_cols)} features)")
-    return clf, reg, scaler_tuple, feature_cols, target_scaler
+        register_model(
+            engine, 'xgb_classifier', len(feature_cols),
+            len(X_train), len(X_test), bundle_path, feature_cols,
+            accuracy=clf_accuracy, auc=clf_auc,
+            precision=clf_precision, recall=clf_recall, f1=clf_f1,
+            train_start_date=train_start, train_end_date=train_end,
+            test_start_date=test_start, test_end_date=test_end,
+            hyperparameters=xgb_clf_hp,
+            train_metrics={'accuracy': clf_train_acc, 'auc': clf_train_auc,
+                           'precision': clf_train_precision, 'recall': clf_train_recall, 'f1': clf_train_f1},
+            run_kind='train',
+        )
+        register_model(
+            engine, 'xgb_regressor', len(feature_cols),
+            len(X_train), len(X_test), bundle_path, feature_cols,
+            mae=reg_mae, rmse=reg_rmse, r2=reg_r2,
+            train_start_date=train_start, train_end_date=train_end,
+            test_start_date=test_start, test_end_date=test_end,
+            hyperparameters=xgb_reg_hp,
+            train_metrics={'mae': reg_train_mae, 'rmse': reg_train_rmse, 'r2': reg_train_r2},
+            run_kind='train',
+        )
+    else:
+        print(f"\n  XGB Classifier - Accuracy: {clf_accuracy:.4f}, AUC: {clf_auc:.4f}")
+        print(f"  XGB Regressor  - MAE: {reg_mae:.2f}, R2: {reg_r2:.4f}")
+
+    print(f"  XGBoost models saved ({len(feature_cols)} features)")
+    print(f"    -> versioned: {bundle_path}")
+    return clf, reg, (imputer, scaler), feature_cols
+
+
+def predict_with_xgb(clf, reg, scaler_tuple, feature_names, matchup_features: dict,
+                     skip_shap: bool = False):
+    """Predict with XGBoost. SHAP via TreeExplainer (same as RF).
+
+    Uncertainty caveat: unlike RF (tree votes) or NN (MC Dropout), XGBoost trees are
+    boosting-additive and don't provide cheap per-tree uncertainty. We return the point
+    estimate as `margin_mean` and synthesize a degenerate `margin_samples` array (length 100,
+    all equal to the point estimate, std=0) so downstream consumers don't break. If real
+    uncertainty bands matter later, the cleanest path is quantile regression (train separate
+    models with `objective='reg:quantileerror'` at q=0.1/0.5/0.9). Not done now.
+    """
+    imputer, scaler = scaler_tuple
+
+    X = pd.DataFrame([matchup_features])
+    for col in feature_names:
+        if col not in X.columns:
+            X[col] = np.nan
+    X = X[feature_names]
+
+    X_imputed = imputer.transform(X)
+    X_scaled = scaler.transform(X_imputed)
+
+    win_prob_classifier = float(clf.predict_proba(X_scaled)[0][1])
+    margin_mean = float(reg.predict(X_scaled)[0])
+
+    # E14 split-conformal intervals (replaces the old degenerate placeholder).
+    margin_intervals = _margin_intervals_from_reg(reg, X_scaled)
+
+    # Synthesize a degenerate uncertainty array so the dashboard's violin plot etc. don't crash.
+    margin_samples = np.full(100, margin_mean)
+    margin_std = 0.0
+
+    # PRIMARY: derive win prob from margin sign (consistent with RF/NN). With a degenerate
+    # margin distribution this is just (1 if margin > 0 else 0) — so we fall back to the
+    # classifier's probability as the primary win_prob for XGBoost.
+    win_prob = win_prob_classifier
+
+    shap_values = None
+    shap_feature_importance = {}
+    if SHAP_AVAILABLE and not skip_shap:
+        try:
+            explainer = shap.TreeExplainer(getattr(reg, '_base', reg))
+            shap_vals = explainer.shap_values(X_scaled)
+            if isinstance(shap_vals, list):
+                shap_vals = shap_vals[0]
+            shap_values = shap_vals[0] if len(shap_vals.shape) > 1 else shap_vals
+            for i, feat in enumerate(feature_names):
+                shap_feature_importance[feat] = float(shap_values[i])
+        except Exception as e:
+            print(f"Warning: XGB SHAP failed: {e}")
+
+    slot_to_player = matchup_features.get('_slot_to_player', None)
+
+    return {
+        'win_prob': win_prob,
+        'win_prob_classifier': win_prob_classifier,
+        'margin_mean': margin_mean,
+        'margin_std': margin_std,
+        'margin_samples': margin_samples,
+        'margin_interval_80': margin_intervals.get('80'),
+        'margin_interval_90': margin_intervals.get('90'),
+        'model': 'XGBoost',
+        'shap_values': shap_values,
+        'shap_feature_importance': shap_feature_importance,
+        'X_scaled': X_scaled,
+        'feature_names': feature_names,
+        'slot_to_player': slot_to_player,
+    }
 
 
 def _split_window_dates(ml_df, split_idx):
@@ -1148,35 +1889,18 @@ def _split_window_dates(ml_df, split_idx):
 
 def _prepare_training_data(engine):
     """Prepare training data (shared by RF and PyTorch)."""
-    if os.path.exists('nba_ml_features.csv'):
-        ml_df = pd.read_csv('nba_ml_features.csv')
+    if os.path.exists(FEATURES_CSV_PATH):
+        ml_df = pd.read_csv(FEATURES_CSV_PATH)
     else:
         from data_engineering.feature_engineering import build_feature_dataset, prepare_ml_dataset
         feature_df = build_feature_dataset(engine, start_date='2020-01-01')
         ml_df, _ = prepare_ml_dataset(feature_df)
-        ml_df.to_csv('nba_ml_features.csv', index=False)
+        ml_df.to_csv(FEATURES_CSV_PATH, index=False)
 
-    # Feature patterns must match those in feature_engineering.py
-    # Includes fatigue features, player projection features, and player slot features
-    feature_patterns = [
-        # Rolling statistics
-        '_L5', '_L10',
-        # Basic derived features
-        'STREAK', 'REST_DAYS', 'WIN_PCT',
-        # Fatigue features
-        'IS_BACK_TO_BACK', 'IS_3_IN_4_NIGHTS', 'GAMES_LAST',
-        'AVG_REST_LAST', 'ROAD_TRIP_LENGTH',
-        # Player projection features
-        'PROJ_PTS_FROM_PLAYERS', 'PROJ_REB_FROM_PLAYERS', 'PROJ_AST_FROM_PLAYERS',
-        'WEIGHTED_AVG_USAGE', 'WEIGHTED_AVG_TS_PCT', 'WEIGHTED_AVG_PIE',
-        'ROSTER_DEPTH_SCORE', 'STAR_PLAYER_IMPACT', 'TOP_3_SCORER_SHARE',
-        # Player slot features (integrated roster model)
-        '_SLOT_', '_IMPACT', '_AVAILABLE',
-        'TOTAL_AVAILABLE_IMPACT', 'TOTAL_MISSING_IMPACT', 'PLAYERS_OUT'
-    ]
-    feature_cols = [col for col in ml_df.columns if any(p in col for p in feature_patterns)]
-    # Exclude PLAYER_ID columns (those are for embedding models, not RF)
-    feature_cols = [col for col in feature_cols if 'PLAYER_ID' not in col]
+    # Centralized allow-list — see core/features.py for the rationale and the
+    # post-mortem on the silent-drop bug this replaced.
+    from core.features import select_features
+    feature_cols = select_features(ml_df.columns)
 
     X = ml_df[feature_cols].copy()
     y_clf = ml_df['TARGET_WIN']
@@ -1194,7 +1918,8 @@ def _prepare_training_data(engine):
     return ml_df, valid_cols, X_scaled, y_clf, y_reg, (imputer, scaler)
 
 
-def _train_pytorch_model(model, X, y, is_classifier=True, epochs=100, lr=0.001, target_scaler=None):
+def _train_pytorch_model(model, X, y, is_classifier=True, epochs=100, lr=0.001,
+                         target_scaler=None, weight_decay=0.0, seed=None):
     """
     Train a PyTorch model with early stopping and optional target scaling.
 
@@ -1239,6 +1964,14 @@ def _train_pytorch_model(model, X, y, is_classifier=True, epochs=100, lr=0.001, 
         target_scaler: The fitted scaler (for regression) to use during prediction.
                        Returns None for classification.
     """
+    # Seed for reproducibility — without this, dropout init + weight init are random per run,
+    # so two retrains of the same config produce different test metrics (~2-3pp drift on this
+    # dataset). Seeding makes A/B comparisons between hyperparameter changes actually meaningful.
+    # On CPU + Windows (no CUDA), torch.manual_seed + np.random.seed is sufficient.
+    if seed is not None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+
     X_tensor = torch.FloatTensor(X)
 
     # Scale regression targets for stable training
@@ -1261,7 +1994,9 @@ def _train_pytorch_model(model, X, y, is_classifier=True, epochs=100, lr=0.001, 
     else:
         criterion = nn.MSELoss()  # Mean squared error for regression
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    # weight_decay implements L2 regularization on the weights — small values (1e-4) pull
+    # large weights toward zero each step, which combats overfitting without changing the loss.
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     # Early stopping setup
     best_val_loss = float('inf')
@@ -1428,13 +2163,13 @@ def _prepare_embedding_training_data(engine):
 
     Returns team features (without player ID columns) + separate player ID array.
     """
-    if os.path.exists('nba_ml_features.csv'):
-        ml_df = pd.read_csv('nba_ml_features.csv')
+    if os.path.exists(FEATURES_CSV_PATH):
+        ml_df = pd.read_csv(FEATURES_CSV_PATH)
     else:
         from data_engineering.feature_engineering import build_feature_dataset, prepare_ml_dataset
         feature_df = build_feature_dataset(engine, start_date='2020-01-01')
         ml_df, _ = prepare_ml_dataset(feature_df)
-        ml_df.to_csv('nba_ml_features.csv', index=False)
+        ml_df.to_csv(FEATURES_CSV_PATH, index=False)
 
     # Create player ID mapping
     player_to_idx, idx_to_player, n_players = create_player_id_mapping(engine)
@@ -1720,10 +2455,15 @@ def predict_with_rf(clf, reg, scaler_tuple, feature_names, matchup_features: dic
     # Classifier probability (reference)
     win_prob_classifier = clf.predict_proba(X_scaled)[0][1]
 
-    # Margin samples from tree ensemble (100 trees)
+    # Margin samples from tree ensemble (100 trees) — these capture the model's
+    # *epistemic* spread. The conformal interval below captures *total* predictive
+    # uncertainty (incl. irreducible game variance) with validated coverage.
     tree_predictions = np.array([tree.predict(X_scaled)[0] for tree in reg.estimators_])
     margin_mean = np.mean(tree_predictions)
     margin_std = np.std(tree_predictions)
+
+    # E14 split-conformal intervals
+    margin_intervals = _margin_intervals_from_reg(reg, X_scaled)
 
     # PRIMARY: Derive win probability from margin samples
     # P(win) = proportion of margin samples where home team wins (margin > 0)
@@ -1736,7 +2476,7 @@ def predict_with_rf(clf, reg, scaler_tuple, feature_names, matchup_features: dic
     if SHAP_AVAILABLE and not skip_shap:
         try:
             # Use TreeExplainer for Random Forest (fast and exact)
-            explainer = shap.TreeExplainer(reg)
+            explainer = shap.TreeExplainer(getattr(reg, '_base', reg))
             shap_vals = explainer.shap_values(X_scaled)
 
             # Get SHAP values for this prediction
@@ -1761,6 +2501,8 @@ def predict_with_rf(clf, reg, scaler_tuple, feature_names, matchup_features: dic
         'margin_mean': margin_mean,
         'margin_std': margin_std,
         'margin_samples': tree_predictions,
+        'margin_interval_80': margin_intervals.get('80'),
+        'margin_interval_90': margin_intervals.get('90'),
         'model': 'Random Forest',
         'shap_values': shap_values,
         'shap_feature_importance': shap_feature_importance,
@@ -1929,6 +2671,73 @@ def load_or_train_models(engine):
 def predict_with_uncertainty(clf, reg, scaler_tuple, feature_names, matchup_features: dict):
     """Default to Random Forest prediction."""
     return predict_with_rf(clf, reg, scaler_tuple, feature_names, matchup_features)
+
+
+# ============================================================================
+# GENERIC LOAD + PREDICT DISPATCHERS
+# ============================================================================
+# These dispatchers let callers iterate model_types.MODEL_TYPES without knowing each
+# loader's tuple shape or each predict_fn's signature. To add a new model type, add it to
+# MODEL_TYPES + register its loader_fn here + register its predict adapter here. The
+# dashboard and main() prediction loop then pick it up automatically.
+
+LOADER_DISPATCH = {
+    'rf': load_or_train_rf_models,
+    'nn': load_or_train_pytorch_models,
+    'nn-embed': load_or_train_pytorch_embedding_models,
+    'xgb': load_or_train_xgb_models,
+}
+
+
+def _predict_rf_adapter(model_data, matchup, **kwargs):
+    clf, reg, scaler, feature_names = model_data
+    return predict_with_rf(clf, reg, scaler, feature_names, matchup, **kwargs)
+
+
+def _predict_nn_adapter(model_data, matchup, **kwargs):
+    clf, reg, scaler, feature_names, target_scaler = model_data
+    return predict_with_pytorch(clf, reg, scaler, feature_names, matchup,
+                                target_scaler=target_scaler, **kwargs)
+
+
+def _predict_nn_embed_adapter(model_data, matchup, **kwargs):
+    # load_or_train_pytorch_embedding_models returns 8-tuple:
+    # (clf, reg, scaler, team_features, player_to_idx, target_scaler, n_slots, embed_dim)
+    clf, reg, scaler, team_features, player_to_idx, target_scaler, n_slots, _ = model_data
+    return predict_with_pytorch_embeddings(clf, reg, scaler, team_features, player_to_idx,
+                                            matchup, target_scaler=target_scaler,
+                                            n_slots=n_slots, **kwargs)
+
+
+def _predict_xgb_adapter(model_data, matchup, **kwargs):
+    clf, reg, scaler, feature_names = model_data
+    return predict_with_xgb(clf, reg, scaler, feature_names, matchup, **kwargs)
+
+
+PREDICT_DISPATCH = {
+    'rf': _predict_rf_adapter,
+    'nn': _predict_nn_adapter,
+    'nn-embed': _predict_nn_embed_adapter,
+    'xgb': _predict_xgb_adapter,
+}
+
+
+def load_model_by_key(model_key, engine, force_retrain=False):
+    """Generic loader. Returns whatever the per-type loader returns (tuple shape varies)."""
+    if model_key not in LOADER_DISPATCH:
+        raise KeyError(f"No loader registered for model key {model_key!r}. "
+                       f"Registered: {sorted(LOADER_DISPATCH)}")
+    return LOADER_DISPATCH[model_key](engine, force_retrain=force_retrain)
+
+
+def predict_with_loaded_model(model_key, model_data, matchup, **kwargs):
+    """Generic predict dispatcher. Returns the standard prediction dict
+    (keys include win_prob, margin_mean, margin_std, margin_samples, shap_feature_importance).
+    """
+    if model_key not in PREDICT_DISPATCH:
+        raise KeyError(f"No predict adapter registered for model key {model_key!r}. "
+                       f"Registered: {sorted(PREDICT_DISPATCH)}")
+    return PREDICT_DISPATCH[model_key](model_data, matchup, **kwargs)
 
 
 # ============================================================================
@@ -2729,10 +3538,16 @@ def main():
             return
         game_dates = [(start_d + timedelta(days=i)).strftime('%Y-%m-%d')
                       for i in range((end_d - start_d).days + 1)]
+        # E7 (2026-05-18): in backfill mode, we no longer just disable --auto-injuries.
+        # Instead, the per-date loop below refreshes `auto_injury_data` from the
+        # historical_injury_report table for each game_date (point-in-time correct).
+        # If the table doesn't exist or has no rows for a date, _fetch_historical_injuries_for_date
+        # returns [] and the backfilled prediction degrades to the old "assume everyone is
+        # available" behavior for that day — same as the pre-E7 behavior, no regression.
         if args.auto_injuries:
-            print(f"\n[backfill] --auto-injuries forcibly disabled: live injury reports are "
-                  f"not point-in-time. Pass historical --injuries explicitly if needed.")
-            args.auto_injuries = False
+            print(f"\n[backfill] In backfill mode, --auto-injuries data is sourced from the "
+                  f"historical_injury_report table (point-in-time) instead of the live ESPN feed. "
+                  f"Re-runnable: row counts will not change unless the scraper repopulates the table.")
         if not args.no_plot:
             print(f"[backfill] --no-plot forcibly enabled to avoid generating one PNG per day.")
             args.no_plot = True
@@ -2821,6 +3636,19 @@ def main():
     for date_idx, game_date in enumerate(game_dates):
         if backfill_mode:
             print(f"\n{'='*60}\n[{date_idx + 1}/{len(game_dates)}] {game_date}\n{'='*60}")
+            # E7: refresh auto_injury_data from historical_injury_report for THIS date so
+            # the existing per-game merge logic below picks up point-in-time injuries.
+            auto_injury_data = {}
+            historical_injuries = _fetch_historical_injuries_for_date(engine, game_date)
+            for inj in historical_injuries:
+                ta = inj.get('team_abbrev')
+                if ta:
+                    auto_injury_data.setdefault(ta, []).append(inj)
+            if historical_injuries:
+                print(f"  Loaded {len(historical_injuries)} pre-game injuries from historical_injury_report")
+            else:
+                print(f"  (No pre-game injuries in historical_injury_report for {game_date} — "
+                      f"backfilled prediction will assume all players available)")
 
         # Get scheduled games for this date
         games = get_scheduled_games(game_date)

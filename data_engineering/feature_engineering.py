@@ -308,6 +308,111 @@ def calculate_rolling_features(df: pd.DataFrame,
     return df
 
 
+# ============================================================================
+# E10 — Opponent-strength adjustment for rolling stats
+# ============================================================================
+# For each team's recent offensive form (e.g. PTS_L10), the raw rolling mean
+# is opponent-blind: 30 PPG against tankers looks identical to 30 PPG against
+# contenders. Lit-review consensus this is the recurring biggest gap of pure
+# box-score features.
+#
+# This function adds two derived layers:
+#   1) `{stat}_ALLOWED_L10`  — what THIS team allowed opponents to do over
+#      its last 10 games (e.g. PTS_ALLOWED_L10 = avg points scored against us)
+#   2) `OPP_ADJ_{stat}_L10`  — our recent offensive form minus the opponent's
+#      typical allowed value: positive = we exceed their typical defense
+#
+# Curated subset (9 stats) — picked for highest expected lift: scoring, efficiency,
+# ratings, pace, plus-minus. Skip the long tail of hustle/tracking stats to keep
+# feature-count growth modest (+18 columns total: 9 ALLOWED + 9 OPP_ADJ).
+# ============================================================================
+
+E10_ADJUSTABLE_STATS = [
+    'PTS', 'offensiveRating', 'netRating',
+    'TS_PCT', 'EFG_PCT', 'FG_PCT', 'FG3_PCT',
+    'pace', 'PLUS_MINUS',
+]
+
+
+def add_opponent_adjusted_rolling_features(df: pd.DataFrame) -> pd.DataFrame:
+    """E10: add opponent-strength-adjusted variants of select rolling stats.
+
+    *** NOT CALLED IN THE PRODUCTION PIPELINE (disabled 2026-05-19). ***
+    The E3 noise-aware ablation found this significantly regressed RF MAE
+    (paired-t p=0.011-0.023) and never helped. Retained for re-evaluation only;
+    to revive, re-add the call in build_feature_dataset and flip
+    core.features.ENABLE_E10_DEFAULT. See docs/e3_ablation_report.md.
+
+
+    Three passes:
+      1. For each team-game row, join opponent's same-game raw stat (intermediate).
+      2. Roll opponent-stat per team to get this team's `{stat}_ALLOWED_L10`
+         (shift(1) so we never see the current game's value).
+      3. For each team-game row, join opponent's `{stat}_ALLOWED_L10` and
+         subtract from this team's `{stat}_L10`.
+
+    Returns df enriched with up to 2 * len(adjust_stats) new columns.
+    """
+    adjust_stats = [s for s in E10_ADJUSTABLE_STATS if s in df.columns]
+    if not adjust_stats:
+        print('  [E10] No adjustable stats present; skipping.')
+        return df
+
+    print(f'  [E10] Building opp-allowed + opp-adjusted features for {len(adjust_stats)} stats...')
+
+    # Pass 1: pull opponent's same-game raw stat onto every row.
+    opp_raw = df[['GAME_ID', 'TEAM_ID'] + adjust_stats].copy()
+    opp_raw = opp_raw.rename(columns={
+        'TEAM_ID': '_E10_OPP_TEAM_ID',
+        **{s: f'_E10_opp_{s}' for s in adjust_stats},
+    })
+    df = df.merge(opp_raw, on='GAME_ID', how='left')
+    df = df[df['TEAM_ID'] != df['_E10_OPP_TEAM_ID']].copy()
+    # Some GAME_IDs have >2 rows (data quality dupes) — collapse to one per (game, team)
+    if 'PTS' in df.columns:
+        df = df.sort_values('PTS', ascending=False).drop_duplicates(
+            subset=['GAME_ID', 'TEAM_ID'], keep='first'
+        )
+
+    # Pass 2: per-team rolling of opp_X → `{stat}_ALLOWED_L10`
+    df = df.sort_values(['TEAM_ID', 'GAME_DATE']).copy()
+    for s in adjust_stats:
+        df[f'{s}_ALLOWED_L10'] = (
+            df.groupby('TEAM_ID')[f'_E10_opp_{s}']
+            .transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
+        )
+
+    df = df.drop(columns=[f'_E10_opp_{s}' for s in adjust_stats] + ['_E10_OPP_TEAM_ID'])
+
+    # Pass 3: join opponent's ALLOWED_L10 onto each row, compute OPP_ADJ
+    allowed_cols = ['GAME_ID', 'TEAM_ID'] + [f'{s}_ALLOWED_L10' for s in adjust_stats]
+    opp_allowed = df[allowed_cols].copy()
+    opp_allowed = opp_allowed.rename(columns={
+        'TEAM_ID': '_E10_OPP_TEAM_ID2',
+        **{f'{s}_ALLOWED_L10': f'_E10_OPP_{s}_ALLOWED' for s in adjust_stats},
+    })
+    df = df.merge(opp_allowed, on='GAME_ID', how='left')
+    df = df[df['TEAM_ID'] != df['_E10_OPP_TEAM_ID2']].copy()
+    if 'PTS' in df.columns:
+        df = df.sort_values('PTS', ascending=False).drop_duplicates(
+            subset=['GAME_ID', 'TEAM_ID'], keep='first'
+        )
+
+    added = 0
+    for s in adjust_stats:
+        team_col = f'{s}_L10'
+        opp_col = f'_E10_OPP_{s}_ALLOWED'
+        if team_col in df.columns:
+            df[f'OPP_ADJ_{s}_L10'] = df[team_col] - df[opp_col]
+            added += 1
+
+    drop_cols = [c for c in df.columns if c.startswith('_E10_')]
+    df = df.drop(columns=drop_cols)
+
+    print(f'  [E10] Added {added} OPP_ADJ_*_L10 + {len(adjust_stats)} *_ALLOWED_L10 features.')
+    return df
+
+
 def calculate_win_streak(df: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate current win/loss streak for each team.
@@ -913,14 +1018,15 @@ def _process_player_slots_for_game_bulk(game_id, game_date, home_team_id, away_t
         return (game_id, default_features, str(e))
 
 
-def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n_slots: int = 8) -> pd.DataFrame:
+def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n_slots: int = 8,
+                                    availability_source: str = 'pregame') -> pd.DataFrame:
     """
     Calculate player slot features for historical games.
 
     For each game, creates features for the top N players (by impact) on each team.
     Each player slot has:
     - SLOT_X_IMPACT: The player's historical impact score
-    - SLOT_X_AVAILABLE: 1 if playing, 0 if OUT (DNP/DND/NWT)
+    - SLOT_X_AVAILABLE: 1 if playing, 0 if OUT (per the chosen source)
     - SLOT_X_PLAYER_ID: The player's ID (for NN embedding, ignored by RF)
 
     The model learns how player availability affects outcomes, and SHAP can
@@ -934,6 +1040,14 @@ def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n
         df: DataFrame with game data (must have IS_HOME column)
         n_jobs: Number of parallel workers (not used in optimized version)
         n_slots: Number of player slots per team (default: 8)
+        availability_source: Where to source SLOT_*_AVAILABLE values from:
+            - 'pregame' (default, E7): NBA official pre-game injury report via
+              historical_injury_report table — point-in-time correct for training.
+            - 'postgame' (legacy): post-game boxscore DNP comments — fast but leaks
+              into training (model sees who actually showed up). Retained for A/B
+              sanity checks and for any code path that needs ground-truth attendance.
+            - 'auto': try pregame first; for game_ids not covered by the injury
+              report (e.g., pre-2021-22 data), fall back to postgame for that subset.
 
     Returns:
         DataFrame with player slot features added
@@ -942,7 +1056,8 @@ def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n
         from data_engineering.player_impact import (
             ensure_player_impact_table,
             bulk_fetch_player_impacts,
-            bulk_fetch_player_availability
+            bulk_fetch_player_availability,
+            bulk_fetch_pregame_availability,
         )
     except ImportError as e:
         print(f"  Warning: Required module not available ({e}), skipping player slot features")
@@ -1015,8 +1130,28 @@ def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n
         print("    Continuing with default values...")
 
     # STEP 2: Bulk fetch all player availability (single query)
-    print("    Step 2/3: Bulk fetching player availability...")
-    availability_lookup = bulk_fetch_player_availability(engine, all_game_ids)
+    # E7 (2026-05-18): default source switched from post-game boxscore to pre-game
+    # official injury report. This eliminates the training-data leak where the model
+    # knew before tipoff whether each player actually showed up.
+    print(f"    Step 2/3: Bulk fetching player availability (source={availability_source})...")
+    if availability_source == 'pregame':
+        availability_lookup = bulk_fetch_pregame_availability(engine, all_game_ids)
+    elif availability_source == 'postgame':
+        availability_lookup = bulk_fetch_player_availability(engine, all_game_ids)
+    elif availability_source == 'auto':
+        # Pregame for everything in the injury_report table; postgame as fallback for the rest.
+        pre = bulk_fetch_pregame_availability(engine, all_game_ids)
+        covered_game_ids = {k[0] for k in pre.keys()}
+        uncovered = [g for g in all_game_ids if g not in covered_game_ids]
+        if uncovered:
+            print(f"    Pregame coverage: {len(covered_game_ids)}/{len(all_game_ids)} "
+                  f"games; falling back to postgame for {len(uncovered)} uncovered games")
+            post = bulk_fetch_player_availability(engine, uncovered)
+            pre.update(post)
+        availability_lookup = pre
+    else:
+        raise ValueError(f"Unknown availability_source: {availability_source!r}. "
+                         f"Use 'pregame' | 'postgame' | 'auto'.")
 
     # STEP 3: Process all games using in-memory lookups (no DB queries)
     print("    Step 3/3: Processing games with in-memory lookups...")
@@ -1133,11 +1268,21 @@ def create_matchup_features(df: pd.DataFrame) -> pd.DataFrame:
     Create game-level features by combining both teams' stats.
 
     For each game, we want:
-    - Team's features
-    - Opponent's features
-    - Differential features (team - opponent)
+    - Team's features (renamed to HOME_* on the home team's row)
+    - Opponent's features (renamed to AWAY_* on the away team's row)
+    - Differential features (team - opponent) — created later in prepare_ml_dataset
 
     This transforms from team-game rows to game rows.
+
+    E8 fix (2026-05-18): `calculate_player_slot_features` and the legacy injury-impact
+    function write game-level columns (already prefixed HOME_/AWAY_/DIFF_) to BOTH the
+    home and away team-game rows. If we blindly re-prefix everything here we get
+    `HOME_HOME_SLOT_1_IMPACT == AWAY_HOME_SLOT_1_IMPACT` (identical duplicates) and
+    `DIFF_AWAY_SLOT_1_IMPACT == 0` (always — different name for the same column). That
+    bloated the input vector to 836 cols with ~56 duplicates and ~16 constant-zero
+    columns. The fix below excludes already-prefixed columns from the rename, so they
+    flow through home_df once and the AWAY/DIFF columns are pulled only from away_df
+    when they don't already carry a prefix.
     """
     # Get unique games
     games = df[['GAME_ID', 'GAME_DATE']].drop_duplicates()
@@ -1146,16 +1291,25 @@ def create_matchup_features(df: pd.DataFrame) -> pd.DataFrame:
     home_df = df[df['IS_HOME'] == 1].copy()
     away_df = df[df['IS_HOME'] == 0].copy()
 
+    # A column needs the HOME_/AWAY_ prefix added only if it's a per-team feature
+    # without an existing side-marker. Game-level features (HOME_SLOT_*, AWAY_SLOT_*,
+    # DIFF_AVAILABLE_IMPACT, ...) already encode their side and should pass through unchanged.
+    def needs_prefix(col):
+        return (col not in ['GAME_ID', 'GAME_DATE', 'MATCHUP']
+                and not col.startswith('HOME_')
+                and not col.startswith('AWAY_')
+                and not col.startswith('DIFF_'))
+
     # Rename columns to distinguish home vs away
-    home_cols = {col: f'HOME_{col}' for col in home_df.columns
-                 if col not in ['GAME_ID', 'GAME_DATE', 'MATCHUP']}
-    away_cols = {col: f'AWAY_{col}' for col in away_df.columns
-                 if col not in ['GAME_ID', 'GAME_DATE', 'MATCHUP']}
+    home_cols = {col: f'HOME_{col}' for col in home_df.columns if needs_prefix(col)}
+    away_cols = {col: f'AWAY_{col}' for col in away_df.columns if needs_prefix(col)}
 
     home_df = home_df.rename(columns=home_cols)
     away_df = away_df.rename(columns=away_cols)
 
-    # Merge home and away for each game
+    # Merge home and away for each game. The away_df contribution carries only the
+    # freshly-renamed AWAY_* columns (plus GAME_ID for the join) — already-prefixed
+    # columns are excluded to avoid duplicating values that home_df already carries.
     matchup_df = home_df.merge(
         away_df[['GAME_ID'] + list(away_cols.values())],
         on='GAME_ID',
@@ -1173,7 +1327,8 @@ def build_feature_dataset(engine,
                           start_date: str = '2022-01-01',
                           end_date: str = '2026-12-31',
                           include_player_features: bool = True,
-                          include_legacy_injury_features: bool = False) -> pd.DataFrame:
+                          include_legacy_injury_features: bool = False,
+                          availability_source: str = 'pregame') -> pd.DataFrame:
     """
     Main function to build the complete feature dataset.
 
@@ -1346,6 +1501,12 @@ def build_feature_dataset(engine,
 
     game_df = calculate_rolling_features(game_df, available_stats, windows=[5, 10])
 
+    # E10 (opponent-strength adjustment) was REMOVED from the production pipeline
+    # on 2026-05-19 after the E3 noise-aware ablation found it significantly
+    # *regressed* RF MAE (paired-t p=0.011-0.023) while helping nothing. The
+    # function `add_opponent_adjusted_rolling_features` is retained below for
+    # future re-evaluation but is no longer called. See docs/e3_ablation_report.md.
+
     # Calculate other derived features
     print("  Calculating win streaks...")
     game_df = calculate_win_streak(game_df)
@@ -1364,11 +1525,11 @@ def build_feature_dataset(engine,
             # Verify features were added
             player_cols = [c for c in game_df.columns if 'PROJ_' in c or 'WEIGHTED_AVG' in c or 'ROSTER_DEPTH' in c]
             if player_cols:
-                print(f"  ✓ Added {len(player_cols)} player projection columns")
+                print(f"  [OK] Added {len(player_cols)} player projection columns")
             else:
-                print("  ⚠ Warning: No player projection columns were added")
+                print("  [WARN] No player projection columns were added")
         except Exception as e:
-            print(f"  ✗ Error calculating player features: {e}")
+            print(f"  [ERR] Error calculating player features: {e}")
             print("    Continuing without player features...")
 
         # Step 8c: Calculate injury impact features (legacy - skipped by default)
@@ -1379,9 +1540,9 @@ def build_feature_dataset(engine,
                 # Verify features were added
                 injury_cols = [c for c in game_df.columns if 'INJURY_IMPACT' in c]
                 if injury_cols:
-                    print(f"  ✓ Added {len(injury_cols)} injury impact columns")
+                    print(f"  [OK] Added {len(injury_cols)} injury impact columns")
             except Exception as e:
-                print(f"  ✗ Error calculating injury features: {e}")
+                print(f"  [ERR] Error calculating injury features: {e}")
                 print("    Continuing without injury features...")
         else:
             print("\n[10/11] Skipping legacy injury impact features (use --include-legacy-injury to enable)")
@@ -1389,16 +1550,16 @@ def build_feature_dataset(engine,
         # Step 8d: Calculate player slot features (NEW - integrated roster model)
         print("\n[11/11] Calculating player slot features (integrated roster model)...")
         try:
-            game_df = calculate_player_slot_features(engine, game_df)
+            game_df = calculate_player_slot_features(engine, game_df, availability_source=availability_source)
             # Verify features were added
             slot_cols = [c for c in game_df.columns if '_SLOT_' in c]
             derived_cols = [c for c in game_df.columns if 'TOTAL_AVAILABLE_IMPACT' in c or 'TOTAL_MISSING_IMPACT' in c]
             if slot_cols:
-                print(f"  ✓ Added {len(slot_cols)} player slot columns + {len(derived_cols)} derived columns")
+                print(f"  [OK] Added {len(slot_cols)} player slot columns + {len(derived_cols)} derived columns")
             else:
-                print("  ⚠ Warning: No player slot columns were added")
+                print("  [WARN] No player slot columns were added")
         except Exception as e:
-            print(f"  ✗ Error calculating player slot features: {e}")
+            print(f"  [ERR] Error calculating player slot features: {e}")
             print("    Continuing without player slot features...")
     else:
         print("\n[9/11] Skipping player projection features (--no-player-features flag)")
@@ -1422,6 +1583,129 @@ def build_feature_dataset(engine,
     return game_df
 
 
+def _join_elo_features(matchup_df: pd.DataFrame) -> pd.DataFrame:
+    """E9 (2026-05-19): join pre-game ELO ratings from `team_elo_pregame` onto matchup_df.
+
+    Adds columns HOME_ELO, AWAY_ELO, ELO_DIFF, ELO_P_HOME. Silent no-op if the table
+    is empty or unreachable — the model can still train without ELO, but feature_count
+    will be smaller and the comparison vs the ELO-augmented run will be visible.
+    """
+    try:
+        from core.db import get_engine
+        engine = get_engine()
+        try:
+            elo_df = pd.read_sql(text("""
+                SELECT game_id, home_elo, away_elo, elo_diff, elo_p_home
+                FROM team_elo_pregame
+            """), engine)
+        finally:
+            engine.dispose()
+    except Exception as e:
+        print(f"  [E9] Could not load team_elo_pregame ({e}); skipping ELO features")
+        return matchup_df
+
+    if len(elo_df) == 0:
+        print("  [E9] team_elo_pregame is empty; skipping ELO features")
+        return matchup_df
+
+    elo_df = elo_df.rename(columns={
+        'game_id': 'GAME_ID',
+        'home_elo': 'HOME_ELO',
+        'away_elo': 'AWAY_ELO',
+        'elo_diff': 'ELO_DIFF',
+        'elo_p_home': 'ELO_P_HOME',
+    })
+    # GAME_ID needs the same dtype for merge to work
+    matchup_df['GAME_ID'] = matchup_df['GAME_ID'].astype('int64')
+    elo_df['GAME_ID'] = elo_df['GAME_ID'].astype('int64')
+
+    before = len(matchup_df)
+    matchup_df = matchup_df.merge(elo_df, on='GAME_ID', how='left')
+    n_matched = matchup_df['HOME_ELO'].notna().sum()
+    print(f"  [E9] Joined ELO features: {n_matched}/{before} games matched ({n_matched/max(1,before)*100:.1f}%)")
+    return matchup_df
+
+
+def _join_lineup_features(matchup_df: pd.DataFrame) -> pd.DataFrame:
+    """E11 (2026-05-19): join LeagueDashLineups 5-man synergy features from
+    `team_lineup_snapshots`. For each game, look up each team's snapshot from
+    the most recent month-end on/before the game date (point-in-time correct).
+
+    *** NOT CALLED IN THE PRODUCTION PIPELINE (disabled 2026-05-19). ***
+    The E3 noise-aware ablation found no statistically significant improvement
+    on any model/metric. Retained for re-evaluation only; to revive, re-add the
+    call in prepare_ml_dataset and flip core.features.ENABLE_E11_DEFAULT.
+    See docs/e3_ablation_report.md.
+
+    Adds 9 features per side: HOME_LINEUP_*, AWAY_LINEUP_*. Silent no-op if the
+    table is empty or unreachable.
+    """
+    try:
+        from core.db import get_engine
+        engine = get_engine()
+        try:
+            snap_df = pd.read_sql(text("""
+                SELECT snapshot_date, team_id,
+                       lineup_top_min, lineup_top_net_rtg, lineup_top_off_rtg,
+                       lineup_top_def_rtg, lineup_top_pace, lineup_top_ts_pct,
+                       lineup_top5_avg_net_rtg, lineup_top5_min_share, lineup_n_active
+                FROM team_lineup_snapshots
+                ORDER BY team_id, snapshot_date
+            """), engine)
+        finally:
+            engine.dispose()
+    except Exception as e:
+        print(f"  [E11] Could not load team_lineup_snapshots ({e}); skipping lineup features")
+        return matchup_df
+
+    if len(snap_df) == 0:
+        print("  [E11] team_lineup_snapshots is empty; skipping lineup features")
+        return matchup_df
+
+    snap_df['snapshot_date'] = pd.to_datetime(snap_df['snapshot_date'])
+    matchup_df['GAME_DATE'] = pd.to_datetime(matchup_df['GAME_DATE'])
+
+    feat_cols = ['lineup_top_min', 'lineup_top_net_rtg', 'lineup_top_off_rtg',
+                 'lineup_top_def_rtg', 'lineup_top_pace', 'lineup_top_ts_pct',
+                 'lineup_top5_avg_net_rtg', 'lineup_top5_min_share', 'lineup_n_active']
+
+    # Build a (team_id, snapshot_date)-sorted snapshot per team, then merge_asof
+    # with each game date to pick the most recent prior snapshot.
+    snap_sorted = snap_df.sort_values('snapshot_date').reset_index(drop=True)
+
+    for side, id_col in [('HOME', 'HOME_TEAM_ID'), ('AWAY', 'AWAY_TEAM_ID')]:
+        if id_col not in matchup_df.columns:
+            # Fall back to TEAM_ID for home side (away id won't exist on the row by this name)
+            print(f"  [E11] Column {id_col} not in matchup_df; skipping {side} lineup features")
+            continue
+
+        left = matchup_df[['GAME_ID', 'GAME_DATE', id_col]].copy().rename(columns={id_col: 'team_id'})
+        left['team_id'] = left['team_id'].astype('int64')
+        left = left.sort_values('GAME_DATE').reset_index(drop=True)
+
+        right = snap_sorted[['team_id', 'snapshot_date'] + feat_cols].copy()
+        right['team_id'] = right['team_id'].astype('int64')
+
+        merged = pd.merge_asof(
+            left,
+            right,
+            left_on='GAME_DATE', right_on='snapshot_date',
+            by='team_id', direction='backward', allow_exact_matches=True,
+        )
+        rename_map = {c: f'{side}_{c.upper()}' for c in feat_cols}
+        merged = merged.rename(columns=rename_map)
+        merged = merged[['GAME_ID'] + list(rename_map.values())]
+
+        matchup_df['GAME_ID'] = matchup_df['GAME_ID'].astype('int64')
+        merged['GAME_ID'] = merged['GAME_ID'].astype('int64')
+        matchup_df = matchup_df.merge(merged, on='GAME_ID', how='left')
+
+    n_matched_home = matchup_df.get('HOME_LINEUP_TOP_NET_RTG', pd.Series()).notna().sum()
+    print(f"  [E11] Joined lineup features: {n_matched_home}/{len(matchup_df)} HOME games matched "
+          f"({n_matched_home/max(1,len(matchup_df))*100:.1f}%) - early-season games lack snapshots")
+    return matchup_df
+
+
 def prepare_ml_dataset(df: pd.DataFrame) -> Tuple[pd.DataFrame, list]:
     """
     Prepare the final dataset for ML by selecting features and creating
@@ -1433,34 +1717,37 @@ def prepare_ml_dataset(df: pd.DataFrame) -> Tuple[pd.DataFrame, list]:
     """
     # Create matchup-level features (one row per game)
     matchup_df = create_matchup_features(df)
+    # Collapse latent duplicate game rows. A small number of GAME_IDs carry >2
+    # team rows in game_list (data-quality issue in ingest); without this they
+    # propagate as duplicate matchup rows (~1023 of them). This dedup used to be
+    # an accidental side effect of E10's self-join — made standalone here after
+    # E10 was removed (2026-05-19) so the fix survives independent of E10.
+    _before_dedup = len(matchup_df)
+    matchup_df = matchup_df.drop_duplicates(subset=['GAME_ID'], keep='first').reset_index(drop=True)
+    if _before_dedup != len(matchup_df):
+        print(f"  [dedup] Collapsed {_before_dedup - len(matchup_df)} duplicate game rows "
+              f"({_before_dedup} -> {len(matchup_df)})")
+
+    # E9: attach pre-game ELO ratings (KEPT — only feature with a significant
+    # walk-forward gain in the E3 ablation: RF AUC +0.013, p=0.012-0.016).
+    matchup_df = _join_elo_features(matchup_df)
+    # E11 (LeagueDashLineups 5-man synergy) was REMOVED from the production
+    # pipeline on 2026-05-19 — the E3 noise-aware ablation found no statistically
+    # significant improvement on any model/metric. `_join_lineup_features` is
+    # retained below for future re-evaluation but is no longer called.
+    # See docs/e3_ablation_report.md.
 
     # Define feature columns (rolling averages only - no current game stats!)
     # Added fatigue features: IS_BACK_TO_BACK, IS_3_IN_4, GAMES_LAST, AVG_REST, ROAD_TRIP
     # Added player projection features: PROJ_*, WEIGHTED_*, ROSTER_*, STAR_*, TOP_3_*
     # Added injury impact features: INJURY_IMPACT
     # Added player slot features: SLOT_*_IMPACT, SLOT_*_AVAILABLE, TOTAL_*_IMPACT, PLAYERS_OUT
-    feature_patterns = ['_L5', '_L10', 'STREAK', 'REST_DAYS', 'WIN_PCT',
-                        'IS_BACK_TO_BACK', 'IS_3_IN_4_NIGHTS', 'GAMES_LAST',
-                        'AVG_REST_LAST', 'ROAD_TRIP_LENGTH',
-                        'PROJ_PTS_FROM_PLAYERS', 'PROJ_REB_FROM_PLAYERS', 'PROJ_AST_FROM_PLAYERS',
-                        'WEIGHTED_AVG_USAGE', 'WEIGHTED_AVG_TS_PCT', 'WEIGHTED_AVG_PIE',
-                        'ROSTER_DEPTH_SCORE', 'STAR_PLAYER_IMPACT', 'TOP_3_SCORER_SHARE',
-                        'INJURY_IMPACT',
-                        # Player slot features (integrated roster model)
-                        '_SLOT_', '_AVAILABLE', '_IMPACT',
-                        'TOTAL_AVAILABLE_IMPACT', 'TOTAL_MISSING_IMPACT', 'PLAYERS_OUT']
-
-    # Exclude PLAYER_ID columns - they're for lookup/embedding, not direct features for RF
-    # (NN will handle these separately via embedding layer)
-
-    # Get all feature columns
-    all_features = []
-    for col in matchup_df.columns:
-        # Skip PLAYER_ID columns - these are for SHAP interpretation, not model features
-        if 'PLAYER_ID' in col:
-            continue
-        if any(pattern in col for pattern in feature_patterns):
-            all_features.append(col)
+    # Single source of truth: core.features. The CSV always writes the full set
+    # (all toggles on); training/eval modules call select_features() with their
+    # own toggle args. (Also tolerate INJURY_IMPACT here as a legacy alias for
+    # the matching `_IMPACT` pattern already in BASE_PATTERNS.)
+    from core.features import select_features
+    all_features = select_features(matchup_df.columns)
 
     # Create differential features (home - away)
     diff_features = []
@@ -1506,6 +1793,12 @@ if __name__ == '__main__':
                        help='Start date for data (default: 2022-01-01)')
     parser.add_argument('--end-date', type=str, default='2026-12-31',
                        help='End date for data (default: 2026-12-31)')
+    parser.add_argument('--availability-source', type=str, default='pregame',
+                       choices=['pregame', 'postgame', 'auto'],
+                       help='Source for SLOT_*_AVAILABLE values. Use postgame to disable E7.')
+    parser.add_argument('--output-csv', type=str, default='nba_ml_features.csv',
+                       help='Output CSV path (default: nba_ml_features.csv). Useful when '
+                            'building an ablation variant (e.g. nba_ml_features_no_e7.csv).')
     args = parser.parse_args()
 
     # Create database connection
@@ -1517,7 +1810,8 @@ if __name__ == '__main__':
         start_date=args.start_date,
         end_date=args.end_date,
         include_player_features=not args.no_player_features,
-        include_legacy_injury_features=args.include_legacy_injury
+        include_legacy_injury_features=args.include_legacy_injury,
+        availability_source=args.availability_source,
     )
 
     # Prepare ML-ready dataset
@@ -1562,7 +1856,7 @@ if __name__ == '__main__':
     print(f"  Avg margin: {ml_df['TARGET_MARGIN'].mean():.1f} points")
 
     # Save to CSV for later use
-    output_file = 'nba_ml_features.csv'
+    output_file = args.output_csv
     ml_df.to_csv(output_file, index=False)
     print(f"\nDataset saved to {output_file}")
 

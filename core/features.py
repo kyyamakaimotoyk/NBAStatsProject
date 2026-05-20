@@ -63,6 +63,12 @@ E9_ELO_PATTERNS: tuple = ('HOME_ELO', 'AWAY_ELO', 'ELO_DIFF', 'ELO_P_HOME')
 # E11: 5-man lineup snapshots (joined from team_lineup_snapshots)
 E11_LINEUP_PATTERNS: tuple = ('LINEUP_',)
 
+# Track A: playoff series-context (joined from playoff_series_context). Zero for
+# non-playoff games, so harmless to regular-season models; only "activates" in the
+# postseason. Under evaluation (playoff-improvement plan) — kept on by default once
+# the CSV carries them; the keep/drop decision is gated on the Track-A ablation.
+SERIES_PATTERNS: tuple = ('SERIES_', 'FACES_ELIM', 'HAS_HCA')
+
 # E10: opponent-strength-adjusted rolling stats. These have names like
 # HOME_OPP_ADJ_PTS_L10 / AWAY_PTS_ALLOWED_L10 — both end in `_L10` so they
 # are caught by BASE_PATTERNS. To disable E10 we POST-FILTER by regex.
@@ -92,10 +98,15 @@ E10_OPP_ADJ_REGEX = re.compile(r'(OPP_ADJ_|_ALLOWED_L10)')
 ENABLE_E9_DEFAULT = True
 ENABLE_E10_DEFAULT = False
 ENABLE_E11_DEFAULT = False
+ENABLE_SERIES_DEFAULT = False  # Track A: E17 ablation found NO significant playoff gain
+                               # (RF dAUC -0.014, XGB McNemar 26/26, all CIs cross zero).
+                               # Build/table retained for re-eval as playoff data grows;
+                               # off in production. See docs/playoff_improvement_plan.md.
 
 
 def get_active_patterns(*, enable_e9: bool = ENABLE_E9_DEFAULT,
-                        enable_e11: bool = ENABLE_E11_DEFAULT) -> tuple:
+                        enable_e11: bool = ENABLE_E11_DEFAULT,
+                        enable_series: bool = ENABLE_SERIES_DEFAULT) -> tuple:
     """Return the substring-pattern tuple for the given ablation config.
 
     E10 isn't here because it's toggled via post-filter regex (see select_features).
@@ -106,6 +117,8 @@ def get_active_patterns(*, enable_e9: bool = ENABLE_E9_DEFAULT,
         patterns.extend(E9_ELO_PATTERNS)
     if enable_e11:
         patterns.extend(E11_LINEUP_PATTERNS)
+    if enable_series:
+        patterns.extend(SERIES_PATTERNS)
     return tuple(patterns)
 
 
@@ -115,16 +128,19 @@ def select_features(
     enable_e9: bool = ENABLE_E9_DEFAULT,
     enable_e10: bool = ENABLE_E10_DEFAULT,
     enable_e11: bool = ENABLE_E11_DEFAULT,
+    enable_series: bool = ENABLE_SERIES_DEFAULT,
 ) -> list:
     """Select model-feature columns from df.columns given experiment toggles.
 
     Defaults reflect the E3 noise-aware ablation decision: E9 on, E10/E11 off.
-    See docs/e3_ablation_report.md for the per-feature evidence.
+    Track-A series-context on by default (harmless to regular season). See
+    docs/e3_ablation_report.md and docs/playoff_improvement_plan.md.
 
     PLAYER_ID columns are always excluded (they're for embedding/SHAP, not as
     direct RF/XGB/NN inputs).
     """
-    patterns = get_active_patterns(enable_e9=enable_e9, enable_e11=enable_e11)
+    patterns = get_active_patterns(enable_e9=enable_e9, enable_e11=enable_e11,
+                                   enable_series=enable_series)
     cols = [c for c in df_columns if any(p in c for p in patterns)]
     cols = [c for c in cols if 'PLAYER_ID' not in c]
 

@@ -1145,6 +1145,7 @@ def make_predictions(n_clicks, game_date):
             away_id = game['AWAY_TEAM_ID']
             home_team = game['HOME_TEAM']
             away_team = game['AWAY_TEAM']
+            season_type = game.get('SEASON_TYPE', 'regular')
 
             home_features = get_team_rolling_stats(engine, home_id, game_date)
             away_features = get_team_rolling_stats(engine, away_id, game_date)
@@ -1161,6 +1162,7 @@ def make_predictions(n_clicks, game_date):
                 predictions_by_key[spec.key].append({
                     'home_team': home_team,
                     'away_team': away_team,
+                    'season_type': season_type,  # regular | playoffs | playin | ...
                     'win_prob': result['win_prob'],
                     # E13: isotonic-calibrated classifier probability (RF/XGB). Falls back
                     # to the margin-derived win_prob for models without a calibrated head.
@@ -1234,7 +1236,15 @@ def make_predictions(n_clicks, game_date):
                 else:
                     agree_badge = dbc.Badge(f"MAJORITY {top[0][0]}", color="danger")
 
-            cells = [html.Td(matchup_label)]
+            # Playoff distinct-ifier: badge non-regular-season games (E15 — these
+            # predict notably worse, so flag them in-line).
+            st = spine.get('season_type', 'regular')
+            matchup_cell = [matchup_label]
+            if st == 'playoffs':
+                matchup_cell.append(dbc.Badge("PLAYOFF", color="warning", className="ms-2"))
+            elif st == 'playin':
+                matchup_cell.append(dbc.Badge("PLAY-IN", color="info", className="ms-2"))
+            cells = [html.Td(matchup_cell)]
             for spec in active_specs:
                 p = row_preds[spec.key]
                 if p is None:
@@ -1470,13 +1480,29 @@ def make_predictions(n_clicks, game_date):
                         ])
                     ], className='mb-3'))
 
-        # Status message
+        # Status message + playoff caveat banner (E15 cross-context finding).
         loaded_summary = ", ".join(s.display_name for s in active_specs)
         shap_status = " with SHAP explanations" if SHAP_AVAILABLE else ""
-        status = dbc.Alert(
-            f"Generated {loaded_summary} predictions{shap_status} for {n_games} games on {game_date}",
-            color='success'
-        )
+        n_playoff = sum(1 for i in range(n_games)
+                        if predictions_by_key[spine_key][i].get('season_type') in ('playoffs', 'playin'))
+        caveat = None
+        if n_playoff:
+            caveat = dbc.Alert([
+                html.B("Playoff / play-in slate — point predictions are less reliable. "),
+                "Per the E15 cross-context study, a regular-season-trained model drops from "
+                "~71% to ~63% accuracy on playoff games and its discrimination (AUC) falls "
+                "from ~0.79 to ~0.64 — playoff teams are stronger and more evenly matched, "
+                "with series adjustments the model has never seen. ",
+                html.B("The margin intervals and calibrated win probabilities DO still hold "
+                       "(~90% coverage), so trust the ranges more than the point pick."),
+            ], color='warning', className='mb-2')
+        status = html.Div([c for c in [
+            caveat,
+            dbc.Alert(
+                f"Generated {loaded_summary} predictions{shap_status} for {n_games} games "
+                f"on {game_date}" + (f" — {n_playoff} playoff/play-in flagged" if n_playoff else ""),
+                color='success', className='mb-0'),
+        ] if c is not None])
 
         return status, results_table, fig_prob, fig_margin, shap_components
 

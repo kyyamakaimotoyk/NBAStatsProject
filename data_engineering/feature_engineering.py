@@ -1626,6 +1626,45 @@ def _join_elo_features(matchup_df: pd.DataFrame) -> pd.DataFrame:
     return matchup_df
 
 
+def _join_series_features(matchup_df: pd.DataFrame) -> pd.DataFrame:
+    """Track A (2026-05-19): join playoff series-context features from
+    `playoff_series_context`. Playoff games get real values; all other games get 0
+    (no series). Columns: SERIES_GAME_NO, HOME/AWAY_SERIES_WINS, SERIES_WIN_DIFF,
+    HOME/AWAY_FACES_ELIM, HOME_HAS_HCA, SERIES_PRIOR_MARGIN_HOME.
+    """
+    cols = ['series_game_no', 'home_series_wins', 'away_series_wins', 'series_win_diff',
+            'home_faces_elim', 'away_faces_elim', 'home_has_hca', 'series_prior_margin_home']
+    try:
+        from core.db import get_engine
+        engine = get_engine()
+        try:
+            sc = pd.read_sql(text(f"SELECT game_id, {', '.join(cols)} FROM playoff_series_context"), engine)
+        finally:
+            engine.dispose()
+    except Exception as e:
+        print(f"  [Track A] Could not load playoff_series_context ({e}); skipping series features")
+        return matchup_df
+
+    rename = {
+        'game_id': 'GAME_ID', 'series_game_no': 'SERIES_GAME_NO',
+        'home_series_wins': 'HOME_SERIES_WINS', 'away_series_wins': 'AWAY_SERIES_WINS',
+        'series_win_diff': 'SERIES_WIN_DIFF', 'home_faces_elim': 'HOME_FACES_ELIM',
+        'away_faces_elim': 'AWAY_FACES_ELIM', 'home_has_hca': 'HOME_HAS_HCA',
+        'series_prior_margin_home': 'SERIES_PRIOR_MARGIN_HOME',
+    }
+    sc = sc.rename(columns=rename)
+    sc['GAME_ID'] = sc['GAME_ID'].astype('int64')
+    matchup_df['GAME_ID'] = matchup_df['GAME_ID'].astype('int64')
+    matchup_df = matchup_df.merge(sc, on='GAME_ID', how='left')
+    # Non-playoff games have no series row -> fill with 0 (no series in progress)
+    for c in rename.values():
+        if c != 'GAME_ID':
+            matchup_df[c] = matchup_df[c].fillna(0)
+    n_po = int((matchup_df['SERIES_GAME_NO'] > 0).sum())
+    print(f"  [Track A] Joined series-context features: {n_po} playoff games carry nonzero series state")
+    return matchup_df
+
+
 def _join_lineup_features(matchup_df: pd.DataFrame) -> pd.DataFrame:
     """E11 (2026-05-19): join LeagueDashLineups 5-man synergy features from
     `team_lineup_snapshots`. For each game, look up each team's snapshot from
@@ -1731,6 +1770,8 @@ def prepare_ml_dataset(df: pd.DataFrame) -> Tuple[pd.DataFrame, list]:
     # E9: attach pre-game ELO ratings (KEPT — only feature with a significant
     # walk-forward gain in the E3 ablation: RF AUC +0.013, p=0.012-0.016).
     matchup_df = _join_elo_features(matchup_df)
+    # Track A: attach playoff series-context features (0 for non-playoff games)
+    matchup_df = _join_series_features(matchup_df)
     # E11 (LeagueDashLineups 5-man synergy) was REMOVED from the production
     # pipeline on 2026-05-19 — the E3 noise-aware ablation found no statistically
     # significant improvement on any model/metric. `_join_lineup_features` is

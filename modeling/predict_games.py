@@ -764,14 +764,21 @@ def get_scheduled_games(game_date: str) -> pd.DataFrame:
             print(f"No games scheduled for {game_date}")
             return pd.DataFrame()
 
+        # NBA GAME_ID prefix encodes the season type (verified against game_list.SEASON_ID):
+        #   001=preseason 002=regular 003=allstar 004=playoffs 005=play-in 006=NBA Cup
+        gid_prefix_regime = {'001': 'preseason', '002': 'regular', '003': 'allstar',
+                             '004': 'playoffs', '005': 'playin', '006': 'cup'}
+
         scheduled = []
         for _, game in games_df.iterrows():
+            gid = str(game['GAME_ID']).zfill(10)
             scheduled.append({
                 'GAME_ID': game['GAME_ID'],
                 'HOME_TEAM_ID': game['HOME_TEAM_ID'],
                 'AWAY_TEAM_ID': game['VISITOR_TEAM_ID'],
                 'GAME_STATUS': game.get('GAME_STATUS_TEXT', 'Scheduled'),
-                'ARENA': game.get('ARENA_NAME', 'Unknown')
+                'ARENA': game.get('ARENA_NAME', 'Unknown'),
+                'SEASON_TYPE': gid_prefix_regime.get(gid[:3], 'regular'),
             })
 
         result = pd.DataFrame(scheduled)

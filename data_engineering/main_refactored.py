@@ -37,6 +37,22 @@ NBA_API_MAX_RETRIES = 3        # total attempts on a transient (timeout/connecti
 NBA_API_BACKOFF_BASE = 2       # seconds; sleep grows as base * (2 ** attempt_index)
 NBA_API_DEFAULT_WORKERS = 2    # parallel workers for run_import_parallel
 
+# ---------------------------------------------------------------------------
+# Status-2 retry policy. Status 2 = "API returned no data for this endpoint."
+# It has two very different causes:
+#   (a) The game predates an endpoint's data coverage (e.g. V3 endpoints don't
+#       go back before ~Oct 2025). Status 2 is then *permanent* — never retry.
+#   (b) The game is recent but data isn't posted yet (still in progress, or the
+#       endpoint hadn't backfilled when we ran). Status 2 is *provisional* —
+#       we should re-call it on the next pipeline run, until the data appears
+#       or we've tried enough times.
+# We disambiguate by game date vs V3_ENDPOINT_CUTOFF_DATE, and cap retries at
+# MAX_STATUS2_RETRIES (using the existing number_reattempts column on
+# importedgamesmemory — no schema change required).
+# ---------------------------------------------------------------------------
+V3_ENDPOINT_CUTOFF_DATE = datetime.date(2025, 10, 1)
+MAX_STATUS2_RETRIES = 2
+
 
 def _is_transient_api_error(exc):
     """Treat read/connect timeouts and pool errors as transient (retry); everything else is fatal."""
@@ -239,9 +255,179 @@ class NBADataImporter:
             self.logger.info("Players table doesn't exist, creating it")
             nba_players_df.to_sql(name='nba_players', con=self.db_engine, if_exists='replace', index=False)
 
-    def get_games_to_process(self, date_from='11/22/2025', date_to='07/01/2026'):
-        """Get list of games to process from the API"""
-        self.logger.info(f"Fetching games from {date_from} to {date_to}")
+    @staticmethod
+    def _parse_user_date(s):
+        """Accept a YYYY-MM-DD or MM/DD/YYYY string and return a datetime.date.
+        Returns None for None/empty input."""
+        if s is None or s == '':
+            return None
+        if isinstance(s, datetime.date) and not isinstance(s, datetime.datetime):
+            return s
+        if isinstance(s, datetime.datetime):
+            return s.date()
+        s = str(s).strip()
+        for fmt in ('%Y-%m-%d', '%m/%d/%Y'):
+            try:
+                return datetime.datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+        raise ValueError(f"Date must be YYYY-MM-DD or MM/DD/YYYY (got: {s!r})")
+
+    # Default season window — preserves legacy behaviour when no dates are passed.
+    DEFAULT_DATE_FROM = '11/22/2025'
+    DEFAULT_DATE_TO = '07/01/2026'
+
+    def _games_in_window_from_db(self, date_from_obj, date_to_obj):
+        """Return distinct GAME_IDs in game_list between two date objects."""
+        try:
+            stmt = sql.text(
+                "SELECT DISTINCT GAME_ID FROM nba_data.game_list "
+                "WHERE GAME_DATE BETWEEN :start AND :end"
+            )
+            df = pd.read_sql(stmt, self.connection,
+                             params={'start': date_from_obj.isoformat(),
+                                     'end': date_to_obj.isoformat()})
+            return list(pd.unique(df['GAME_ID']))
+        except Exception as e:
+            self.logger.warning(f"_games_in_window_from_db failed: {e}")
+            return []
+
+    def _last_fully_processed_date(self, date_from_obj, date_to_obj):
+        """Return the latest date d such that EVERY game in game_list with game_date in
+        [date_from_obj, d] is fully present (all tracked tables = 1) in
+        importedgamesmemory. Returns None if the very first date in the window has
+        any incomplete game (so no narrowing is possible).
+
+        This is the contiguous-prefix check used to narrow the bulk leaguegamefinder
+        API window. By narrowing date_from forward to (this date + 1 day), we union
+        with the DB-known games in the skipped portion so no game is dropped.
+        """
+        try:
+            gl = pd.read_sql(sql.text(
+                "SELECT GAME_DATE, GAME_ID, WL FROM nba_data.game_list "
+                "WHERE GAME_DATE BETWEEN :start AND :end"
+            ), self.connection,
+                params={'start': date_from_obj.isoformat(),
+                        'end': date_to_obj.isoformat()})
+        except Exception as e:
+            self.logger.warning(f"_last_fully_processed_date game_list query failed: {e}")
+            return None
+        if gl.empty:
+            return None
+        gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE']).dt.date
+        gl['GAME_ID'] = gl['GAME_ID'].astype(int)
+        # Games with WL=NULL are stuck mid-game in game_list. They MUST be re-
+        # fetched via leaguegamefinder (which writes the final PTS/MIN/WL via
+        # _update_game_list_table's incomplete-refresh path). So treat any
+        # date that contains a WL=NULL game as NOT done, even if every
+        # importedgamesmemory entry says otherwise.
+        incomplete_gids = set(gl.loc[gl['WL'].isna(), 'GAME_ID'].tolist())
+        try:
+            ig = pd.read_sql(sql.text("SELECT * FROM nba_data.importedgamesmemory"),
+                             self.connection)
+        except Exception as e:
+            self.logger.warning(f"_last_fully_processed_date importedgamesmemory query failed: {e}")
+            return None
+        if ig.empty:
+            return None
+        ig['gameId'] = ig['gameId'].astype(int)
+        track_cols = [c for c in self.table_config.keys() if c in ig.columns]
+        if not track_cols:
+            return None
+        # Use the central classifier so this skip-prefix logic agrees with
+        # get_imported_games / get_games_needing_reimport. Recent status-2 games
+        # with retries remaining are NOT 'done' here, so a contiguous-done prefix
+        # correctly stops at the first such game.
+        gid_to_date = dict(zip(gl.drop_duplicates('GAME_ID')['GAME_ID'],
+                                gl.drop_duplicates('GAME_ID')['GAME_DATE']))
+        done_set = {
+            int(r['gameId'])
+            for _, r in ig.iterrows()
+            if int(r['gameId']) not in incomplete_gids
+            and self._classify_game_status(r, track_cols, gid_to_date.get(int(r['gameId'])))[0] == 'done'
+        }
+
+        # game_list has 2 rows per game (one per team); dedupe so per-date counts are
+        # per-game, otherwise `done == n` would never hold (done would be 2x what we expect).
+        gl = gl.drop_duplicates(subset=['GAME_ID'])
+        gl['_done'] = gl['GAME_ID'].isin(done_set)
+        per_date = gl.groupby('GAME_DATE').agg(n=('GAME_ID', 'size'),
+                                                done=('_done', 'sum')).reset_index()
+        per_date = per_date.sort_values('GAME_DATE').reset_index(drop=True)
+
+        last_done = None
+        for _, r in per_date.iterrows():
+            if r['done'] == r['n']:
+                last_done = r['GAME_DATE']
+            else:
+                break  # first incomplete date — stop the contiguous prefix
+        return last_done
+
+    def get_games_to_process(self, date_from=None, date_to=None, skip_processed=True):
+        """Get list of games to process from the API.
+
+        Parameters
+        ----------
+        date_from, date_to : str or datetime.date, optional
+            Window bounds. Accepts YYYY-MM-DD or MM/DD/YYYY. Defaults to the
+            hardcoded current-season window (DEFAULT_DATE_FROM/TO) for backwards
+            compatibility with old callers.
+        skip_processed : bool, default True
+            If True, consult importedgamesmemory + game_list to short-circuit:
+              - If the entire window is in the past AND every game already has
+                all tracked tables = 1, skip the leaguegamefinder API call
+                entirely and return GAME_IDs from game_list.
+              - Otherwise, narrow date_from forward to (last contiguously-done
+                date + 1) so the API only fetches the unprocessed tail. The
+                skipped prior games are still returned (union from game_list)
+                so the downstream filter can decide what to do with them.
+            Set False to force a full re-fetch (e.g. to pick up retroactive
+            schedule edits).
+        """
+        date_from_obj = self._parse_user_date(date_from) or self._parse_user_date(self.DEFAULT_DATE_FROM)
+        date_to_obj = self._parse_user_date(date_to) or self._parse_user_date(self.DEFAULT_DATE_TO)
+        if date_from_obj > date_to_obj:
+            raise ValueError(f"date_from ({date_from_obj}) is after date_to ({date_to_obj})")
+
+        today = datetime.date.today()
+        effective_from = date_from_obj
+        prior_db_ids = []
+
+        if skip_processed:
+            last_done = self._last_fully_processed_date(date_from_obj, date_to_obj)
+            if last_done is not None and last_done >= date_to_obj and date_to_obj < today:
+                # Whole window is fully processed AND it's all in the past. No API call.
+                ids = self._games_in_window_from_db(date_from_obj, date_to_obj)
+                self.logger.info(
+                    f"All {len(ids)} games in [{date_from_obj}, {date_to_obj}] are already "
+                    f"in importedgamesmemory. Skipping leaguegamefinder API call."
+                )
+                return pd.array(ids, dtype='object') if ids else pd.array([], dtype='object')
+            if last_done is not None and last_done >= date_from_obj:
+                # Narrow API window past the contiguous done prefix.
+                new_from = last_done + datetime.timedelta(days=1)
+                if new_from > effective_from:
+                    prior_db_ids = self._games_in_window_from_db(date_from_obj,
+                                                                  last_done)
+                    self.logger.info(
+                        f"Narrowing API window: {effective_from} -> {new_from} "
+                        f"(skipping {len(prior_db_ids)} already-processed games "
+                        f"from game_list)."
+                    )
+                    effective_from = new_from
+
+        # Bulk API uses MM/DD/YYYY. effective_from may equal or be after date_to_obj
+        # if narrowing went past it — in that case fall back to DB-only.
+        if effective_from > date_to_obj:
+            self.logger.info(
+                f"Narrowed window is empty ({effective_from} > {date_to_obj}); "
+                f"returning {len(prior_db_ids)} games from game_list only."
+            )
+            return pd.array(prior_db_ids, dtype='object')
+
+        api_from = effective_from.strftime('%m/%d/%Y')
+        api_to = date_to_obj.strftime('%m/%d/%Y')
+        self.logger.info(f"Fetching games from {api_from} to {api_to}")
 
         # Retry the initial games-list fetch too — it sometimes times out before
         # parallelization even starts and causes the whole run to abort.
@@ -250,8 +436,8 @@ class NBADataImporter:
             try:
                 gamefinder = leaguegamefinder.LeagueGameFinder(
                     league_id_nullable='00',
-                    date_from_nullable=date_from,
-                    date_to_nullable=date_to,
+                    date_from_nullable=api_from,
+                    date_to_nullable=api_to,
                     timeout=NBA_API_TIMEOUT_SECONDS,
                 )
                 gamefinder_df = gamefinder.get_data_frames()[0]
@@ -272,75 +458,155 @@ class NBADataImporter:
         # Update game_list table
         self._update_game_list_table(gamefinder_df)
 
-        return pd.unique(gamefinder_df['GAME_ID'])
+        api_ids = list(pd.unique(gamefinder_df['GAME_ID']))
+        if prior_db_ids:
+            # Union without losing ordering: API ids first, then any DB-only ids
+            seen = {str(g): True for g in api_ids}
+            for g in prior_db_ids:
+                if str(g) not in seen:
+                    api_ids.append(g)
+                    seen[str(g)] = True
+        return pd.array(api_ids, dtype='object')
 
     def _update_game_list_table(self, gamefinder_df):
-        """Update the game_list table with new games"""
+        """Update the game_list table with leaguegamefinder rows.
+
+        Three cases per (GAME_ID, TEAM_ID):
+          - New row → INSERT.
+          - Existing row with duplicates (count > 1) → DELETE + re-INSERT (de-dup).
+          - Existing row with WL IS NULL → DELETE + re-INSERT (REFRESH stale data).
+            WL=NULL is the signal that the game was still in progress when we last
+            recorded it; the fresh leaguegamefinder row carries the final PTS/MIN/WL.
+            Without this branch, mid-game partial data (e.g. CLE 37 / NYK 61 / WL=NULL
+            from a game imported at halftime) would persist forever and propagate
+            into backfill_actuals as a wrong actual_margin.
+          - Existing complete row (WL set, single copy) → leave alone.
+        """
         try:
-            # Get existing games
-            stmt = """SELECT GAME_ID, TEAM_ID, COUNT(TEAM_ID)
+            # Pull the existing snapshot once. Need count for dedup and WL for the
+            # incomplete-game refresh.
+            stmt = """SELECT GAME_ID, TEAM_ID, COUNT(*) AS n,
+                            SUM(CASE WHEN WL IS NULL THEN 1 ELSE 0 END) AS n_incomplete
                      FROM nba_data.game_list
                      GROUP BY GAME_ID, TEAM_ID"""
             result = self.connection.execute(sql.text(stmt))
-            existing_games = {(r[0], r[1]): r[2] for r in result}
+            existing_games = {(r[0], r[1]): {'count': r[2], 'n_incomplete': r[3]} for r in result}
 
+            n_inserted = n_refreshed = n_dedup = 0
             for index, row in gamefinder_df.iterrows():
                 game_id = int(row['GAME_ID'])
                 team_id = int(row['TEAM_ID'])
+                key = (game_id, team_id)
 
-                if (game_id, team_id) in existing_games:
-                    if existing_games[(game_id, team_id)] > 1:
-                        # Remove duplicates
-                        delete_stmt = f"DELETE FROM nba_data.game_list WHERE GAME_ID = {game_id} AND TEAM_ID = {team_id}"
-                        self.connection.execute(sql.text(delete_stmt))
-                        self.connection.commit()
-
-                        # Re-add the game
-                        gamefinder_df.iloc[[index]].to_sql(
-                            name='game_list', con=self.db_engine, if_exists='append', index=False
-                        )
-                else:
-                    # Add new game
+                if key not in existing_games:
                     gamefinder_df.iloc[[index]].to_sql(
                         name='game_list', con=self.db_engine, if_exists='append', index=False
                     )
+                    n_inserted += 1
+                    continue
+
+                meta = existing_games[key]
+                needs_refresh = (meta['count'] > 1) or (meta['n_incomplete'] > 0)
+                if not needs_refresh:
+                    continue
+
+                # Replace the existing row(s). We delete all copies for this
+                # (game_id, team_id) and re-insert the fresh row, which handles both
+                # the dup case and the WL=NULL refresh case in one path.
+                self.connection.execute(sql.text(
+                    f"DELETE FROM nba_data.game_list WHERE GAME_ID = {game_id} AND TEAM_ID = {team_id}"
+                ))
+                self.connection.commit()
+                gamefinder_df.iloc[[index]].to_sql(
+                    name='game_list', con=self.db_engine, if_exists='append', index=False
+                )
+                if meta['count'] > 1:
+                    n_dedup += 1
+                else:
+                    n_refreshed += 1
+
+            if n_inserted or n_refreshed or n_dedup:
+                self.logger.info(
+                    f"_update_game_list_table: inserted {n_inserted}, "
+                    f"refreshed {n_refreshed} incomplete (WL=NULL), de-duped {n_dedup}"
+                )
 
         except sql.exc.ProgrammingError:
             # Table doesn't exist, create it
             gamefinder_df.to_sql(name='game_list', con=self.db_engine, if_exists='replace', index=False)
 
-    def get_imported_games(self):
-        """Get list of fully imported games (all tables successful)"""
+    def _load_game_dates(self):
+        """Return {int(GAME_ID): datetime.date} from game_list. Used to decide whether
+        a status-2 entry is permanent (old game, no V3 coverage) or provisional
+        (recent game, data may appear later)."""
         try:
-            # Get all game records with their import status
-            query = "SELECT * FROM nba_data.importedGamesMemory"
-            df = pd.read_sql(query, self.connection)
+            df = pd.read_sql(sql.text(
+                "SELECT DISTINCT GAME_ID, GAME_DATE FROM nba_data.game_list"
+            ), self.connection)
+            df['GAME_ID'] = df['GAME_ID'].astype(int)
+            df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE']).dt.date
+            return dict(zip(df['GAME_ID'], df['GAME_DATE']))
+        except Exception as e:
+            self.logger.warning(f"_load_game_dates failed: {e}")
+            return {}
 
+    def _classify_game_status(self, row, table_cols, game_date):
+        """Decide what to do with a row from importedgamesmemory.
+
+        Status values: 1=success, 2='API has no data right now', 0=failed.
+        The disambiguation of status 2 is the whole point — see the module-level
+        comment above MAX_STATUS2_RETRIES.
+
+        Returns (classification, retry_cols):
+          ('done',          [])     - finished, skip on next run.
+          ('reimport',      [cols]) - has hard failures (status 0); reimport those cols.
+          ('retry_status2', [cols]) - recent game with status-2 cols and retries
+                                       remaining; reimport those cols.
+        """
+        statuses = {c: row[c] for c in table_cols if c in row.index}
+        if not statuses:
+            return ('reimport', list(table_cols))  # nothing recorded yet
+
+        failed = [c for c, s in statuses.items() if s == 0]
+        if failed:
+            return ('reimport', failed)
+
+        if all(s == 1 for s in statuses.values()):
+            return ('done', [])
+
+        # All in {1, 2} with at least one 2.
+        status2_cols = [c for c, s in statuses.items() if s == 2]
+        # Old games genuinely lack data for V3 endpoints — never retry.
+        if game_date is not None and game_date < V3_ENDPOINT_CUTOFF_DATE:
+            return ('done', [])
+        attempts = int(row.get('number_reattempts', 0) or 0)
+        if attempts >= MAX_STATUS2_RETRIES:
+            return ('done', [])
+        return ('retry_status2', status2_cols)
+
+    def get_imported_games(self):
+        """Return GAME_IDs whose processing is 'done' (no further attempts needed).
+
+        See _classify_game_status for the rules. In particular, recent games with
+        status-2 columns are NOT 'done' until either the data appears or
+        number_reattempts >= MAX_STATUS2_RETRIES.
+        """
+        try:
+            df = pd.read_sql("SELECT * FROM nba_data.importedGamesMemory", self.connection)
+            game_dates = self._load_game_dates()
+            table_cols = list(self.table_config.keys())
             fully_imported_games = []
-
             for _, row in df.iterrows():
                 game_id = row['gameId']
-                all_successful = True
-
-                # Check if all tables have status = 1 (successful)
-                for table_name in self.table_config.keys():
-                    if table_name in df.columns:
-                        if row[table_name] != 1:
-                            all_successful = False
-                            break
-                    else:
-                        # Column missing, treat as failed
-                        all_successful = False
-                        break
-
-                if all_successful:
+                gd = game_dates.get(int(game_id))
+                cls, _ = self._classify_game_status(row, table_cols, gd)
+                if cls == 'done':
                     fully_imported_games.append(game_id)
-
-            self.logger.info(f"Found {len(fully_imported_games)} fully imported games out of {len(df)} total records")
+            self.logger.info(
+                f"Found {len(fully_imported_games)} fully imported (done) games out of {len(df)} total records"
+            )
             return fully_imported_games
-
         except sql.exc.ProgrammingError:
-            # Table doesn't exist yet
             self.logger.info("importedGamesMemory table doesn't exist yet")
             return []
         except Exception as e:
@@ -348,67 +614,67 @@ class NBADataImporter:
             return []
 
     def get_games_needing_reimport(self):
-        """Get games that have at least one failed table import"""
+        """Games that need another pass — either hard failures (status 0) or
+        recent games with status-2 columns that still have retry budget left.
+
+        Returned dict carries `failed_tables` (the columns the reimport flow
+        should re-call), `attempts` (current number_reattempts; the flow
+        increments this), and `retry_reason` for logging visibility.
+        """
         try:
-            query = "SELECT * FROM nba_data.importedGamesMemory"
-            df = pd.read_sql(query, self.connection)
-
+            df = pd.read_sql("SELECT * FROM nba_data.importedGamesMemory", self.connection)
+            game_dates = self._load_game_dates()
+            table_cols = list(self.table_config.keys())
             games_to_reimport = {}
-
             for _, row in df.iterrows():
                 game_id = row['gameId']
-                failed_tables = []
-
-                # Check which tables failed (status = 0)
-                for table_name in self.table_config.keys():
-                    if table_name in df.columns:
-                        if row[table_name] == 0:
-                            failed_tables.append(table_name)
-                    else:
-                        # Column missing, needs import
-                        failed_tables.append(table_name)
-
-                if failed_tables:
-                    current_attempts = row.get('number_reattempts', 0)
-                    games_to_reimport[game_id] = {
-                        'failed_tables': failed_tables,
-                        'attempts': current_attempts
-                    }
-                    self.logger.info(f"Game {game_id} needs re-import for {len(failed_tables)} tables (attempt #{current_attempts + 1})")
-
-            self.logger.info(f"Found {len(games_to_reimport)} games needing re-import")
+                gd = game_dates.get(int(game_id))
+                cls, cols = self._classify_game_status(row, table_cols, gd)
+                if cls == 'done':
+                    continue
+                current_attempts = row.get('number_reattempts', 0) or 0
+                games_to_reimport[game_id] = {
+                    'failed_tables': cols,
+                    'attempts': int(current_attempts),
+                    'retry_reason': cls,  # 'reimport' or 'retry_status2'
+                }
+            if games_to_reimport:
+                n_failure = sum(1 for v in games_to_reimport.values() if v['retry_reason'] == 'reimport')
+                n_retry = len(games_to_reimport) - n_failure
+                self.logger.info(
+                    f"get_games_needing_reimport: {len(games_to_reimport)} games "
+                    f"({n_failure} with hard failures, {n_retry} status-2 retries within "
+                    f"cap of {MAX_STATUS2_RETRIES})"
+                )
             return games_to_reimport
-
         except sql.exc.ProgrammingError:
             self.logger.info("importedGamesMemory table doesn't exist yet")
             return {}
         except Exception as e:
-            self.logger.error(f"Error reading importedGamesMemory for re-imports: {e}")
+            self.logger.error(f"Error reading importedGamesMemory: {e}")
             return {}
 
     def load_all_game_statuses(self):
-        """Load all game statuses into memory for fast lookup (Solution 4 optimization)"""
+        """Load all game statuses into memory for fast lookup (Solution 4 optimization).
+
+        Uses _classify_game_status so the run_import_parallel skip-filter aligns
+        with get_imported_games / get_games_needing_reimport (i.e. recent
+        status-2 games are NOT 'complete' until retries are exhausted).
+        """
         try:
             query = "SELECT * FROM nba_data.importedGamesMemory"
             df = pd.read_sql(query, self.connection)
+            game_dates = self._load_game_dates()
+            table_cols = list(self.table_config.keys())
 
             game_statuses = {}
             for _, row in df.iterrows():
                 game_id = row['gameId']
-
-                # Check if all tables are successfully imported
-                all_complete = True
-                for table_name in self.table_config.keys():
-                    if table_name in df.columns:
-                        if row[table_name] != 1:
-                            all_complete = False
-                            break
-                    else:
-                        all_complete = False
-                        break
-
+                gd = game_dates.get(int(game_id))
+                cls, _ = self._classify_game_status(row, table_cols, gd)
                 game_statuses[game_id] = {
-                    'all_complete': all_complete,
+                    'all_complete': (cls == 'done'),
+                    'classification': cls,
                     'row': row
                 }
 
@@ -998,8 +1264,13 @@ class NBADataImporter:
         # Update the record with new results
         self._record_game_processed(game_id, import_results, is_reattempt=True, previous_attempts=previous_attempts)
 
-    def run_import(self):
-        """Main function to run the complete import process"""
+    def run_import(self, date_from=None, date_to=None, skip_processed=True):
+        """Main function to run the complete import process.
+
+        date_from/date_to: optional window bounds (YYYY-MM-DD / MM/DD/YYYY / date).
+        skip_processed: when True, narrow or skip the leaguegamefinder API call
+        using importedgamesmemory (see get_games_to_process docstring).
+        """
         start_time = timeit.default_timer()
 
         try:
@@ -1009,7 +1280,8 @@ class NBADataImporter:
             self.initialize_players_data()
 
             # Get games to process
-            games_list = self.get_games_to_process()
+            games_list = self.get_games_to_process(date_from=date_from, date_to=date_to,
+                                                    skip_processed=skip_processed)
             imported_games = self.get_imported_games()
             games_needing_reimport = self.get_games_needing_reimport()
 
@@ -1054,12 +1326,16 @@ class NBADataImporter:
             if self.db_engine:
                 self.db_engine.dispose()
 
-    def run_import_parallel(self, num_workers=None):
+    def run_import_parallel(self, num_workers=None, date_from=None, date_to=None,
+                            skip_processed=True):
         """
         Main function to run import process with parallel processing (Solution 1)
 
         Args:
             num_workers: Number of parallel workers. If None, defaults to 2 (safe for NBA API rate limits)
+            date_from, date_to: window bounds (YYYY-MM-DD / MM/DD/YYYY / date)
+            skip_processed: when True, narrow or skip the leaguegamefinder API call
+                using importedgamesmemory (see get_games_to_process docstring)
         """
         start_time = timeit.default_timer()
 
@@ -1081,7 +1357,8 @@ class NBADataImporter:
             self.initialize_players_data()
 
             # Get games to process and load statuses into memory (Solution 4)
-            games_list = self.get_games_to_process()
+            games_list = self.get_games_to_process(date_from=date_from, date_to=date_to,
+                                                    skip_processed=skip_processed)
             game_statuses = self.load_all_game_statuses()
             games_needing_reimport = self.get_games_needing_reimport()
 
@@ -1348,9 +1625,38 @@ def _process_game_reimport_worker(task_data):
                     pass  # Ignore errors during cleanup
 
 
-if __name__ == '__main__':
-    importer = NBADataImporter()
+def _build_arg_parser():
+    import argparse
+    p = argparse.ArgumentParser(
+        description="Fetch NBA boxscore data into MySQL. By default the window covers "
+                    "the current season, and games already fully present in "
+                    "importedgamesmemory are skipped without hitting the API."
+    )
+    p.add_argument('--date-from', type=str, default=None,
+                   help='Window start (YYYY-MM-DD or MM/DD/YYYY). '
+                        f'Default: {NBADataImporter.DEFAULT_DATE_FROM}.')
+    p.add_argument('--date-to', type=str, default=None,
+                   help='Window end (YYYY-MM-DD or MM/DD/YYYY). '
+                        f'Default: {NBADataImporter.DEFAULT_DATE_TO}.')
+    p.add_argument('--workers', type=int, default=None,
+                   help=f'Parallel worker processes (default: {NBA_API_DEFAULT_WORKERS}).')
+    p.add_argument('--sequential', action='store_true',
+                   help='Use the single-threaded run_import instead of run_import_parallel.')
+    p.add_argument('--no-skip-processed', action='store_true',
+                   help='Force a full leaguegamefinder API fetch over the window even if '
+                        'some/all games are already in importedgamesmemory. Use this when '
+                        'NBA retroactively edits the schedule.')
+    return p
 
-    # Use parallel processing by default
-    # To use sequential processing, change to: importer.run_import()
-    importer.run_import_parallel()
+
+if __name__ == '__main__':
+    args = _build_arg_parser().parse_args()
+    importer = NBADataImporter()
+    skip_processed = not args.no_skip_processed
+    if args.sequential:
+        importer.run_import(date_from=args.date_from, date_to=args.date_to,
+                            skip_processed=skip_processed)
+    else:
+        importer.run_import_parallel(num_workers=args.workers,
+                                      date_from=args.date_from, date_to=args.date_to,
+                                      skip_processed=skip_processed)

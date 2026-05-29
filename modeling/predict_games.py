@@ -147,7 +147,7 @@ except ImportError:
 
 # NBA API for scheduled games
 try:
-    from nba_api.stats.endpoints import ScoreboardV2
+    from nba_api.stats.endpoints import ScheduleLeagueV2
     from nba_api.stats.static import teams as nba_teams
     NBA_API_AVAILABLE = True
 except ImportError:
@@ -347,6 +347,14 @@ def save_model_bundle(model_type_key: str, bundle: dict, version: str = None) ->
         'created_at': datetime.now().isoformat(timespec='seconds'),
         'bundle_path': versioned_path,
     })
+    # Promote training-window dates from the bundle body into metadata so the
+    # backfill leakage guard can read them without having to crack the full bundle.
+    # `data_through_date` is the latest GAME_DATE the production model was fit on;
+    # backfilling for dates <= this is leakage unless --allow-leakage is passed.
+    for key in ('train_start_date', 'train_end_date', 'eval_start_date',
+                'eval_end_date', 'data_through_date'):
+        if key in bundle:
+            enriched['metadata'][key] = bundle[key]
 
     # Atomic write: dump to .tmp, then rename. Prevents half-written bundles if the process
     # is killed mid-save (e.g., Ctrl-C during a long training run).
@@ -744,63 +752,99 @@ def get_nba_team_mapping():
     return {t['abbreviation']: t['id'] for t in team_list}
 
 
+# NBA GAME_ID prefix encodes the season type (verified against game_list.SEASON_ID):
+#   001=preseason 002=regular 003=allstar 004=playoffs 005=play-in 006=NBA Cup
+GID_PREFIX_REGIME = {'001': 'preseason', '002': 'regular', '003': 'allstar',
+                     '004': 'playoffs', '005': 'playin', '006': 'cup'}
+
+
+# Module-level cache for the full league schedule. ScheduleLeagueV2 returns the
+# whole season (~1400 games) in one call, so we fetch it once and reuse across the
+# games in a slate rather than hitting the API per game. Short TTL so newly
+# finalized/rescheduled games show up without restarting the dashboard.
+_SCHEDULE_CACHE = {'df': None, 'ts': 0.0}
+_SCHEDULE_TTL_SEC = 600  # 10 minutes
+
+
+def _fetch_league_schedule(force: bool = False) -> pd.DataFrame:
+    """Fetch (and cache) the full league schedule from ScheduleLeagueV2.
+
+    ScheduleLeagueV2 is the canonical schedule endpoint: it includes both
+    completed games (gameStatus 3 / 'Final') and FUTURE scheduled games
+    (gameStatus 1 / tip time). ScoreboardV2 — the previous source — only
+    surfaced games for a single day and returned nothing for upcoming dates,
+    which is why future games never appeared.
+    """
+    import time
+    now = time.time()
+    cached = _SCHEDULE_CACHE['df']
+    if (not force and cached is not None
+            and (now - _SCHEDULE_CACHE['ts']) < _SCHEDULE_TTL_SEC):
+        return cached
+
+    sched = ScheduleLeagueV2().get_data_frames()[0].copy()
+    sched['_date'] = pd.to_datetime(sched['gameDate'], errors='coerce').dt.normalize()
+    _SCHEDULE_CACHE['df'] = sched
+    _SCHEDULE_CACHE['ts'] = now
+    return sched
+
+
 def get_scheduled_games(game_date: str) -> pd.DataFrame:
     """
-    Get scheduled games for a given date from NBA API.
+    Get scheduled games for a given date from the NBA league-schedule API.
+
+    Source: ScheduleLeagueV2 (full-season schedule, completed + upcoming games).
+    Returns one row per game with HOME/AWAY team id+abbreviation, GAME_STATUS
+    (tip time for upcoming games, 'Final' for completed), ARENA, and SEASON_TYPE
+    derived from the GAME_ID prefix.
     """
     if not NBA_API_AVAILABLE:
         print("NBA API not available. Please install nba_api package.")
         return pd.DataFrame()
 
-    dt = datetime.strptime(game_date, '%Y-%m-%d')
-    api_date = dt.strftime('%m/%d/%Y')
+    target = pd.to_datetime(game_date).normalize()
 
     try:
-        print(f"Fetching games for {game_date}...")
-        scoreboard = ScoreboardV2(game_date=api_date)
-        games_df = scoreboard.get_data_frames()[0]
-
-        if len(games_df) == 0:
-            print(f"No games scheduled for {game_date}")
-            return pd.DataFrame()
-
-        # NBA GAME_ID prefix encodes the season type (verified against game_list.SEASON_ID):
-        #   001=preseason 002=regular 003=allstar 004=playoffs 005=play-in 006=NBA Cup
-        gid_prefix_regime = {'001': 'preseason', '002': 'regular', '003': 'allstar',
-                             '004': 'playoffs', '005': 'playin', '006': 'cup'}
-
-        scheduled = []
-        for _, game in games_df.iterrows():
-            gid = str(game['GAME_ID']).zfill(10)
-            scheduled.append({
-                'GAME_ID': game['GAME_ID'],
-                'HOME_TEAM_ID': game['HOME_TEAM_ID'],
-                'AWAY_TEAM_ID': game['VISITOR_TEAM_ID'],
-                'GAME_STATUS': game.get('GAME_STATUS_TEXT', 'Scheduled'),
-                'ARENA': game.get('ARENA_NAME', 'Unknown'),
-                'SEASON_TYPE': gid_prefix_regime.get(gid[:3], 'regular'),
-            })
-
-        result = pd.DataFrame(scheduled)
-        team_map = {t['id']: t['abbreviation'] for t in nba_teams.get_teams()}
-
-        # Ensure team IDs are integers for proper mapping
-        result['HOME_TEAM_ID'] = pd.to_numeric(result['HOME_TEAM_ID'], errors='coerce').astype('Int64')
-        result['AWAY_TEAM_ID'] = pd.to_numeric(result['AWAY_TEAM_ID'], errors='coerce').astype('Int64')
-        result['HOME_TEAM'] = result['HOME_TEAM_ID'].map(team_map)
-        result['AWAY_TEAM'] = result['AWAY_TEAM_ID'].map(team_map)
-
-        # Filter out games with missing team data (e.g., TBD or postponed games)
-        before_count = len(result)
-        result = result.dropna(subset=['HOME_TEAM_ID', 'AWAY_TEAM_ID', 'HOME_TEAM', 'AWAY_TEAM'])
-        if len(result) < before_count:
-            print(f"  Filtered out {before_count - len(result)} games with missing team data")
-
-        return result
-
+        print(f"Fetching schedule for {game_date}...")
+        sched = _fetch_league_schedule()
     except Exception as e:
-        print(f"Error fetching games: {e}")
+        print(f"Error fetching league schedule: {e}")
         return pd.DataFrame()
+
+    day = sched[sched['_date'] == target]
+    if len(day) == 0:
+        print(f"No games scheduled for {game_date}")
+        return pd.DataFrame()
+
+    arena_col = 'arenaName' if 'arenaName' in day.columns else None
+    scheduled = []
+    for _, game in day.iterrows():
+        gid = str(game['gameId']).zfill(10)
+        scheduled.append({
+            'GAME_ID': game['gameId'],
+            'HOME_TEAM_ID': game['homeTeam_teamId'],
+            'AWAY_TEAM_ID': game['awayTeam_teamId'],
+            'GAME_STATUS': game.get('gameStatusText', 'Scheduled'),
+            'ARENA': game.get(arena_col, 'Unknown') if arena_col else 'Unknown',
+            'SEASON_TYPE': GID_PREFIX_REGIME.get(gid[:3], 'regular'),
+            'HOME_TEAM': game.get('homeTeam_teamTricode'),
+            'AWAY_TEAM': game.get('awayTeam_teamTricode'),
+        })
+
+    result = pd.DataFrame(scheduled)
+    result['HOME_TEAM_ID'] = pd.to_numeric(result['HOME_TEAM_ID'], errors='coerce').astype('Int64')
+    result['AWAY_TEAM_ID'] = pd.to_numeric(result['AWAY_TEAM_ID'], errors='coerce').astype('Int64')
+
+    # Drop placeholder rows for series whose teams aren't set yet (teamId 0 /
+    # blank tricode), e.g. a later-round game before the matchup is decided.
+    before_count = len(result)
+    result = result[(result['HOME_TEAM_ID'] > 0) & (result['AWAY_TEAM_ID'] > 0)]
+    result = result.dropna(subset=['HOME_TEAM', 'AWAY_TEAM'])
+    result = result[(result['HOME_TEAM'].astype(str) != '') & (result['AWAY_TEAM'].astype(str) != '')]
+    if len(result) < before_count:
+        print(f"  Filtered out {before_count - len(result)} game(s) with undetermined teams")
+
+    return result.reset_index(drop=True)
 
 
 # ============================================================================
@@ -1286,6 +1330,14 @@ def load_or_train_rf_models(engine, force_retrain=False):
         'calibration_method': 'isotonic_on_20pct_holdout',
         'conformal_halfwidths': rf_halfwidths,
         'conformal_method': 'split_conformal_on_20pct_holdout',
+        # Training-window dates for the backfill leakage guard. The production
+        # classifier was retrained on the FULL ml_df, so any backfill predict
+        # whose game_date <= data_through_date is leakage (model has memorized
+        # those outcomes). See backfill_mode in __main__.
+        'train_start_date': train_start, 'train_end_date': train_end,
+        'eval_start_date': test_start, 'eval_end_date': test_end,
+        'data_through_date': (pd.to_datetime(ml_df['GAME_DATE']).max().date()
+                              if 'GAME_DATE' in ml_df.columns else None),
     }
     bundle_path = save_model_bundle('rf', rf_bundle)
     joblib.dump(clf, clf_path)
@@ -1547,6 +1599,11 @@ def load_or_train_pytorch_models(engine, force_retrain=False):
         'feature_count': len(feature_cols),
         'hyperparameters_classifier': nn_clf_hp,
         'hyperparameters_regressor': nn_reg_hp,
+        # Same leakage-guard metadata as RF/XGB bundles.
+        'train_start_date': train_start, 'train_end_date': train_end,
+        'eval_start_date': test_start, 'eval_end_date': test_end,
+        'data_through_date': (pd.to_datetime(ml_df['GAME_DATE']).max().date()
+                              if 'GAME_DATE' in ml_df.columns else None),
     }
     bundle_path = save_model_bundle('nn', nn_bundle)
     torch.save(clf.state_dict(), clf_path)
@@ -1760,6 +1817,11 @@ def load_or_train_xgb_models(engine, force_retrain=False):
         'calibration_method': 'isotonic_on_20pct_holdout',
         'conformal_halfwidths': xgb_halfwidths,
         'conformal_method': 'split_conformal_on_20pct_holdout',
+        # Same leakage-guard metadata as the RF bundle. See backfill_mode in __main__.
+        'train_start_date': train_start, 'train_end_date': train_end,
+        'eval_start_date': test_start, 'eval_end_date': test_end,
+        'data_through_date': (pd.to_datetime(ml_df['GAME_DATE']).max().date()
+                              if 'GAME_DATE' in ml_df.columns else None),
     }
     bundle_path = save_model_bundle('xgb', xgb_bundle)
     joblib.dump(clf, clf_path)
@@ -1831,6 +1893,13 @@ def predict_with_xgb(clf, reg, scaler_tuple, feature_names, matchup_features: di
     X_scaled = scaler.transform(X_imputed)
 
     win_prob_classifier = float(clf.predict_proba(X_scaled)[0][1])
+    # E13 audit (added 2026-05-26): also expose the RAW pre-isotonic probability so
+    # the dashboard can A/B raw vs calibrated on real games. For an
+    # IsotonicCalibratedClassifier this is `_base.predict_proba`; for a bare
+    # classifier (NN / older bundles), raw == calibrated.
+    _base = getattr(clf, '_base', None)
+    win_prob_classifier_raw = (float(_base.predict_proba(X_scaled)[0][1])
+                                if _base is not None else win_prob_classifier)
     margin_mean = float(reg.predict(X_scaled)[0])
 
     # E14 split-conformal intervals (replaces the old degenerate placeholder).
@@ -1864,6 +1933,7 @@ def predict_with_xgb(clf, reg, scaler_tuple, feature_names, matchup_features: di
     return {
         'win_prob': win_prob,
         'win_prob_classifier': win_prob_classifier,
+        'win_prob_classifier_raw': win_prob_classifier_raw,  # pre-isotonic
         'margin_mean': margin_mean,
         'margin_std': margin_std,
         'margin_samples': margin_samples,
@@ -1876,6 +1946,33 @@ def predict_with_xgb(clf, reg, scaler_tuple, feature_names, matchup_features: di
         'feature_names': feature_names,
         'slot_to_player': slot_to_player,
     }
+
+
+def _model_data_through_date():
+    """Latest GAME_DATE the production model(s) were trained on. Returns the EARLIEST
+    such date across any loaded bundles (rf/xgb/nn current pointers) — that's the
+    strictest leakage cutoff. Returns None if no bundle carries the metadata."""
+    candidates = []
+    for key in ('rf', 'xgb', 'nn'):
+        path = os.path.join(BUNDLES_DIR, f'{key}_current.joblib')
+        if not os.path.exists(path):
+            continue
+        try:
+            b = joblib.load(path)
+        except Exception:
+            continue
+        d = b.get('data_through_date') or b.get('metadata', {}).get('data_through_date')
+        if d is None:
+            continue
+        if hasattr(d, 'date'):  # datetime → date
+            d = d.date()
+        elif isinstance(d, str):
+            try:
+                d = datetime.strptime(d, '%Y-%m-%d').date()
+            except ValueError:
+                continue
+        candidates.append(d)
+    return min(candidates) if candidates else None
 
 
 def _split_window_dates(ml_df, split_idx):
@@ -2429,6 +2526,7 @@ def predict_with_pytorch_embeddings(clf, reg, scaler_tuple, team_feature_names, 
     return {
         'win_prob': win_prob,
         'win_prob_classifier': win_prob_classifier,
+        'win_prob_classifier_raw': win_prob_classifier,  # NN-embed has no isotonic wrapper → raw == calibrated
         'win_prob_classifier_std': np.std(win_probs),
         'margin_mean': margin_mean,
         'margin_std': margin_std,
@@ -2459,8 +2557,13 @@ def predict_with_rf(clf, reg, scaler_tuple, feature_names, matchup_features: dic
     X_imputed = imputer.transform(X)
     X_scaled = scaler.transform(X_imputed)
 
-    # Classifier probability (reference)
-    win_prob_classifier = clf.predict_proba(X_scaled)[0][1]
+    # Classifier probability (reference). E13 audit: expose the RAW pre-isotonic
+    # probability too. For IsotonicCalibratedClassifier, _base.predict_proba is the
+    # uncalibrated value; for older / NN classifiers without the wrapper, raw == calibrated.
+    win_prob_classifier = float(clf.predict_proba(X_scaled)[0][1])
+    _base = getattr(clf, '_base', None)
+    win_prob_classifier_raw = (float(_base.predict_proba(X_scaled)[0][1])
+                                if _base is not None else win_prob_classifier)
 
     # Margin samples from tree ensemble (100 trees) — these capture the model's
     # *epistemic* spread. The conformal interval below captures *total* predictive
@@ -2504,7 +2607,8 @@ def predict_with_rf(clf, reg, scaler_tuple, feature_names, matchup_features: dic
 
     return {
         'win_prob': win_prob,                        # PRIMARY: derived from margin samples
-        'win_prob_classifier': win_prob_classifier,  # REFERENCE: from classifier
+        'win_prob_classifier': win_prob_classifier,  # REFERENCE: from classifier (isotonic-calibrated)
+        'win_prob_classifier_raw': win_prob_classifier_raw,  # E13 audit: pre-isotonic
         'margin_mean': margin_mean,
         'margin_std': margin_std,
         'margin_samples': tree_predictions,
@@ -2656,6 +2760,7 @@ def predict_with_pytorch(clf, reg, scaler_tuple, feature_names, matchup_features
     return {
         'win_prob': win_prob,                        # PRIMARY: derived from margin samples
         'win_prob_classifier': win_prob_classifier,  # REFERENCE: from classifier
+        'win_prob_classifier_raw': win_prob_classifier,  # NN has no isotonic wrapper → raw == calibrated
         'win_prob_classifier_std': np.std(win_probs),
         'margin_mean': margin_mean,
         'margin_std': margin_std,
@@ -3504,6 +3609,12 @@ def main():
                        help='Hide injury report')
     parser.add_argument('--show-impacts', action='store_true',
                        help='Show player impact reports for each team')
+    parser.add_argument('--allow-leakage', action='store_true',
+                        help='Permit backfill predictions for game dates that fall within the '
+                             'production model\'s training window. By default these are skipped '
+                             'because the model has memorized the outcome (the predictions look '
+                             'great but are meaningless). Only use this if you\'ve loaded a '
+                             'pre-trained-through-an-earlier-date model on purpose.')
     parser.add_argument('--no-shap', action='store_true',
                        help='Skip SHAP feature importance calculations (faster)')
     args = parser.parse_args()
@@ -3597,6 +3708,32 @@ def main():
             print("ERROR: PyTorch not available. Install with: pip install torch")
             return
         nn_embed_models = load_or_train_pytorch_embedding_models(engine)
+
+    # ---- Leakage guard for backfill mode ----
+    # Predicting for a game date that's <= the model's `data_through_date` is leakage:
+    # the production classifier/regressor were retrained on the full ml_df at end of
+    # training, so they have memorized those games' actual outcomes. The backfilled
+    # accuracy/MAE numbers would look great but mean nothing about real generalization.
+    # Bundles trained before this guard was added lack data_through_date — we warn
+    # loudly and continue, since we don't have a date to enforce against.
+    if backfill_mode and not args.allow_leakage:
+        through = _model_data_through_date()
+        if through is None:
+            print("\n[backfill] WARNING: loaded model bundle has no data_through_date "
+                  "metadata (pre-2026-05-26). Cannot enforce the leakage guard; "
+                  "trust the resulting metrics with caution. Retrain to populate.")
+        else:
+            kept = [d for d in game_dates if datetime.strptime(d, '%Y-%m-%d').date() > through]
+            dropped = len(game_dates) - len(kept)
+            if dropped > 0:
+                print(f"\n[backfill] Leakage guard: model was trained through {through}. "
+                      f"Skipping {dropped} of {len(game_dates)} requested dates that fall "
+                      f"on or before that. Use --allow-leakage to override.")
+                game_dates = kept
+            if not game_dates:
+                print(f"[backfill] No predict-eligible dates remain after the leakage guard. Exiting.")
+                engine.dispose()
+                return
 
     # Fetch auto-injuries if requested
     auto_injury_data = {}
@@ -3763,7 +3900,14 @@ def main():
 
                 if PREDICTION_TRACKING_AVAILABLE and not args.no_log:
                     try:
-                        predicted_winner = home_team if result['win_prob'] > 0.5 else away_team
+                        # Authoritative win-prob = isotonic-calibrated classifier (E13).
+                        # The pre-E13 logging used `result['win_prob']` (margin-derived),
+                        # which disagreed with the dashboard's calibrated picks. Now both
+                        # tabs read the same number; the raw pre-isotonic value is logged
+                        # alongside for the dashboard's raw-vs-calibrated A/B view.
+                        p_cal = float(result.get('win_prob_classifier', result['win_prob']))
+                        p_raw = result.get('win_prob_classifier_raw')
+                        predicted_winner = home_team if p_cal > 0.5 else away_team
                         log_prediction(
                             engine=engine,
                             game_id=game_id,
@@ -3774,7 +3918,8 @@ def main():
                             model_version=model_version,
                             predicted_winner=predicted_winner,
                             predicted_margin=result['margin_mean'],
-                            home_win_probability=result['win_prob'],
+                            home_win_probability=p_cal,
+                            home_win_probability_raw=(float(p_raw) if p_raw is not None else None),
                             margin_uncertainty=result['margin_std'],
                             feature_count=feature_count
                         )
@@ -3796,7 +3941,9 @@ def main():
 
                 if PREDICTION_TRACKING_AVAILABLE and not args.no_log:
                     try:
-                        predicted_winner = home_team if result['win_prob'] > 0.5 else away_team
+                        p_cal = float(result.get('win_prob_classifier', result['win_prob']))
+                        p_raw = result.get('win_prob_classifier_raw')
+                        predicted_winner = home_team if p_cal > 0.5 else away_team
                         log_prediction(
                             engine=engine,
                             game_id=game_id,
@@ -3807,7 +3954,8 @@ def main():
                             model_version=model_version,
                             predicted_winner=predicted_winner,
                             predicted_margin=result['margin_mean'],
-                            home_win_probability=result['win_prob'],
+                            home_win_probability=p_cal,
+                            home_win_probability_raw=(float(p_raw) if p_raw is not None else None),
                             margin_uncertainty=result['margin_std'],
                             feature_count=feature_count
                         )
@@ -3831,7 +3979,9 @@ def main():
 
                 if PREDICTION_TRACKING_AVAILABLE and not args.no_log:
                     try:
-                        predicted_winner = home_team if result['win_prob'] > 0.5 else away_team
+                        p_cal = float(result.get('win_prob_classifier', result['win_prob']))
+                        p_raw = result.get('win_prob_classifier_raw')
+                        predicted_winner = home_team if p_cal > 0.5 else away_team
                         log_prediction(
                             engine=engine,
                             game_id=game_id,
@@ -3842,7 +3992,8 @@ def main():
                             model_version=model_version,
                             predicted_winner=predicted_winner,
                             predicted_margin=result['margin_mean'],
-                            home_win_probability=result['win_prob'],
+                            home_win_probability=p_cal,
+                            home_win_probability_raw=(float(p_raw) if p_raw is not None else None),
                             margin_uncertainty=result['margin_std'],
                             feature_count=len(team_features)
                         )

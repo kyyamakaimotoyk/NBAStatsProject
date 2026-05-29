@@ -34,6 +34,7 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **E17** | **Playoff series-context features (Track A)** | E16 showed a non-significant ~3-4pp gap to Vegas on playoffs. Series state (game-in-series, score, elimination, HCA, in-series h2h) is the playoff structure Vegas prices and our model is blind to — the one principled shot at the gap. | `data_engineering/series_context.py` builds 8 features from prior games in each series (no leakage) → `playoff_series_context` table → joined at build. `experiments/e17_series_eval.py`: train on ALL games incl prior playoffs before each test season's playoffs (series features need playoffs in train to be learnable), paired with-vs-without on 316 playoff games (2023-26), 5 seeds + McNemar/paired-t/bootstrap-AUC. | **No significant gain.** RF ΔAUC −0.014 (CI cross 0), McNemar p=0.33; XGB ΔAUC +0.007, McNemar p=0.89 (26/26 net), MAE flat-to-worse. Vegas still 0.647 on same games — gap didn't close. Confirms E16: playoffs near-irreducible. | **DROPPED from production 2026-05-19** (`ENABLE_SERIES_DEFAULT=False`); build code/table retained for re-eval as playoff data grows. |
 | **E16** | **Playoff ceiling check (model vs Vegas)** | E15 showed model playoff AUC ~0.64. Is that near the irreducible ceiling, or missing signal? Compare to Vegas closing line on the same games. | `experiments/e16_playoff_ceiling.py`: per-season temporal train (as E15), predict on playoff games, restrict to the 337/403 with a Vegas line, head-to-head model vs Vegas (favorite=home if spread<0; AUC score=−home_spread; margin=−home_spread). Bootstrap model−Vegas deltas. | **Vegas itself only gets AUC 0.648 / acc 0.647 / MAE 11.78 on playoffs** → ceiling is ~0.65, not 0.79; playoffs are irreducibly hard. Model (RF 0.614/0.620/12.01, XGB 0.607/0.611/12.15) trails Vegas by ~3-4pp AUC but **every delta CI crosses zero** — within noise of the market. | **Diagnostic 2026-05-19** — revised playoff plan: cap investment; Track A (series features) optional one-shot at the residual gap; Tracks B-E shelved. docs/playoff_improvement_plan.md. |
 | **E15** | **Cross-context generalization** — Phase 1 | (a) How much data is needed (learning curve)? (b) Can a regular-season model be trusted in the playoffs? Uses E13/E14 coverage+ECE as the cross-context lens. | `experiments/e15_cross_context.py` two modes. **Learning curve**: fix test=W5, vary train-start (0.5-4 seasons), 5 seeds. **Regime**: per-season temporal train on regular games before each season's playoffs, pool ~400 playoff test games; compare regular(control)/playin/playoffs on acc/AUC/MAE/ECE/coverage + KS feature-shift. Write-up: docs/e15_cross_context_report.md. | **Learning curve flat past ~1 season** (1k→4.5k games buys ~0 acc/MAE) → don't chase more history. **Playoffs**: winner-prediction degrades hard (RF acc 0.713→0.635, AUC 0.790→**0.637**; XGB similar) — playoffs are a harder, ELO-compressed, slower-pace subset (KS DIFF_ELO p=0.029). **But intervals/calibration transfer**: playoff cov90≈0.88-0.90, ECE stays low. Coverage-as-diagnostic worked: spread is similar (bands hold) but winner is less predictable (AUC craters). Play-in n=30 too small to trust. | **Diagnostic, no model change 2026-05-19** — recommendations: set playoff expectations ~63% not ~71%; trust intervals in playoffs; future playoff-specific features. |
+| **E18** | **Calibration audit + logging fix + leakage guard** | User-surfaced bug: Game Predictions tab showed NYK winner for CLE@NYK 2026-05-25 while Model Evaluation tab showed CLE pick logged — same model, same game, different pick. Root cause: dashboard reads E13 isotonic-calibrated classifier; the logging path in `predict_games.py` still derived `predicted_winner` from the **regressor margin sign** (`result['win_prob']` = `np.mean(margin_samples > 0)`), an older signal that pre-dates E13. Two-headed model → two different picks near the boundary. Also surfaced: bundle metadata stored no `data_through_date`, so the backfill loop happily predicted for dates within the training window with no warning. | (1) Logging now uses calibrated classifier: `p_cal = result['win_prob_classifier']`; `predicted_winner = home if p_cal > 0.5 else away`. (2) New `home_win_probability_raw` column added via idempotent migration in `prediction_tracker.ensure_table_exists`; the pre-isotonic prob is logged alongside the calibrated one. NN/NN-embed have no isotonic wrapper → raw == calibrated. (3) Bundle metadata gains `train_start_date / train_end_date / eval_start_date / eval_end_date / data_through_date` (the latest GAME_DATE the production model saw). (4) Backfill loop in `predict_games.py` gates on `data_through_date`: dates ≤ that are skipped with a loud message; `--allow-leakage` overrides. (5) Model Evaluation per-game table now shows **Win% raw** + **Win% cal** side-by-side; for legacy rows raw is NULL. | Data fix only (no model retrain). Game Predictions and Model Evaluation now read the same field. Backfill predictions on training-window dates are refused by default — past metrics on those rows were optimistic by an unmeasured amount. **A/B comparison columns ready**: re-run `predict_games.py --start-date X --end-date Y --no-shap --no-plot` for `X > data_through_date` to populate `home_win_probability_raw` and start the raw-vs-calibrated comparison. | **Implemented 2026-05-26** — see "Calibration audit & leakage guard" section below. |
 
 ---
 
@@ -694,3 +695,68 @@ Subtracting the two rows gives **LINEUP marginal contribution**: RF +1.3pp, XGB 
 - If NN doesn't become deterministic after seeding, check for `DataLoader(shuffle=True)` without a seed-able worker init, or `torch.backends.cudnn.deterministic = False`.
 
 ---
+
+
+## 2026-05-26 — Experiment 18: Calibration audit, raw/cal logging, leakage guard
+
+### Why this experiment exists
+User opened CLE @ NYK on 2026-05-25 in the Game Predictions tab — all models showed NYK as winner. Switched to Model Evaluation tab — same game, same models, **CLE pick** logged. The two tabs were not contradicting each other by chance: they were reading **two different fields** of the same prediction.
+
+This experiment fixes the inconsistency, exposes the raw-vs-calibrated comparison so the calibration value is auditable on real games going forward, and closes an unrelated-but-discovered leakage hole in the backfill path.
+
+### The discrepancy, in one game (RF, CLE@NYK 2026-05-25)
+```
+margin_mean              = +3.04   (regressor mean margin: "CLE by 3")
+win_prob (margin-derived)= 0.880   (88% of regressor tree-by-tree margins > 0)
+win_prob_classifier_raw  = ~0.55   (raw classifier P(home wins))
+win_prob_classifier      = 0.417   (after E13 isotonic calibration)
+
+Pre-E18 logging: predicted_winner = home if win_prob > 0.5 else away  -> CLE
+Dashboard:       pick             = home if win_prob_classifier > 0.5 else away -> NYK
+Actual outcome:  NYK won by 37 — the calibrated classifier was directionally right.
+```
+
+The classifier and regressor are two independent fits optimizing different losses. They routinely disagree on margin-of-2 games. The dashboard moved to the calibrated classifier as authoritative per E13; the logging path was never updated, so every row in `model_predictions` since E13 carries a `predicted_winner` derived from a signal we no longer treat as authoritative.
+
+### Where the data comes from at each step (canonicalized)
+
+| Step | What is used | Where (file:line) |
+|---|---|---|
+| 1. CSV build | `data_engineering/feature_engineering.py::build_feature_dataset(start_date="2020-01-01")` → `nba_ml_features.csv` | `predict_games.py:1939` |
+| 2. Allow-list select | `core.features::select_features` (single source of truth; E9 on / E10 off / E11 off / series off by default) | `predict_games.py:1945-1946` |
+| 3. Eval split | Temporal 80/20 by GAME_DATE order. First 80% trains the EVAL model; last 20% is held out. Boundary dates via `_split_window_dates`. | `predict_games.py:1213-1218` (RF); `:1475` (XGB); `:1711` (NN) |
+| 4. Eval metrics | Eval model `predict_proba` / `predict` on the 20% holdout. Recorded in registry. | `predict_games.py:1245-1276` |
+| 5. **Calibrator fit** | `_fit_isotonic_calibrator(clf_prob, y_clf_test)` — eval-classifier probs on the 20% holdout + held-out labels. Leakage-clean for the calibrator. | `predict_games.py:1299` |
+| 6. **Production retrain** | `clf.fit(X_scaled, y_clf)` — the model that ships is fit on the FULL 100% of the CSV. | `predict_games.py:1283-1287` |
+| 7. Calibrator wrap | `IsotonicCalibratedClassifier(clf_production, calibrator)` — note the calibrator was fit against the EVAL model output distribution but is applied to the PRODUCTION model output. Subtle, works in practice; purist would refit on a fresh slice. | `predict_games.py:1300` |
+| 8. Conformal half-widths | Eval regressor residuals on the same 20% holdout → `ConformalRegressor` wrap. | `predict_games.py:1303-1307` |
+| 9. Bundle save | E18: now stores `train_start_date / train_end_date / eval_start_date / eval_end_date / data_through_date` in bundle and metadata. | `predict_games.py:1311-1334`; `:344-358` |
+| 10. Single-date predict | Features built from `get_team_rolling_stats(..., as_of_date=game_date)` (point-in-time). E18: prediction functions now emit `win_prob_classifier_raw` alongside the calibrated value. | `predict_games.py:2485` (RF); `:1847` (XGB); `:2565` (NN) |
+| 11. Backfill predict | `--start-date / --end-date` iterates dates and calls predict per game. **E18: refuses dates <= `data_through_date` unless `--allow-leakage` is set** (those dates were in the production retrain). | `predict_games.py:3573-3583` (loop); guard at `:3685-3712` |
+| 12. Logging | E18: `predicted_winner` now derives from `win_prob_classifier` (calibrated); `home_win_probability` is the calibrated value; `home_win_probability_raw` is the pre-isotonic value. | `predict_games.py:3802-3819 / 3835-3852 / 3870-3889`; `prediction_tracker.py::log_prediction` |
+| 13. Backfill actuals | `prediction_tracker.py::backfill_actuals` reads `game_list`, derives `actual_winner` from PTS, skips rows where `WL IS NULL` (per the in-progress-game fix). | `prediction_tracker.py:265` |
+
+### What changed in code (E18)
+1. **`prediction_tracker.py`**:
+   - Idempotent migration in `ensure_table_exists`: `ALTER TABLE model_predictions ADD COLUMN home_win_probability_raw FLOAT NULL` (checks `information_schema` first).
+   - `log_prediction(..., home_win_probability_raw=None)` parameter; INSERT/UPDATE plumbed.
+2. **`predict_games.py`**:
+   - `predict_with_rf / _xgb / _pytorch / _pytorch_embeddings`: emit `win_prob_classifier_raw` (`_base.predict_proba` for wrapped clfs; equals `win_prob_classifier` for unwrapped NN).
+   - Three log sites: pick + logged P now come from the calibrated classifier.
+   - Bundle dicts include the train/eval window dates and `data_through_date`. `save_model_bundle` promotes them into `metadata`.
+   - New helper `_model_data_through_date()` and a backfill-loop guard refusing leakage dates; `--allow-leakage` override.
+3. **`visualization/dataExploration.py`**:
+   - `_load_predictions_df` SELECTs the raw column; per-game table now shows `Win% raw (REF)` and `Win% cal (REF)` side by side.
+
+### How to populate the comparison
+Existing rows have `home_win_probability_raw = NULL`. New predictions logged from now on carry both. To backfill a historical range with both values, retrain a model whose `data_through_date` is earlier than the range (so the leakage guard lets it through), then run `predict_games.py --start-date X --end-date Y --no-shap --no-plot` over the range.
+
+### What we will be able to measure once populated
+- **Pick disagreement rate** between raw and calibrated picks (expected: low single-digit %; calibration only flips picks when P crosses 0.5).
+- **ECE / Brier** on the same rows for raw vs cal (should reproduce E13 offline: ~0.131 -> ~0.074 for RF).
+- **Accuracy on the disagreement subset** — when the two heads disagreed, which one was right more often? If calibration is doing real work, cal should win >50% on those games.
+
+### Caveats / honest residuals
+- The calibrator-on-eval-then-wrap-production subtlety from step 7 is still present.
+- Pre-E18 `model_predictions` rows have stale `predicted_winner` derived from the regressor. They are not corrupted — the probabilities and margins are honest — but Result reflects the old pick.
+- Bundles trained before 2026-05-26 lack `data_through_date`; the guard warns and continues. Any retrain after this date establishes the metadata going forward.

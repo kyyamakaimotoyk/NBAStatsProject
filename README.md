@@ -146,6 +146,68 @@ python visualization/dataExploration.py
 
 ---
 
+## Data flow & leakage safeguards (read this if you care about the metrics)
+
+A model bundle has three logically distinct datasets — *training*, *calibration*, *prediction* — and the boundary between them is what keeps the reported metrics honest. The exact code locations:
+
+### 1. Training data selection
+**`modeling/predict_games.py:1933` `_prepare_training_data(engine)`** loads `nba_ml_features.csv` *in its entirety* (no date filtering). The CSV is itself built by `data_engineering/feature_engineering.py::build_feature_dataset` which takes `start_date='2020-01-01'` as a default and runs through the latest available game.
+
+Then **`predict_games.py:1213-1218`** does the actual train/eval split:
+```python
+n_samples = len(X_scaled)
+split_idx = int(n_samples * 0.8)
+X_train, X_test = X_scaled[:split_idx], X_scaled[split_idx:]
+```
+That is a **temporal 80/20 split** — first 80% of rows (sorted by `GAME_DATE`) trains an evaluation model; the last 20% is held out. The boundary dates are captured at `predict_games.py:1220` via `_split_window_dates` (defined at line 1917) and stored in the registry rows so you can audit them. Same pattern repeats in `load_or_train_xgb_models` (~line 1475) and the PyTorch loaders (~line 1711).
+
+### 2. Isotonic calibration data selection
+**`predict_games.py:1294-1300`**:
+```python
+# E13 isotonic calibration: fit on the eval clf's out-of-sample 20% holdout
+# predictions (clf_prob/y_clf_test computed above — the eval clf never saw
+# those games), then wrap the full-data production clf...
+rf_calibrator = _fit_isotonic_calibrator(clf_prob, y_clf_test)
+clf = IsotonicCalibratedClassifier(clf, rf_calibrator)
+```
+The calibrator is fit on the **same 20% holdout** used for evaluation metrics — specifically on the *eval classifier's* predictions over that holdout (and the holdout's true labels). The eval classifier was honestly trained on only the 80% train side, so the calibrator's input/target pair is leakage-clean.
+
+**Subtle thing worth knowing**: at line 1283-1287, the *production* classifier is retrained on the **full 100%** and the (leakage-clean) calibrator is wrapped around it. So the calibrator was fit using one model's outputs and applied to a slightly different model's outputs. This is not probability leakage in the metrics sense — it just means the calibration map is fit to the eval-model's distribution and applied to the production-model's. It works in practice (ECE drops as advertised — see E13), but a *purist* version would calibrate the production model itself with a separate fresh holdout.
+
+### 3. Prediction / backfill data selection
+**`predict_games.py:3573-3583`**: `--start-date X --end-date Y` builds `game_dates = [start_d..end_d]`. For each date, downstream `get_team_rolling_stats(..., as_of_date=game_date)` uses `WHERE GAME_DATE < as_of_date AND WL IS NOT NULL` so **features** are point-in-time. So features are honest.
+
+### 4. Leakage safeguard between training and backfill (added 2026-05-26)
+**The model was trained on all rows in `nba_ml_features.csv`** (through whatever its latest `GAME_DATE` was at training time). If you then run `predict_games.py --start-date 2025-12-01 --end-date 2025-12-15`, the model has *memorized* those games' actual outcomes from its training pass and will look artificially good.
+
+**Safeguard**: the bundle now stores `data_through_date` in its metadata (set at the three save sites — RF `~line 1311`, XGB `~line 1803`, NN `~line 1590`). The backfill loop in `__main__` (`predict_games.py:~3685`) reads it via `_model_data_through_date()` and **refuses to predict for any date ≤ `data_through_date` unless `--allow-leakage` is set**, with a loud message naming the cutoff. Bundles trained before 2026-05-26 lack the metadata; the guard prints a warning instead of enforcing. Any retrain after this date establishes the metadata.
+
+### Diagram
+
+```
+nba_ml_features.csv (all rows, sorted by GAME_DATE)
+│
+├── first 80% ─────── train EVAL classifier + EVAL regressor
+│                       │
+│                       └── predict on last 20% → eval metrics (registry)
+│
+├── last 20% ──────── (1) calibrator fit input/target
+│                     (2) conformal half-width residuals
+│
+└── all 100% ──────── train PRODUCTION classifier + regressor (the model that ships)
+                        │
+                        └── wrapped with calibrator (E13) + conformal (E14)
+                              │
+                              └── data_through_date = max(GAME_DATE in CSV)
+                                    │
+                                    └── backfill predicts for game_date > data_through_date
+                                          (--allow-leakage to override)
+```
+
+**TL;DR**: train 80%, calibrate on 20%, ship a 100%-retrained model wrapped with the calibrator, and refuse to backfill predict for dates the production model saw.
+
+---
+
 ## Scripts Overview
 
 | Script | Purpose |

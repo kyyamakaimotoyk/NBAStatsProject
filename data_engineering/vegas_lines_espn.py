@@ -42,6 +42,16 @@ SUMMARY_URL = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summ
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
 
+# ESPN uses a handful of team abbreviations that differ from the NBA/nba_teams
+# canonical set. Left unmapped, these rows (a) fail to resolve a team_id and
+# (b) never match the dashboard's Vegas overlay, which keys on the canonical
+# abbreviation from the schedule (e.g. schedule says 'SAS', ESPN says 'SA').
+ESPN_ABBREV_FIX = {
+    'GS': 'GSW', 'NO': 'NOP', 'NY': 'NYK',
+    'SA': 'SAS', 'UTAH': 'UTA', 'WSH': 'WAS',
+}
+
+
 # Provider name from ESPN -> our source label + bookmaker fields
 PROVIDER_TO_SOURCE = {
     'Draft Kings':  ('espn_draftkings',  'Draft Kings'),
@@ -129,6 +139,7 @@ def fetch_lines_for_date(engine, target_date: date, team_resolver: dict,
             team = c.get('team', {})
             abbr = team.get('abbreviation')
             if not abbr: continue
+            abbr = ESPN_ABBREV_FIX.get(abbr, abbr)  # normalize to canonical NBA abbrev
             if c.get('homeAway') == 'home':
                 home_abbrev = abbr
             elif c.get('homeAway') == 'away':

@@ -74,7 +74,8 @@ def create_predictions_table(engine):
         -- Predictions
         predicted_winner VARCHAR(50) NOT NULL,
         predicted_margin FLOAT NOT NULL COMMENT 'Positive = home team wins',
-        home_win_probability FLOAT NOT NULL COMMENT '0.0 to 1.0',
+        home_win_probability FLOAT NOT NULL COMMENT '0.0 to 1.0 - ISOTONIC-CALIBRATED (E13) P(home wins). Authoritative signal driving predicted_winner.',
+        home_win_probability_raw FLOAT NULL COMMENT 'Pre-isotonic P(home wins) from the base classifier. Logged alongside the calibrated one so the dashboard can A/B them. NULL for legacy rows + for NN (no calibrator).',
         margin_uncertainty FLOAT NULL COMMENT 'Standard deviation of margin predictions',
 
         -- Feature information
@@ -117,9 +118,27 @@ def table_exists(engine) -> bool:
 
 
 def ensure_table_exists(engine):
-    """Ensure the predictions table exists, create if not."""
+    """Ensure the predictions table exists, create if not. Also runs the small
+    schema migrations the project has accumulated, since they're cheap and
+    idempotent (information_schema check before each ALTER)."""
     if not table_exists(engine):
         create_predictions_table(engine)
+        return
+    # E13 audit migration (2026-05-26): add home_win_probability_raw if missing.
+    with engine.connect() as conn:
+        has_raw = conn.execute(text(
+            "SELECT COUNT(*) FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = 'model_predictions' "
+            "AND column_name = 'home_win_probability_raw'"
+        )).scalar()
+        if not has_raw:
+            conn.execute(text(
+                "ALTER TABLE model_predictions ADD COLUMN home_win_probability_raw FLOAT NULL "
+                "COMMENT 'Pre-isotonic P(home wins). NULL for legacy rows + for models without a calibrator.' "
+                "AFTER home_win_probability"
+            ))
+            conn.commit()
+            print("Added column model_predictions.home_win_probability_raw")
 
 
 # ============================================================================
@@ -139,7 +158,8 @@ def log_prediction(
     home_win_probability: float,
     margin_uncertainty: Optional[float] = None,
     features_used: Optional[Dict] = None,
-    feature_count: int = 0
+    feature_count: int = 0,
+    home_win_probability_raw: Optional[float] = None
 ) -> int:
     """
     Log a prediction to the database.
@@ -172,13 +192,13 @@ def log_prediction(
         game_id, prediction_timestamp, game_date,
         model_type, model_version,
         home_team, away_team,
-        predicted_winner, predicted_margin, home_win_probability, margin_uncertainty,
+        predicted_winner, predicted_margin, home_win_probability, home_win_probability_raw, margin_uncertainty,
         features_used, feature_count
     ) VALUES (
         :game_id, :prediction_timestamp, :game_date,
         :model_type, :model_version,
         :home_team, :away_team,
-        :predicted_winner, :predicted_margin, :home_win_probability, :margin_uncertainty,
+        :predicted_winner, :predicted_margin, :home_win_probability, :home_win_probability_raw, :margin_uncertainty,
         :features_used, :feature_count
     )
     ON DUPLICATE KEY UPDATE
@@ -186,6 +206,7 @@ def log_prediction(
         predicted_winner = VALUES(predicted_winner),
         predicted_margin = VALUES(predicted_margin),
         home_win_probability = VALUES(home_win_probability),
+        home_win_probability_raw = VALUES(home_win_probability_raw),
         margin_uncertainty = VALUES(margin_uncertainty),
         features_used = VALUES(features_used),
         feature_count = VALUES(feature_count)
@@ -203,6 +224,7 @@ def log_prediction(
             'predicted_winner': predicted_winner,
             'predicted_margin': predicted_margin,
             'home_win_probability': home_win_probability,
+            'home_win_probability_raw': home_win_probability_raw,
             'margin_uncertainty': margin_uncertainty,
             'features_used': features_json,
             'feature_count': feature_count
@@ -335,6 +357,16 @@ def backfill_actuals(engine, lookback_days: int = 30, verbose: bool = True) -> D
                 not_found_count += 1
                 if verbose:
                     print(f"  Incomplete results for game {game_id}")
+                continue
+
+            # WL=NULL means the game wasn't final when game_list captured it
+            # (mid-game leaguegamefinder snapshot). Don't derive a bogus
+            # actual_margin from those partial PTS — wait for the next pipeline
+            # run to refresh the game_list row via _update_game_list_table.
+            if (pd.isna(home_result['WL'].iloc[0]) or pd.isna(away_result['WL'].iloc[0])):
+                not_found_count += 1
+                if verbose:
+                    print(f"  Game {game_id} not final (WL is NULL); skipping until game_list is refreshed")
                 continue
 
             home_pts = home_result['PTS'].iloc[0]

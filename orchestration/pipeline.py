@@ -54,7 +54,7 @@ LOG_DIR = os.path.join(REPO_ROOT, 'logs')
 STATE_FILE = os.path.join(LOG_DIR, 'pipeline_state.json')
 FEATURES_CSV = os.path.join(REPO_ROOT, 'nba_ml_features.csv')
 
-STAGE_ORDER = ['fetch_data', 'player_impact', 'features', 'train', 'predict', 'backfill', 'validate']
+STAGE_ORDER = ['fetch_data', 'player_impact', 'features', 'train', 'vegas_lines', 'predict', 'backfill', 'validate']
 
 
 # ============================================================================
@@ -99,6 +99,9 @@ def inspect_status(engine=None) -> Dict[str, Any]:
 
         # Player impact cache
         status['latest_player_impact_date'] = _max_date(eng, 'SELECT MAX(compute_date) FROM player_impact')
+
+        # Vegas lines (ESPN/DraftKings) — used by the dashboard Vegas overlay + model-vs-Vegas chart
+        status['latest_vegas_line_date'] = _max_date(eng, 'SELECT MAX(game_date) FROM vegas_lines')
 
         # Feature CSV
         if os.path.exists(FEATURES_CSV):
@@ -224,6 +227,22 @@ def recommend(status: Optional[Dict[str, Any]] = None) -> List[Dict[str, str]]:
                 'reason': f'Last train {train_iso}; features now go to {feat_iso}. Retrain.'
             })
 
+    # 4b) Vegas lines — if the latest line is behind the schedule, refresh so the
+    # dashboard overlay + model-vs-Vegas chart have lines for the upcoming slate.
+    vegas_iso = status.get('latest_vegas_line_date')
+    if not vegas_iso:
+        suggestions.append({'stage': 'vegas_lines',
+                            'reason': 'vegas_lines table empty — fetch ESPN/DraftKings lines.'})
+    elif sched_iso:
+        vegas_d = pd.to_datetime(vegas_iso).date()
+        sched_d2 = pd.to_datetime(sched_iso).date()
+        if (sched_d2 - vegas_d).days >= 1:
+            suggestions.append({
+                'stage': 'vegas_lines',
+                'reason': f'Vegas lines end {vegas_iso}; schedule goes to {sched_iso}. '
+                          f'Fetch lines for the gap + upcoming games.'
+            })
+
     # 5) Predict — if the latest prediction is older than today, predict for today.
     pred_iso = status.get('latest_prediction_date')
     if not pred_iso or pd.to_datetime(pred_iso).date() < today:
@@ -273,11 +292,37 @@ class StageSpec:
 @dataclass
 class FetchDataStage(StageSpec):
     name: str = 'fetch_data'
-    description: str = 'Fetch raw NBA boxscore data from the nba_api into MySQL (main_refactored.py).'
+    description: str = ('Fetch raw NBA boxscore data into MySQL (main_refactored.py). '
+                       'By default uses importedgamesmemory to skip the leaguegamefinder '
+                       'API call when the window is already fully processed, and to '
+                       'narrow the API window past the contiguous done prefix.')
+    args: List[Dict[str, Any]] = field(default_factory=lambda: [
+        {'name': 'date_from', 'cli': '--date-from', 'type': 'date',
+         'help': 'Window start (YYYY-MM-DD). Default: current-season start.'},
+        {'name': 'date_to', 'cli': '--date-to', 'type': 'date',
+         'help': 'Window end (YYYY-MM-DD). Default: current-season end.'},
+        {'name': 'workers', 'cli': '--workers', 'type': 'int',
+         'help': 'Parallel worker processes (default 2 — safe for NBA API rate limits).'},
+        {'name': 'sequential', 'cli': '--sequential', 'type': 'flag',
+         'help': 'Use the single-threaded run_import instead of run_import_parallel.'},
+        {'name': 'no_skip_processed', 'cli': '--no-skip-processed', 'type': 'flag',
+         'help': 'Force a full API fetch even if some/all games are already in '
+                 'importedgamesmemory (use after a retroactive schedule edit).'},
+    ])
 
     def build_cmd(self, **kwargs) -> List[str]:
-        # main_refactored.py has no CLI args; it just runs run_import_parallel()
-        return [sys.executable, 'data_engineering/main_refactored.py']
+        cmd = [sys.executable, 'data_engineering/main_refactored.py']
+        if kwargs.get('date_from'):
+            cmd += ['--date-from', kwargs['date_from']]
+        if kwargs.get('date_to'):
+            cmd += ['--date-to', kwargs['date_to']]
+        if kwargs.get('workers'):
+            cmd += ['--workers', str(kwargs['workers'])]
+        if kwargs.get('sequential'):
+            cmd += ['--sequential']
+        if kwargs.get('no_skip_processed'):
+            cmd += ['--no-skip-processed']
+        return cmd
 
 
 @dataclass
@@ -345,6 +390,32 @@ class TrainStage(StageSpec):
             "print('[pipeline.train] done.')"
         )
         return [sys.executable, '-c', code]
+
+
+@dataclass
+class VegasLinesStage(StageSpec):
+    name: str = 'vegas_lines'
+    description: str = ('Fetch ESPN/DraftKings Vegas lines into vegas_lines (vegas_lines_espn.py). '
+                       'Powers the dashboard Vegas overlay and the model-vs-Vegas MAE chart. '
+                       'Defaults to today + the next 7 days so upcoming games have lines.')
+    args: List[Dict[str, Any]] = field(default_factory=lambda: [
+        {'name': 'start_date', 'cli': '--start', 'type': 'date',
+         'help': 'First date to fetch (YYYY-MM-DD). Defaults to today.'},
+        {'name': 'end_date', 'cli': '--end', 'type': 'date',
+         'help': 'Last date to fetch. Overrides days_ahead.'},
+        {'name': 'days_ahead', 'cli': '--days-ahead', 'type': 'int', 'default': 7,
+         'help': 'If end not set: fetch today + this many future days (default 7).'},
+    ])
+
+    def build_cmd(self, **kwargs) -> List[str]:
+        cmd = [sys.executable, 'data_engineering/vegas_lines_espn.py']
+        if kwargs.get('start_date'):
+            cmd += ['--start', kwargs['start_date']]
+        if kwargs.get('end_date'):
+            cmd += ['--end', kwargs['end_date']]
+        else:
+            cmd += ['--days-ahead', str(kwargs.get('days_ahead') or 7)]
+        return cmd
 
 
 @dataclass
@@ -432,6 +503,7 @@ STAGE_REGISTRY: Dict[str, StageSpec] = {
     'player_impact': PlayerImpactStage(),
     'features': FeaturesStage(),
     'train': TrainStage(),
+    'vegas_lines': VegasLinesStage(),
     'predict': PredictStage(),
     'backfill': BackfillStage(),
     'validate': ValidateStage(),
@@ -655,6 +727,21 @@ def main():
     p_run.add_argument('--validate-end', type=str, default=None, help='For validate stage: window end.')
     p_run.add_argument('--backfill-lookback', type=int, default=30,
                        help='For backfill stage: --lookback days passed to prediction_tracker.py.')
+    p_run.add_argument('--fetch-date-from', type=str, default=None,
+                       help='For fetch_data stage: window start (YYYY-MM-DD or MM/DD/YYYY).')
+    p_run.add_argument('--fetch-date-to', type=str, default=None,
+                       help='For fetch_data stage: window end (YYYY-MM-DD or MM/DD/YYYY).')
+    p_run.add_argument('--fetch-workers', type=int, default=None,
+                       help='For fetch_data stage: number of parallel workers.')
+    p_run.add_argument('--fetch-sequential', action='store_true',
+                       help='For fetch_data stage: use the single-threaded run_import.')
+    p_run.add_argument('--fetch-no-skip-processed', action='store_true',
+                       help='For fetch_data stage: force a full API fetch over the window '
+                            'even if importedgamesmemory already covers it.')
+    p_run.add_argument('--vegas-start', type=str, default=None, help='For vegas_lines stage: first date (YYYY-MM-DD).')
+    p_run.add_argument('--vegas-end', type=str, default=None, help='For vegas_lines stage: last date (YYYY-MM-DD).')
+    p_run.add_argument('--vegas-days-ahead', type=int, default=7,
+                       help='For vegas_lines stage: today + N future days when --vegas-end unset (default 7).')
 
     p_runfile = sub.add_parser('run-from-file',
                                 help='Internal: execute a stages payload from a JSON file '
@@ -681,12 +768,17 @@ def main():
     if args.cmd == 'run':
         stages = _expand_stages(args.stages)
         per_stage_kwargs: Dict[str, Dict[str, Any]] = {
+            'fetch_data': {'date_from': args.fetch_date_from, 'date_to': args.fetch_date_to,
+                           'workers': args.fetch_workers, 'sequential': args.fetch_sequential,
+                           'no_skip_processed': args.fetch_no_skip_processed},
             'predict': {'predict_date': args.predict_date, 'model': args.predict_model,
                         'start_date': args.predict_start, 'end_date': args.predict_end,
                         'no_shap': args.predict_no_shap},
             'validate': {'days': args.validate_days, 'start_date': args.validate_start,
                          'end_date': args.validate_end},
             'backfill': {'lookback': args.backfill_lookback},
+            'vegas_lines': {'start_date': args.vegas_start, 'end_date': args.vegas_end,
+                            'days_ahead': args.vegas_days_ahead},
         }
         state = run_pipeline_blocking(stages, per_stage_kwargs)
         print(json.dumps(state, indent=2, default=str))

@@ -1190,6 +1190,16 @@ def make_predictions(n_clicks, game_date):
         spine_key = max(active_specs, key=lambda s: len(predictions_by_key[s.key])).key
         n_games = len(predictions_by_key[spine_key])
 
+        # E5: Vegas lines for this slate, keyed by (home_abbrev, away_abbrev). Fetched once
+        # here and reused by both the comparison table (Vegas column) and the margin chart
+        # (gold marker). vegas_lines is populated by the ESPN fetcher (pipeline 'vegas_lines'
+        # stage); home_spread is home-perspective (negative = home favored).
+        vegas_lookup = _fetch_vegas_lines_for_games(
+            game_date,
+            [(predictions_by_key[spine_key][i]['home_team'],
+              predictions_by_key[spine_key][i]['away_team']) for i in range(n_games)]
+        )
+
         def _pred_for(spec_key, idx):
             preds = predictions_by_key.get(spec_key, [])
             return preds[idx] if idx < len(preds) else None
@@ -1212,6 +1222,14 @@ def make_predictions(n_clicks, game_date):
                 html.Th("Win%", style={'backgroundColor': bg_bot}),
                 html.Th("Margin", style={'backgroundColor': bg_bot}),
             ]
+        # Vegas line column group (spread + total), between the models and Agreement.
+        header_top.append(html.Th("Vegas (DK)", colSpan=2, rowSpan=1,
+                                  style={'textAlign': 'center',
+                                         'backgroundColor': 'rgba(255, 215, 0, 0.25)'}))
+        header_bot += [
+            html.Th("Spread", style={'backgroundColor': 'rgba(255, 215, 0, 0.15)'}),
+            html.Th("O/U", style={'backgroundColor': 'rgba(255, 215, 0, 0.15)'}),
+        ]
         header_top.append(html.Th("Agreement", rowSpan=2, style={'verticalAlign': 'middle'}))
 
         table_rows = []
@@ -1262,6 +1280,19 @@ def make_predictions(n_clicks, game_date):
                         html.Td(f"{p['win_prob_calibrated']:.1%}"),
                         html.Td(margin_txt),
                     ]
+
+            # Vegas cells: spread shown home-perspective with the favored team, e.g.
+            # "OKC -7.5"; O/U is the game total. Blank when no line is in vegas_lines.
+            vegas = vegas_lookup.get((spine['home_team'], spine['away_team']))
+            if vegas is not None and vegas.get('home_spread') is not None:
+                hs = vegas['home_spread']
+                fav = spine['home_team'] if hs < 0 else spine['away_team']
+                spread_txt = f"{fav} {-abs(hs):.1f}"
+                total_txt = f"{vegas['total']:.1f}" if vegas.get('total') is not None else '-'
+            else:
+                spread_txt, total_txt = '-', '-'
+            cells += [html.Td(spread_txt), html.Td(total_txt)]
+
             cells.append(html.Td(agree_badge))
             table_rows.append(html.Tr(cells))
 
@@ -1308,15 +1339,9 @@ def make_predictions(n_clicks, game_date):
                           annotation_text="50%", annotation_position="top")
 
         # ---------- Margin distribution chart (one violin per (model, matchup)) ----------
-        # E5: Also overlay the Vegas spread per matchup as a gold marker, so users can
-        # see at a glance whether our model agrees with the line. Vegas data comes from
-        # vegas_lines table (populated by ESPN fetcher for current games + Kaggle for historical).
-        vegas_lookup = _fetch_vegas_lines_for_games(
-            game_date,
-            [(predictions_by_key[spine_key][i]['home_team'],
-              predictions_by_key[spine_key][i]['away_team']) for i in range(n_games)]
-        )
-
+        # E5: overlay the Vegas spread per matchup as a gold marker (vegas_lookup built
+        # above, before the comparison table), so users can see at a glance whether our
+        # model agrees with the line.
         fig_margin = go.Figure()
         vegas_legend_added = False
         for i in range(n_games):
@@ -1608,8 +1633,8 @@ def _load_predictions_df(engine, start_date, end_date):
     """Load backfilled predictions in the date range (only rows where actuals are filled)."""
     try:
         df = pd.read_sql(_sql_text(
-            "SELECT game_date, model_type, model_version, home_team, away_team, "
-            "predicted_winner, predicted_margin, home_win_probability, "
+            "SELECT game_id, game_date, model_type, model_version, home_team, away_team, "
+            "predicted_winner, predicted_margin, home_win_probability, home_win_probability_raw, "
             "actual_winner, actual_margin, is_correct, margin_error "
             "FROM model_predictions "
             "WHERE actual_winner IS NOT NULL "
@@ -1639,6 +1664,126 @@ def _summary_metrics(df):
             'calibration_error': float(np.mean(np.abs(sub['home_win_probability'] - actual_home_win))),
         })
     return pd.DataFrame(rows)
+
+
+def _norm_gid(g):
+    """Normalize a game_id to a zero-stripped string so model_predictions (varchar,
+    e.g. '0042500207') and game_list / vegas_lines (numeric 42500207) join cleanly."""
+    try:
+        return str(int(g))
+    except (TypeError, ValueError):
+        return str(g)
+
+
+def _load_game_scores(engine, start_date, end_date):
+    """{normalized_game_id: {'home_pts','away_pts','home','away'}} from game_list.
+
+    Used to show the actual final score in the predicted-vs-actual scatter hover.
+    Home/away is read from the MATCHUP string ('vs.' = home, '@' = away).
+    """
+    try:
+        gl = pd.read_sql(_sql_text(
+            "SELECT GAME_ID, TEAM_ABBREVIATION, MATCHUP, PTS FROM game_list "
+            "WHERE GAME_DATE BETWEEN :start AND :end"
+        ), engine, params={'start': start_date, 'end': end_date})
+    except Exception as e:
+        print(f"[model_perf] score load failed: {e}")
+        return {}
+    if gl.empty:
+        return {}
+    gl['gid'] = gl['GAME_ID'].apply(_norm_gid)
+    gl['is_home'] = gl['MATCHUP'].astype(str).str.contains('vs.', regex=False)
+    out = {}
+    for gid, grp in gl.groupby('gid'):
+        h = grp[grp['is_home']]
+        a = grp[~grp['is_home']]
+        if len(h) == 1 and len(a) == 1:
+            out[gid] = {'home_pts': h.iloc[0]['PTS'], 'away_pts': a.iloc[0]['PTS'],
+                        'home': h.iloc[0]['TEAM_ABBREVIATION'], 'away': a.iloc[0]['TEAM_ABBREVIATION']}
+    return out
+
+
+def _load_vegas_margin_map(engine, start_date, end_date):
+    """{(game_date_str, home_abbrev, away_abbrev): vegas_home_margin} for the window.
+
+    Vegas implied home margin = -home_spread (home_spread negative = home favored).
+    Best source per matchup: DraftKings > consensus > kaggle > other.
+    """
+    try:
+        df = pd.read_sql(_sql_text(
+            "SELECT game_date, home_team_abbrev, away_team_abbrev, source, home_spread "
+            "FROM vegas_lines WHERE game_date BETWEEN :start AND :end "
+            "  AND home_spread IS NOT NULL"
+        ), engine, params={'start': start_date, 'end': end_date})
+    except Exception as e:
+        print(f"[model_perf] vegas map load failed: {e}")
+        return {}
+    if df.empty:
+        return {}
+    pri = {'espn_draftkings': 0, 'espn_consensus': 1, 'espn_fanduel': 1,
+           'espn_espnbet': 1, 'kaggle_sbr': 2, 'espn_teamrankings': 3}
+    df['pri'] = df['source'].map(pri).fillna(9)
+    df = df.sort_values('pri')
+    out = {}
+    for r in df.itertuples():
+        key = (str(pd.to_datetime(r.game_date).date()), r.home_team_abbrev, r.away_team_abbrev)
+        if key not in out:  # first wins = best source (sorted)
+            out[key] = -float(r.home_spread)
+    return out
+
+
+def _build_per_game_rows(preds_df, vegas_map, ref_model):
+    """Collapse the long preds_df into one row per game for the per-game table.
+
+    Predicted margins become columns (rf/nn/xg/vegas, all home-perspective). The
+    win-rate, pick, and green/red correctness verdict come from ref_model.
+    Returns (rows, n_correct, n_incorrect). XG is always blank — XGBoost
+    predictions aren't logged to model_predictions yet.
+    """
+    if preds_df.empty:
+        return [], 0, 0
+    df = preds_df.copy()
+    df['gid'] = df['game_id'].apply(_norm_gid)
+    rows, n_correct, n_incorrect = [], 0, 0
+    for _, grp in df.groupby('gid'):
+        first = grp.iloc[0]
+        gdate = str(pd.to_datetime(first['game_date']).date())
+        margins = {mt: g['predicted_margin'].iloc[0] for mt, g in grp.groupby('model_type')}
+        veg = vegas_map.get((gdate, first['home_team'], first['away_team']))
+
+        def _r(v):
+            return round(float(v), 1) if v is not None and pd.notna(v) else None
+
+        row = {
+            'game_date': gdate,
+            'home': first['home_team'], 'away': first['away_team'],
+            'actual_margin': _r(first['actual_margin']),
+            'rf_margin': _r(margins.get('rf')),
+            'nn_margin': _r(margins.get('nn')),
+            'xg_margin': None,  # XGBoost not logged to model_predictions yet
+            'vegas_margin': _r(veg),
+        }
+        ref = grp[grp['model_type'] == ref_model]
+        if not ref.empty:
+            r0 = ref.iloc[0]
+            row['win_pct'] = round(float(r0['home_win_probability']) * 100, 1)
+            # E13 A/B: raw pre-isotonic prob alongside the calibrated one. NULL for
+            # legacy rows (logged before E13 audit) or NN (no isotonic wrapper).
+            raw = r0.get('home_win_probability_raw')
+            row['win_pct_raw'] = (round(float(raw) * 100, 1)
+                                  if raw is not None and pd.notna(raw) else None)
+            row['pick'] = r0['predicted_winner']
+            correct = int(r0['is_correct'])
+            row['result'] = 'OK' if correct else 'MISS'
+            row['_correct'] = correct
+            n_correct += correct
+            n_incorrect += (1 - correct)
+        else:
+            row.update({'win_pct': None, 'win_pct_raw': None, 'pick': '-',
+                        'result': 'n/a', '_correct': -1})
+        rows.append(row)
+    rows.sort(key=lambda r: r['game_date'], reverse=True)  # latest game first
+    return rows, n_correct, n_incorrect
 
 
 def _reliability_bins(df, n_bins=10):
@@ -1697,6 +1842,20 @@ modelPerfModelToggle = html.Div([
     ),
 ])
 
+modelPerfRefModel = html.Div([
+    dbc.Label('Verdict model'),
+    dcc.Dropdown(
+        id='modelPerfRefModel',
+        options=[
+            {'label': 'Random Forest (rf)', 'value': 'rf'},
+            {'label': 'Neural Network (nn)', 'value': 'nn'},
+        ],
+        value='rf', clearable=False,
+        style={'color': '#000'},
+    ),
+    dbc.FormText('Drives the per-game win pick, win-rate, and green/red row coloring.'),
+])
+
 modelPerfRefreshBtn = html.Div([
     dbc.Label(' '),  # vertical alignment with sibling cols
     html.Br(),
@@ -1733,6 +1892,8 @@ def init_model_perf_date_range(_n):
 
 @app.callback(
     [
+        Output('modelPerfGameHeadline', 'children'),
+        Output('modelPerfGameTable', 'children'),
         Output('modelPerfHeadline', 'children'),
         Output('modelPerfRegistryTable', 'children'),
         Output('modelPerfRollingChart', 'figure'),
@@ -1748,17 +1909,20 @@ def init_model_perf_date_range(_n):
         Input('modelPerfDateRange', 'start_date'),
         Input('modelPerfDateRange', 'end_date'),
         Input('modelPerfModelToggle', 'value'),
+        Input('modelPerfRefModel', 'value'),
         Input('modelPerfRefreshBtn', 'n_clicks'),
     ],
 )
-def update_model_perf(start_date, end_date, models_selected, _n_clicks):
+def update_model_perf(start_date, end_date, models_selected, ref_model, _n_clicks):
     eng = _engine_for_queries()
     try:
         if not start_date or not end_date:
             empty_fig = go.Figure().update_layout(template='plotly_dark', title='No data')
-            return (html.Div('Pick a date range to begin.'), html.Div(),
+            return (html.Div(), html.Div('Pick a date range to begin.'),
+                    html.Div('Pick a date range to begin.'), html.Div(),
                     empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig,
                     dbc.Alert('Waiting for date range', color='secondary'))
+        ref_model = ref_model or 'rf'
 
         registry_df = _load_registry_df(eng)
         preds_df = _load_predictions_df(eng, start_date, end_date)
@@ -1790,6 +1954,72 @@ def update_model_perf(start_date, end_date, models_selected, _n_clicks):
                     ])
                 ]), width=6))
             headline = dbc.Row(cards)
+
+        # ---------------- Per-game table + headline (verdict from ref_model) ----------------
+        vegas_map = _load_vegas_margin_map(eng, start_date, end_date)
+        game_rows, n_correct, n_incorrect = _build_per_game_rows(preds_df, vegas_map, ref_model)
+        n_total = n_correct + n_incorrect
+        if not game_rows:
+            game_headline = html.Div()
+            game_table = dbc.Alert('No per-game predictions in this range.', color='secondary')
+        else:
+            acc = (n_correct / n_total * 100) if n_total else 0.0
+            ref_up = ref_model.upper()
+            game_headline = dbc.Row([
+                dbc.Col(dbc.Card(dbc.CardBody([
+                    html.Div('Correct', style={'fontSize': '13px', 'color': '#bbb'}),
+                    html.H3(f'{n_correct}', style={'color': '#2ecc71', 'margin': 0}),
+                ]), className='text-center'), width=4),
+                dbc.Col(dbc.Card(dbc.CardBody([
+                    html.Div('Incorrect', style={'fontSize': '13px', 'color': '#bbb'}),
+                    html.H3(f'{n_incorrect}', style={'color': '#e74c3c', 'margin': 0}),
+                ]), className='text-center'), width=4),
+                dbc.Col(dbc.Card(dbc.CardBody([
+                    html.Div(f'Win-prediction rate ({ref_up})', style={'fontSize': '13px', 'color': '#bbb'}),
+                    html.H3(f'{acc:.1f}%', style={'color': '#3498db', 'margin': 0}),
+                    html.Div(f'{n_correct}/{n_total} games', style={'fontSize': '12px', 'color': '#888'}),
+                ]), className='text-center'), width=4),
+            ], className='mb-2')
+
+            game_cols = [
+                {'name': 'Date', 'id': 'game_date'},
+                {'name': 'Home', 'id': 'home'},
+                {'name': 'Away', 'id': 'away'},
+                {'name': 'Actual', 'id': 'actual_margin'},
+                {'name': 'RF', 'id': 'rf_margin'},
+                {'name': 'NN', 'id': 'nn_margin'},
+                {'name': 'XG', 'id': 'xg_margin'},
+                {'name': 'Vegas', 'id': 'vegas_margin'},
+                {'name': f'Win% raw ({ref_up})', 'id': 'win_pct_raw'},
+                {'name': f'Win% cal ({ref_up})', 'id': 'win_pct'},
+                {'name': f'Pick ({ref_up})', 'id': 'pick'},
+                {'name': 'Result', 'id': 'result'},
+            ]
+            game_table = dash_table.DataTable(
+                data=game_rows,
+                columns=game_cols,
+                sort_action='native',
+                filter_action='native',
+                fixed_rows={'headers': True},
+                style_table={'overflowY': 'auto', 'maxHeight': '480px'},
+                style_cell={'textAlign': 'center', 'padding': '5px', 'fontSize': '12px',
+                            'backgroundColor': '#2b2b2b', 'color': 'white',
+                            'minWidth': '52px', 'whiteSpace': 'nowrap'},
+                style_header={'fontWeight': 'bold', 'backgroundColor': '#111', 'color': 'white'},
+                style_data_conditional=[
+                    {'if': {'filter_query': '{_correct} = 1'},
+                     'backgroundColor': 'rgba(46, 204, 113, 0.22)'},   # light green = correct
+                    {'if': {'filter_query': '{_correct} = 0'},
+                     'backgroundColor': 'rgba(231, 76, 60, 0.22)'},    # light red = incorrect
+                    {'if': {'column_id': 'xg_margin'}, 'color': '#777'},
+                ],
+                tooltip_header={'actual_margin': 'Actual home margin (home pts - away pts)',
+                                'rf_margin': 'RF predicted home margin',
+                                'nn_margin': 'NN predicted home margin',
+                                'xg_margin': 'XGBoost not logged to model_predictions yet',
+                                'vegas_margin': 'Vegas implied home margin (= -home spread)',
+                                'win_pct': f'{ref_up} predicted P(home win)'},
+            )
 
         # ---------------- Registry table ----------------
         if registry_df.empty:
@@ -1879,42 +2109,97 @@ def update_model_perf(start_date, end_date, models_selected, _n_clicks):
             height=420, margin=dict(l=40, r=20, t=50, b=40),
         )
 
-        # ---------------- Residual plot ----------------
+        # ---------------- Predicted vs actual margin (square, x=y diagonal) ----------------
+        # Each point is one game: x = predicted home margin, y = actual home margin.
+        # Points on the dashed x=y line = perfect prediction; vertical distance to it is
+        # the residual. Square aspect (scaleanchor) so the 45-degree line reads correctly.
+        scores = _load_game_scores(eng, start_date, end_date)
         resid_fig = go.Figure()
         if not preds_df.empty:
+            allv = pd.concat([preds_df['predicted_margin'], preds_df['actual_margin']]).dropna()
+            lim = float(max(abs(allv.min()), abs(allv.max())) * 1.05) if len(allv) else 30.0
+            resid_fig.add_trace(go.Scatter(
+                x=[-lim, lim], y=[-lim, lim], mode='lines',
+                line=dict(color='gray', dash='dash'), name='Perfect (actual = predicted)',
+                hoverinfo='skip',
+            ))
             for mt, sub in preds_df.groupby('model_type'):
                 color = _MODEL_COLOR.get(mt, '#888')
-                resid = sub['actual_margin'] - sub['predicted_margin']
+                sub = sub.copy()
+                sub['gid'] = sub['game_id'].apply(_norm_gid)
+                resid = (sub['actual_margin'] - sub['predicted_margin'])
+                score_strs = []
+                for _, rr in sub.iterrows():
+                    sc = scores.get(rr['gid'])
+                    if sc is not None and pd.notna(sc['home_pts']) and pd.notna(sc['away_pts']):
+                        score_strs.append(f"{rr['home_team']} {int(sc['home_pts'])}-{int(sc['away_pts'])} {rr['away_team']}")
+                    else:
+                        score_strs.append('score n/a')
+                cd = np.stack([sub['home_team'].values, sub['away_team'].values, np.array(score_strs),
+                               sub['predicted_margin'].values, resid.values], axis=-1)
                 resid_fig.add_trace(go.Scatter(
-                    x=sub['predicted_margin'], y=resid,
+                    x=sub['predicted_margin'], y=sub['actual_margin'],
                     mode='markers', name=mt.upper(),
                     marker=dict(color=color, opacity=0.6, size=6),
-                    hovertemplate='Predicted: %{x:.1f}<br>Residual: %{y:.1f}<extra></extra>',
+                    customdata=cd,
+                    hovertemplate=('%{customdata[1]} @ %{customdata[0]}<br>'
+                                   'Final: %{customdata[2]}<br>'
+                                   'Predicted margin: %{customdata[3]:.1f}<br>'
+                                   'Actual margin: %{y:.1f}<br>'
+                                   'Residual: %{customdata[4]:.1f}'
+                                   '<extra>' + mt.upper() + '</extra>'),
                 ))
-        resid_fig.add_hline(y=0, line_dash='dash', line_color='gray')
+        else:
+            lim = 30.0
         resid_fig.update_layout(
             template='plotly_dark',
-            title='Residuals: actual margin - predicted margin (closer to 0 = better)',
-            xaxis_title='Predicted margin (pts)', yaxis_title='Residual (pts)',
-            height=420, margin=dict(l=40, r=20, t=50, b=40),
+            title='Predicted vs actual home margin (on the line = perfect)',
+            xaxis=dict(title='Predicted margin (pts)', range=[-lim, lim], zeroline=True),
+            yaxis=dict(title='Actual margin (pts)', range=[-lim, lim], zeroline=True,
+                       scaleanchor='x', scaleratio=1),
+            height=520, margin=dict(l=50, r=20, t=50, b=40),
+            legend=dict(x=0.02, y=0.98),
         )
 
-        # ---------------- Margin error histogram ----------------
-        hist_fig = go.Figure()
+        # ---------------- Signed margin-error histogram (1-pt bins, % secondary axis) ----------------
+        # Signed error = actual - predicted. Positive = the model UNDER-predicted the home
+        # margin (home did better than expected); negative = OVER-predicted. 1-point bins.
+        # Right axis re-expresses the same bars as a percentage of that model's games.
+        hist_fig = make_subplots(specs=[[{'secondary_y': True}]])
+        max_count = 0
+        per_model_total = 1
         if not preds_df.empty:
+            err_all = (preds_df['actual_margin'] - preds_df['predicted_margin']).dropna()
+            lo = int(np.floor(err_all.min())) if len(err_all) else -40
+            hi = int(np.ceil(err_all.max())) if len(err_all) else 40
+            edges = np.arange(lo, hi + 2, 1)  # 1-point bins
+            centers = edges[:-1] + 0.5
+            per_model_total = int(preds_df.groupby('model_type').size().max())
             for mt, sub in preds_df.groupby('model_type'):
                 color = _MODEL_COLOR.get(mt, '#888')
-                hist_fig.add_trace(go.Histogram(
-                    x=sub['margin_error'], name=mt.upper(),
-                    marker=dict(color=color), opacity=0.6, nbinsx=25,
-                ))
+                err = (sub['actual_margin'] - sub['predicted_margin']).dropna()
+                counts, _ = np.histogram(err, bins=edges)
+                max_count = max(max_count, int(counts.max()) if len(counts) else 0)
+                hist_fig.add_trace(go.Bar(
+                    x=centers, y=counts, name=mt.upper(),
+                    marker_color=color, opacity=0.6,
+                    hovertemplate='Error %{x:+.0f} pts<br>Count: %{y}<extra>' + mt.upper() + '</extra>',
+                ), secondary_y=False)
+            hist_fig.add_vline(x=0, line_dash='dash', line_color='white', opacity=0.6)
+        # Anchor the secondary axis and align it to the primary as a pure rescale (count -> %).
+        hist_fig.add_trace(go.Scatter(x=[None], y=[None], showlegend=False, hoverinfo='skip'),
+                           secondary_y=True)
+        ymax = max(max_count * 1.1, 1)
         hist_fig.update_layout(
             template='plotly_dark',
-            title='Distribution of |actual - predicted| margin',
-            xaxis_title='Absolute margin error (pts)', yaxis_title='Count',
-            barmode='overlay',
-            height=380, margin=dict(l=40, r=20, t=50, b=40),
+            title='Distribution of margin error (actual - predicted; + = home beat the prediction)',
+            barmode='overlay', bargap=0,
+            height=400, margin=dict(l=50, r=60, t=50, b=40),
         )
+        hist_fig.update_xaxes(title_text='Margin error (pts), 1-pt bins')
+        hist_fig.update_yaxes(title_text='Count', range=[0, ymax], secondary_y=False)
+        hist_fig.update_yaxes(title_text='% of games', range=[0, ymax / per_model_total * 100],
+                              secondary_y=True)
 
         # ---------------- ROC curves ----------------
         # One curve per model — shows the full threshold sweep. The closer to the
@@ -1946,11 +2231,12 @@ def update_model_perf(start_date, end_date, models_selected, _n_clicks):
                 print(f"[model_perf] ROC failed: {e}")
         roc_fig.update_layout(
             template='plotly_dark',
-            title='ROC curves — true-positive rate vs false-positive rate (closer to top-left = better ranking)',
+            title='ROC curves — closer to top-left = better ranking',
             xaxis=dict(title='False positive rate', range=[0, 1], tickformat='.0%'),
-            yaxis=dict(title='True positive rate', range=[0, 1], tickformat='.0%'),
-            height=420, margin=dict(l=40, r=20, t=50, b=40),
-            legend=dict(x=0.6, y=0.1),
+            yaxis=dict(title='True positive rate', range=[0, 1], tickformat='.0%',
+                       scaleanchor='x', scaleratio=1),
+            height=520, margin=dict(l=50, r=20, t=50, b=40),
+            legend=dict(x=0.55, y=0.08),
         )
 
         # ---------------- Confusion matrices ----------------
@@ -2048,7 +2334,8 @@ def update_model_perf(start_date, end_date, models_selected, _n_clicks):
                 vegas_fig.update_layout(
                     template='plotly_dark',
                     title=f'Margin MAE: model vs Vegas — {n_paired} paired games '
-                          f'({vegas_df["game_date"].min().date()} to {vegas_df["game_date"].max().date()})',
+                          f'({pd.to_datetime(vegas_df["game_date"]).min().date()} to '
+                          f'{pd.to_datetime(vegas_df["game_date"]).max().date()})',
                     xaxis_title='Mean absolute error (points; lower = better)',
                     yaxis_title='',
                     height=max(280, (len(labels) + 1) * 50),
@@ -2071,8 +2358,8 @@ def update_model_perf(start_date, end_date, models_selected, _n_clicks):
             f"(models: {', '.join(models_selected) if models_selected else 'none'}).",
             color='info'
         )
-        return (headline, registry_table, rolling_fig, rel_fig, resid_fig, hist_fig,
-                roc_fig, cm_fig, vegas_fig, status)
+        return (game_headline, game_table, headline, registry_table, rolling_fig, rel_fig,
+                resid_fig, hist_fig, roc_fig, cm_fig, vegas_fig, status)
     finally:
         eng.dispose()
 
@@ -2625,25 +2912,56 @@ app.layout = html.Div(
                 ]),
                 html.Hr(),
                 dbc.Row([
-                    dbc.Col(modelPerfDateRange, width=4),
-                    dbc.Col(modelPerfModelToggle, width=5),
+                    dbc.Col(modelPerfDateRange, width=3),
+                    dbc.Col(modelPerfModelToggle, width=4),
+                    dbc.Col(modelPerfRefModel, width=3),
                     dbc.Col(modelPerfRefreshBtn, width=2),
                 ]),
                 html.Div(id='modelPerfStatus', className='mt-2'),
                 html.Br(),
-                html.H5('Live performance (date-range filtered)'),
+                html.H5('Per-game results'),
+                html.Div(id='modelPerfGameHeadline'),
+                html.Div(
+                    'Margins are home-perspective (positive = home team wins by that many). '
+                    'Row is green when the verdict model called the winner correctly, red when it missed. '
+                    'XG is blank — XGBoost predictions are not yet logged to model_predictions.',
+                    style={'fontSize': '12px', 'color': '#aaa', 'marginBottom': '6px'},
+                ),
+                html.Div(id='modelPerfGameTable'),
+                html.Br(),
+                html.H5('Live performance summary (per model)'),
                 html.Div(id='modelPerfHeadline'),
                 html.Br(),
                 dbc.Row([
                     dbc.Col(dcc.Graph(id='modelPerfRollingChart'), width=12),
                 ]),
                 dbc.Row([
-                    dbc.Col(dcc.Graph(id='modelPerfReliabilityChart'), width=6),
+                    dbc.Col([
+                        dcc.Graph(id='modelPerfReliabilityChart'),
+                        html.Div(
+                            'How to read: each dot is a group of games bucketed by the model\'s '
+                            'predicted home-win probability (x-axis). Its height (y) is how often the '
+                            'home team ACTUALLY won those games. On the dashed line = well calibrated '
+                            '(a "70%" really wins ~70%). Below the line = overconfident; above = '
+                            'underconfident. Bigger dot = more games in the bucket.',
+                            style={'fontSize': '12px', 'color': '#aaa', 'padding': '0 12px'},
+                        ),
+                    ], width=6),
                     dbc.Col(dcc.Graph(id='modelPerfResidualChart'), width=6),
                 ]),
                 dbc.Row([
                     dbc.Col(dcc.Graph(id='modelPerfRocChart'), width=6),
-                    dbc.Col(dcc.Graph(id='modelPerfConfusionChart'), width=6),
+                    dbc.Col([
+                        dcc.Graph(id='modelPerfConfusionChart'),
+                        html.Div(
+                            'How to read: rows are what ACTUALLY happened, columns are what the model '
+                            'PREDICTED. The two diagonal cells (top-left + bottom-right) are correct '
+                            'calls; off-diagonal are mistakes. TN = correctly called an away win, '
+                            'TP = correctly called a home win, FP = predicted home but away won, '
+                            'FN = predicted away but home won.',
+                            style={'fontSize': '12px', 'color': '#aaa', 'padding': '0 12px'},
+                        ),
+                    ], width=6),
                 ]),
                 dbc.Row([
                     dbc.Col(dcc.Graph(id='modelPerfVegasChart'), width=12),

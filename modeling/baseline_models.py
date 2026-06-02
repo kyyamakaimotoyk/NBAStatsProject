@@ -53,11 +53,16 @@ warnings.filterwarnings('ignore')
 # ============================================================================
 
 def load_data(filepath: str = 'nba_ml_features.csv') -> pd.DataFrame:
-    """Load the ML features dataset."""
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"{filepath} not found. Run feature_engineering.py first.")
+    """Load the ML features dataset.
 
-    df = pd.read_csv(filepath)
+    Prefers the MySQL ``features`` table (current snapshot); falls back to the
+    legacy CSV at ``filepath`` so this script keeps working on machines where
+    the DB migration hasn't happened yet.
+    """
+    from core.db import get_engine
+    from core.features_io import load_features_with_csv_fallback
+    engine = get_engine()
+    df = load_features_with_csv_fallback(engine, csv_path=filepath)
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
 
     print(f"Loaded {len(df)} games")

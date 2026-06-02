@@ -161,13 +161,15 @@ try:
 except NameError:
     _project_root = os.getcwd()
 ml_features_path = os.path.join(_project_root, 'nba_ml_features.csv')
-if os.path.exists(ml_features_path):
-    df_ml = pd.read_csv(ml_features_path)
+try:
+    from core.features_io import load_features_with_csv_fallback
+    df_ml = load_features_with_csv_fallback(databaseEngine, csv_path=ml_features_path)
     df_ml['GAME_DATE'] = pd.to_datetime(df_ml['GAME_DATE'])
     print(f"Loaded ML features: {len(df_ml)} games, {len(df_ml.columns)} columns")
     ML_FEATURES_AVAILABLE = True
-else:
-    print("Warning: nba_ml_features.csv not found. Run feature_engineering.py first.")
+except Exception as _e:
+    print(f"Warning: features table empty and {ml_features_path} not found ({_e}). "
+          f"Run feature_engineering.py first.")
     df_ml = pd.DataFrame()
     ML_FEATURES_AVAILABLE = False
 

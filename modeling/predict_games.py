@@ -370,6 +370,18 @@ def save_model_bundle(model_type_key: str, bundle: dict, version: str = None) ->
     except Exception as e:
         print(f"  Warning: could not update {model_type_key} current pointer: {e}")
 
+    # Push to the remote artifact store (S3 or local-mirror) if one is configured.
+    # No-op when MODELS_S3_BUCKET / MODELS_ARTIFACT_DIR are unset (pure-local dev).
+    try:
+        from core.artifact_store import get_store
+        store = get_store()
+        if store.enabled:
+            store.push(versioned_path)
+            store.push(current_path)
+            print(f"  Pushed {model_type_key} bundle to {store.name} store.")
+    except Exception as e:
+        print(f"  Warning: artifact-store push failed for {model_type_key}: {e}")
+
     return versioned_path
 
 
@@ -383,6 +395,18 @@ def load_model_bundle(model_type_key: str, version: str = None) -> dict:
         path = os.path.join(BUNDLES_DIR, f'{model_type_key}_current.joblib')
     else:
         path = os.path.join(BUNDLES_DIR, f'{model_type_key}_{version}.joblib')
+
+    # If the bundle isn't on local disk, try pulling it from the remote store.
+    # On a fresh container the models/ dir is empty; this is what hydrates it.
+    if not os.path.exists(path):
+        try:
+            from core.artifact_store import get_store
+            store = get_store()
+            if store.enabled:
+                store.pull(path)
+        except Exception as e:
+            print(f"  Warning: artifact-store pull failed for {model_type_key}: {e}")
+
     if not os.path.exists(path):
         return None
     return joblib.load(path)
@@ -1991,15 +2015,33 @@ def _split_window_dates(ml_df, split_idx):
         return None, None, None, None
 
 
-def _prepare_training_data(engine):
-    """Prepare training data (shared by RF and PyTorch)."""
-    if os.path.exists(FEATURES_CSV_PATH):
-        ml_df = pd.read_csv(FEATURES_CSV_PATH)
-    else:
+def _load_feature_dataset(engine):
+    """Load the current feature snapshot from MySQL, falling back to the legacy CSV.
+
+    During the CSV → DB migration window, three layers of fallback are tried:
+      1. ``features`` table at the version pointed to by ``feature_set_current``
+      2. ``nba_ml_features.csv`` at the project root (also bootstraps the DB)
+      3. Full rebuild via ``build_feature_dataset`` (slow — rare path)
+    """
+    from core.features_io import load_features_with_csv_fallback, write_features
+    try:
+        return load_features_with_csv_fallback(engine, csv_path=FEATURES_CSV_PATH)
+    except RuntimeError:
+        # No DB, no CSV — rebuild from raw (slow, ~30+ min).
         from data_engineering.feature_engineering import build_feature_dataset, prepare_ml_dataset
         feature_df = build_feature_dataset(engine, start_date='2020-01-01')
         ml_df, _ = prepare_ml_dataset(feature_df)
         ml_df.to_csv(FEATURES_CSV_PATH, index=False)
+        try:
+            write_features(ml_df, engine)
+        except Exception as exc:
+            print(f"[_load_feature_dataset] WARN: DB write skipped — {exc}")
+        return ml_df
+
+
+def _prepare_training_data(engine):
+    """Prepare training data (shared by RF and PyTorch)."""
+    ml_df = _load_feature_dataset(engine)
 
     # Centralized allow-list — see core/features.py for the rationale and the
     # post-mortem on the silent-drop bug this replaced.
@@ -2267,13 +2309,7 @@ def _prepare_embedding_training_data(engine):
 
     Returns team features (without player ID columns) + separate player ID array.
     """
-    if os.path.exists(FEATURES_CSV_PATH):
-        ml_df = pd.read_csv(FEATURES_CSV_PATH)
-    else:
-        from data_engineering.feature_engineering import build_feature_dataset, prepare_ml_dataset
-        feature_df = build_feature_dataset(engine, start_date='2020-01-01')
-        ml_df, _ = prepare_ml_dataset(feature_df)
-        ml_df.to_csv(FEATURES_CSV_PATH, index=False)
+    ml_df = _load_feature_dataset(engine)
 
     # Create player ID mapping
     player_to_idx, idx_to_player, n_players = create_player_id_mapping(engine)

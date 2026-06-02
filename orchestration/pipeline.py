@@ -103,8 +103,35 @@ def inspect_status(engine=None) -> Dict[str, Any]:
         # Vegas lines (ESPN/DraftKings) — used by the dashboard Vegas overlay + model-vs-Vegas chart
         status['latest_vegas_line_date'] = _max_date(eng, 'SELECT MAX(game_date) FROM vegas_lines')
 
-        # Feature CSV
-        if os.path.exists(FEATURES_CSV):
+        # Features — prefer MySQL features table; fall back to legacy CSV if DB is empty.
+        # Keys kept named features_csv_* for backwards compat with downstream callers
+        # (Operations tab + recommend logic). features_csv_max_date is the source-of-truth
+        # for "do we need to rebuild features?".
+        status['features_csv_mtime'] = None
+        status['features_csv_max_date'] = None
+        status['features_csv_rows'] = None
+        try:
+            from core.features_io import get_current_version
+            current_version = get_current_version(eng)
+        except Exception:
+            current_version = None
+        if current_version is not None:
+            try:
+                row = pd.read_sql(
+                    text(
+                        "SELECT MAX(GAME_DATE) AS max_date, COUNT(*) AS n, "
+                        "MAX(loaded_at) AS loaded_at "
+                        "FROM features WHERE feature_set_version = :v"
+                    ),
+                    eng, params={'v': current_version},
+                ).iloc[0]
+                status['features_csv_mtime'] = pd.to_datetime(row['loaded_at']).date() if row['loaded_at'] else None
+                status['features_csv_max_date'] = pd.to_datetime(row['max_date']).date() if row['max_date'] else None
+                status['features_csv_rows'] = int(row['n']) if row['n'] else None
+                status['features_set_version'] = current_version
+            except Exception:
+                pass
+        elif os.path.exists(FEATURES_CSV):
             try:
                 mtime = datetime.fromtimestamp(os.path.getmtime(FEATURES_CSV)).date()
                 csv_max = pd.read_csv(FEATURES_CSV, usecols=['GAME_DATE'])
@@ -113,13 +140,7 @@ def inspect_status(engine=None) -> Dict[str, Any]:
                 status['features_csv_max_date'] = csv_max['GAME_DATE'].max().date()
                 status['features_csv_rows'] = len(csv_max)
             except Exception:
-                status['features_csv_mtime'] = None
-                status['features_csv_max_date'] = None
-                status['features_csv_rows'] = None
-        else:
-            status['features_csv_mtime'] = None
-            status['features_csv_max_date'] = None
-            status['features_csv_rows'] = None
+                pass
 
         # Models — latest training rows (not validation)
         for mt in ('rf_classifier', 'rf_regressor', 'nn_classifier', 'nn_regressor'):

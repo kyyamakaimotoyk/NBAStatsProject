@@ -530,8 +530,10 @@ def load_and_prepare_data():
     print("LOADING AND PREPARING DATA")
     print("="*70)
 
-    # Load data
-    df = pd.read_csv('nba_ml_features.csv')
+    # Load data — prefer the MySQL features table; fall back to legacy CSV.
+    from core.db import get_engine
+    from core.features_io import load_features_with_csv_fallback
+    df = load_features_with_csv_fallback(get_engine(), csv_path='nba_ml_features.csv')
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
 
     print(f"Loaded {len(df)} games")

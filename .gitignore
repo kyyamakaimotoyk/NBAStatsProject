@@ -68,8 +68,14 @@ scratch/
 # Per-experiment feature-CSV backups and ablation variants
 nba_ml_features.csv.backup_*
 nba_ml_features_no_e7.csv
-# Versioned model bundles accumulate every train run (~tens of MB each);
-# the fixed-path models/*.joblib + *.pt are the committed source of truth.
+# Model artifacts are NOT tracked in git — they live in the artifact store
+# (S3 in prod, MODELS_ARTIFACT_DIR mirror in dev; see core/artifact_store.py).
+# Training pushes them on save; prediction pulls them on demand;
+# `python scripts/sync_models.py push|pull` does bulk transfers.
 models/bundles/
+models/*.joblib
+models/*.pt
+# Local artifact-store mirror used to test push/pull without AWS
+.artifact_store_mirror/
 # Smoke-test scratch outputs
 outputs/*smoketest*.json

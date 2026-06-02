@@ -51,12 +51,15 @@ from core.db import get_engine
 # ============================================================================
 
 def load_features_and_window(features_path, start_date, end_date):
-    """Load nba_ml_features.csv and slice to [start_date, end_date]."""
-    df = pd.read_csv(features_path)
+    """Load the current feature snapshot (DB-first, CSV fallback) and slice to window."""
+    from core.features_io import load_features_with_csv_fallback
+    engine = get_engine()
+    df = load_features_with_csv_fallback(
+        engine, csv_path=features_path,
+        start_date=start_date, end_date=end_date,
+    )
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
-    mask = (df['GAME_DATE'] >= pd.Timestamp(start_date)) & (df['GAME_DATE'] <= pd.Timestamp(end_date))
-    sub = df.loc[mask].copy()
-    return sub
+    return df
 
 
 def prepare_X_y(df, feature_names, scaler_tuple):

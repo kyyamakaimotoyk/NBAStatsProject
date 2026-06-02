@@ -1840,6 +1840,14 @@ if __name__ == '__main__':
     parser.add_argument('--output-csv', type=str, default='nba_ml_features.csv',
                        help='Output CSV path (default: nba_ml_features.csv). Useful when '
                             'building an ablation variant (e.g. nba_ml_features_no_e7.csv).')
+    parser.add_argument('--no-db-write', action='store_true',
+                       help='Skip writing the snapshot to the MySQL features table. '
+                            'Use for ablation CSVs that should not promote to current.')
+    parser.add_argument('--db-version', type=str, default=None,
+                       help='Override the feature_set_version tag (default: UTC timestamp).')
+    parser.add_argument('--no-set-current', action='store_true',
+                       help='Write to DB but do not promote the new version to feature_set_current. '
+                            'Useful for ablation snapshots that should not displace production.')
     args = parser.parse_args()
 
     # Create database connection
@@ -1896,10 +1904,26 @@ if __name__ == '__main__':
     print(f"  Away wins: {len(ml_df) - ml_df['TARGET_WIN'].sum()} ({(1-ml_df['TARGET_WIN'].mean())*100:.1f}%)")
     print(f"  Avg margin: {ml_df['TARGET_MARGIN'].mean():.1f} points")
 
-    # Save to CSV for later use
+    # Save to CSV for later use (legacy path — kept so experiments/*.py keep working)
     output_file = args.output_csv
     ml_df.to_csv(output_file, index=False)
     print(f"\nDataset saved to {output_file}")
+
+    # Primary store: MySQL features table (snapshot per run, atomic pointer).
+    # Anything reading the feature dataset should go through core.features_io,
+    # not through pd.read_csv on the path above.
+    if not args.no_db_write:
+        try:
+            from core.features_io import write_features
+            version = write_features(
+                ml_df, engine,
+                version=args.db_version,
+                set_current=not args.no_set_current,
+            )
+            promoted = "promoted to current" if not args.no_set_current else "NOT promoted"
+            print(f"Dataset also written to features table: version={version} ({promoted})")
+        except Exception as exc:
+            print(f"WARNING: could not write to features table — {exc}")
 
     # Cleanup
     engine.dispose()

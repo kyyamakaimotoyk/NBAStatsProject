@@ -178,3 +178,314 @@ End-to-end smoke test after Week 4:
 4. Hit `https://<domain>/accuracy` — chart renders with non-empty data
 5. Check CloudFront access logs landed in the analytics bucket
 6. Verify budget alarm fires on a test threshold of $0.01
+
+---
+
+# Implementation Log — Week 1 (completed 2026-06-02)
+
+> This section is written to **teach**, not just record. Each refactor below has
+> the *problem it solves*, the *concept you should walk away understanding*, the
+> *code that implements it*, and the *test that proved it works*. If you read
+> only one part, read the "Concept" paragraphs — those are the transferable
+> ideas you'll reuse for NFL/MLB and for every future cloud project.
+
+The three Week-1 refactors share one theme: **remove assumptions that only hold
+on a single, long-lived machine.** Your laptop has a persistent disk, one copy
+of everything, and runs one process at a time. The cloud has none of those:
+containers start empty, die without warning, and run in parallel. Code that
+quietly depends on "the file will still be there next time" breaks in that world.
+Week 1 finds those dependencies and replaces them with something explicit.
+
+Committed as `2257b97`. Nothing here changes behavior for your current local
+workflow — every new path has a fallback to the old one. That's deliberate: you
+can keep working exactly as before while the cloud-ready paths sit dormant until
+their env vars are set.
+
+---
+
+## 1.1 — Feature data: CSV on disk → versioned MySQL table
+
+### The problem
+`nba_ml_features.csv` was a ~50 MB file sitting at the project root.
+`feature_engineering.py` *wrote* it; five other scripts *read* it with
+`pd.read_csv('nba_ml_features.csv')`. That works perfectly on one machine and
+fails three ways in the cloud:
+
+1. **Ephemeral disk.** A container that builds the CSV and then exits takes the
+   file to the grave. The next container starts with an empty disk.
+2. **No sharing.** The training task and the prediction task are *different
+   containers*. A file on one's local disk is invisible to the other.
+3. **No history.** Each rebuild overwrote the file. If a new feature set made the
+   model worse, there was no clean way to compare "old features vs new features"
+   because the old ones were gone.
+
+### The concept: a database is shared, durable, queryable state
+A MySQL table solves all three at once — every container talks to the same RDS
+endpoint, the data outlives any single container, and SQL lets you slice by date
+without loading the whole thing into memory. This is the single most important
+mental shift for cloud work: **state lives in a managed service (RDS, S3), never
+on a container's local disk.** Containers become disposable; the data doesn't
+live in them.
+
+### The design decision: snapshots + a pointer
+We didn't just dump the CSV into one table that gets overwritten. We chose
+**versioned snapshots**:
+
+- Every `feature_engineering.py` run inserts its rows tagged with a unique
+  `feature_set_version` (a UTC timestamp like `20260529T033537Z`).
+- A tiny second table, `feature_set_current`, holds exactly one row: which
+  version is "live".
+- Readers don't need to know the version — they look it up through the pointer.
+
+```
+features                              feature_set_current
+┌─────────────────────┬─────────┐     ┌────┬──────────────────────┐
+│ feature_set_version │ GAME_ID │...  │ id │ version              │
+├─────────────────────┼─────────┤     ├────┼──────────────────────┤
+│ 20260529T0335..     │ 0042...  │     │ 1  │ 20260529T0335..      │  ← "live"
+│ 20260529T0335..     │ 0042...  │     └────┴──────────────────────┘
+│ 20260601T1210..     │ 0042...  │  (a newer snapshot, not yet promoted)
+└─────────────────────┴─────────┘
+```
+
+**Why a pointer instead of "newest timestamp wins"?** Atomicity. Promoting a new
+feature set is a *single-row update* to `feature_set_current`. Until that update
+happens, readers keep seeing the old version — even while the new snapshot is
+half-inserted. There's never a moment where a reader sees a partial dataset.
+This is the same idea as the `_current.joblib` model pointer (1.3) and as a
+blue/green deploy: **write the new thing fully, then flip one switch.**
+
+A snapshot is ~6 MB in the DB — trivial. Keeping many of them is what unlocks the
+parked `feature_store` idea: "train model A on feature set v1, model B on v2,
+compare honestly." You can't do that with a file that gets overwritten.
+
+### The "schema auto-evolve" decision
+The feature set isn't fixed — your experiments add and drop columns (E9 added
+ELO, E16/E17 added playoff features). A hand-maintained `CREATE TABLE` with 769
+columns would be a nightmare to keep in sync. So `core/features_io.py` inspects
+the DataFrame and, on each write, issues `ALTER TABLE ADD COLUMN` for any column
+the table doesn't have yet. The table shape *follows* whatever pandas produces —
+same mental model as the CSV (whatever you write is the schema). Trade-off: it's
+implicit, so a column that silently disappears from the DataFrame just stops
+being written. We accepted that because at 1,000 rows an ALTER is instant and it
+keeps experimentation friction-free.
+
+### The fallback pattern (important — you'll see it in all three refactors)
+Every reader was changed from `pd.read_csv(...)` to
+`load_features_with_csv_fallback(engine, csv_path=...)`. That helper:
+
+1. Tries the DB (current version pointer).
+2. If the DB is empty but the CSV exists, reads the CSV **and bootstraps the DB
+   from it** so the next call is fast.
+3. Raises only if *both* are missing.
+
+**Why bother with the fallback?** Because a refactor that forces a flag-day
+("everyone must migrate right now or everything breaks") is risky and stressful.
+With the fallback, the code works whether or not you've run the migration yet.
+You migrate when you're ready; nothing breaks in the meantime. This is how you
+ship infrastructure changes safely — **make the new path optional until it's
+proven, then make it the default.**
+
+### Files
+- `core/features_io.py` — the read/write/version API (new)
+- `scripts/migrate_features_csv_to_db.py` — one-shot CSV → DB importer (new)
+- `data_engineering/feature_engineering.py` — now dual-writes CSV + DB snapshot
+- Readers updated: `modeling/predict_games.py` (new `_load_feature_dataset`
+  helper), `baseline_models.py`, `pytorch_nba_models.py`, `validate_models.py`,
+  `visualization/dataExploration.py`, `orchestration/pipeline.py`
+- Left on CSV intentionally: `experiments/*.py` (ad-hoc research on pinned snapshots)
+
+### Tests performed
+| What we tested | How | Result |
+|---|---|---|
+| Module imports, table/pointer names correct | `python core/features_io.py` symbol check | ✅ all symbols load; version tag format correct |
+| Migration of the real 769-col / 1043-row CSV | `python scripts/migrate_features_csv_to_db.py` | ✅ ran clean (you confirmed "no errors") |
+| Readers see DB-first | `python orchestration/pipeline.py status` | ✅ `features_set_version` populated, dates matched the old CSV-derived values |
+| Syntax integrity of all 9 touched files | `ast.parse` over each | ✅ all OK |
+
+---
+
+## 1.2 — A dedicated headless prediction job
+
+### The problem
+Predictions were produced two ways, both bad for a public website:
+- The **dashboard** computed them live: a user opening the Game Predictions tab
+  triggered model loading + inference inside the web request.
+- `predict_games.py` is a 4,000-line interactive CLI — it prints tables, draws
+  matplotlib charts, computes SHAP explanations, can kick off a retrain, and
+  parses dozens of flags. It's a Swiss-army knife for *you*, not a job for a
+  server.
+
+### The concept: separate "compute" from "serve"
+This is the **batch/serve split**, one of the most useful patterns in applied
+ML. The expensive, slow, occasional work (running models) is done *ahead of time*
+by a batch job that writes results to a database. The fast, frequent work
+(showing results to a visitor) is a cheap database read. The web server never
+loads a model, never imports PyTorch, never runs SHAP.
+
+Why this matters concretely:
+- **Cost & speed.** The NBA schedule is fixed — there are at most ~15 games a
+  night. Computing those once and serving the stored answer to 10,000 visitors
+  is vastly cheaper than running inference 10,000 times. The answer is identical
+  for everyone, so compute it once.
+- **Small web image.** No torch/sklearn/shap in the web container means it builds
+  to ~200 MB instead of ~2 GB and cold-starts in under a second.
+- **Blast radius.** If a model errors, the *batch job* fails (and you get an
+  alert) — the website stays up serving last night's predictions. Inference
+  failures never reach a visitor.
+
+### What `batch_predict_today.py` actually is
+A thin orchestration layer (~280 lines) that **imports the per-game primitives
+from `predict_games.py`** rather than duplicating them. The division of labor:
+
+- `predict_games.py` owns *per-game logic*: `get_scheduled_games`,
+  `get_team_rolling_stats`, `build_matchup_features`, `predict_with_rf/nn/xgb`,
+  the leakage guard, the injury lookups. Unchanged.
+- `batch_predict_today.py` owns *job orchestration*: which dates, which models,
+  loop, write to `model_predictions`, exit with a status code.
+
+Deliberate differences from the CLI: no SHAP, no matplotlib, no comparison
+tables, **no retrain** in the normal path (a nightly job should never silently
+start a 10-minute training run), and `exit code = number of errors` so a
+scheduler (EventBridge, cron) can tell success from failure.
+
+### The idempotency property (and why it matters for schedulers)
+`log_prediction` uses MySQL's `INSERT ... ON DUPLICATE KEY UPDATE` on the key
+`(game_id, model_type, model_version)`. That means **running the job twice
+produces the same end state** — the second run overwrites the first row instead
+of creating a duplicate. This is *idempotency*, and it's essential for scheduled
+jobs: schedulers retry on failure, networks hiccup, you'll re-run by hand to test.
+A job that's safe to run repeatedly is a job you can automate without fear.
+
+### Files
+- `modeling/batch_predict_today.py` (new)
+
+### Tests performed (against your real local DB)
+| What we tested | How | Result |
+|---|---|---|
+| Bundles load (rf/nn/xgb), no-games day handled | `--models rf --no-log` on today (offseason) | ✅ "no scheduled games", exit 0 |
+| All 3 models predict a real game | `--date 2026-05-28 --no-log` | ✅ 3 predictions / 1 game, 0 errors |
+| Logged write to `model_predictions` | `--date 2026-05-28` (logged) | ✅ 3 rows written, every column populated |
+| **Output identical to the interactive CLI** | compared rf row to existing `predict_games.py` row | ✅ same margin (4.68), same winner (SAS) — proves the extraction didn't change the math |
+| Leave-no-trace | deleted the 3 leakage-tainted test rows afterward | ✅ DB restored to its original 4 rows |
+
+The "identical output" test is the important one: it confirms we *moved* logic
+without *changing* it. When you refactor, always find a way to prove the new path
+produces the same result as the old one.
+
+> Note discovered during testing: XGBoost reports `margin_uncertainty = 0.0`
+> (it's a point estimate, no spread), while RF (7.48) and NN (2.88) give real
+> uncertainty. Not a bug — but the public site's confidence-interval UI should
+> handle "no interval" gracefully for xgb.
+
+---
+
+## 1.3 — Model artifacts: out of git → an artifact store
+
+### The problem
+Trained models (`models/rf_classifier.joblib`, `nn_classifier.pt`, the
+`models/bundles/` snapshots, etc. — ~200 MB total) were partly committed to git.
+Binaries in git are a slow-motion mistake:
+- Git stores every version of every file forever. A 200 MB model retrained weekly
+  bloats the repo permanently — every clone, every CI build downloads all of it.
+- They're not diffable or reviewable; they just make the repo heavy.
+- Worst of all for cloud: a CI pipeline that builds a Docker image would bake
+  stale model weights *into the image*, so shipping a new model would mean
+  rebuilding and redeploying the whole container.
+
+### The concept: large binaries belong in object storage, referenced by code
+The cloud-native answer is **S3** (object storage): cheap, versioned, infinitely
+durable, accessible from any container. Code doesn't *contain* the model; it
+*fetches* the model from S3 at runtime. Git holds the code (small, diffable,
+reviewable); S3 holds the artifacts (large, binary, versioned). Each tool does
+what it's good at.
+
+### The design: a pluggable store with three backends
+Rather than hard-coding `boto3.client('s3')` calls throughout the code (which
+would force every developer to have AWS set up just to run anything), we built
+`core/artifact_store.py` — one small interface, three implementations chosen by
+environment variable:
+
+```
+MODELS_S3_BUCKET set      → S3Store        (production: real S3)
+MODELS_ARTIFACT_DIR set   → LocalMirrorStore (a directory pretending to be a bucket)
+neither set               → DisabledStore  (no-op: pure local, today's behavior)
+```
+
+Two ideas worth internalizing here:
+
+1. **Program to an interface, not an implementation.** The call sites
+   (`save_model_bundle`, `load_model_bundle`) just call `store.push()` /
+   `store.pull()`. They have no idea whether that's hitting S3, a local folder,
+   or doing nothing. You can develop and *fully test the upload/download logic*
+   with `MODELS_ARTIFACT_DIR` pointed at a scratch folder — no AWS account, no
+   network, no credentials. When you go to prod, you set `MODELS_S3_BUCKET`
+   instead and the *exact same code path* now talks to S3. This is how you avoid
+   "works locally, breaks in cloud" surprises: the cloud path was exercised all
+   along, just against a fake bucket.
+
+2. **Graceful degradation.** The `DisabledStore` makes the store optional.
+   With no env vars set, push is a no-op and the code behaves exactly as it did
+   before this refactor. Nobody is forced to change their workflow.
+
+### Where it plugs in: pull-on-missing
+The clever bit is in `load_model_bundle`: if the bundle isn't on local disk, it
+asks the store to pull it before giving up. On your laptop the file is already
+there, so the pull never happens. **On a fresh container, `models/` is empty —
+so the first `load_model_bundle('rf')` call pulls the model down from S3 and
+caches it locally.** The container hydrates itself on demand. No separate "copy
+the models in" deploy step; the code does it the first time it needs the model.
+
+`save_model_bundle` does the reverse: after writing the bundle locally, it pushes
+to the store. So the training job *publishes* and the prediction job *consumes*,
+through S3, with no shared disk between them — exactly the decoupling 1.2 needs.
+
+### Files
+- `core/artifact_store.py` — the store interface + 3 backends (new)
+- `scripts/sync_models.py` — bulk `push` / `pull` / `status` CLI (new), for
+  seeding a fresh bucket or hydrating a new machine all at once
+- `modeling/predict_games.py` — `save_model_bundle` pushes, `load_model_bundle`
+  pulls-on-missing
+- `.gitignore` — now ignores `models/*.joblib`, `models/*.pt`, mirror dir
+- `.env.example` — documents the three env vars
+- `requirements.txt` — `boto3` added as an optional dependency
+- 9 binary files removed from git tracking with `git rm --cached` (the
+  working-tree files stay on disk; only their *tracking* is removed)
+
+### Tests performed
+| What we tested | How | Result |
+|---|---|---|
+| Backend auto-selection | set/unset env vars, check `store.name` | ✅ s3-unavailable→disabled, mirror, disabled all correct |
+| Bulk push | `sync_models.py push` with `MODELS_ARTIFACT_DIR` | ✅ 60 files copied to the mirror |
+| **Pull-on-missing (the cloud-hydration scenario)** | moved local `rf_current.joblib` aside, called `load_model_bundle('rf')` | ✅ file re-pulled from mirror; 567 features, version 20260527 — the model loaded despite being "missing" locally |
+| Disabled backend = unchanged local behavior | no env vars; push returns False, exists() checks disk | ✅ |
+| Syntax integrity | `ast.parse` of touched files | ✅ |
+
+The pull-on-missing test is the one that proves the cloud story: it simulates a
+freshly-started container (empty `models/`) and shows the code heals itself by
+fetching from the store.
+
+### ⚠️ One thing to be careful about now
+Those 9 model files are **no longer in git history going forward**. Your only
+copies are (a) local disk and (b) whatever you've pushed to a store. Before you
+ever run `git clean -xdf`, delete the `models/` folder, or clone fresh, make sure
+the models are either pushed to a real store or you're OK regenerating them with
+a retrain. This is the normal trade-off of moving artifacts out of git — just be
+aware of it.
+
+---
+
+## What this unlocked for Weeks 2–4
+
+With Week 1 done, the three single-machine assumptions are gone:
+- **Feature data** lives in MySQL → any container can read it from RDS.
+- **Predictions** are produced by a standalone batch job → the web tier just
+  reads a table.
+- **Models** live in an artifact store → training publishes, prediction pulls,
+  no shared disk needed.
+
+That means the Week-2 work (Dockerfiles, RDS, a one-off Fargate task) has a
+clean target: package `batch_predict_today.py` + the pipeline into the "pipeline"
+image, point `NBA_DB_*` at RDS and `MODELS_S3_BUCKET` at a real bucket, and the
+same code you tested locally runs unchanged in the cloud. Nothing about the
+container needs persistent local state.

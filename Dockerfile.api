@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1
+#
+# Public API image - the SERVE half of the app.
+# Deliberately tiny: no torch, sklearn, pandas, or model code. Just enough to
+# read model_predictions from MySQL/RDS and return JSON. Target ~200MB.
+#
+# Build (from project root):
+#   docker build -f Dockerfile.api -t nba-api .
+# Run:
+#   docker run --rm -p 8000:8000 --env-file .env nba-api
+
+FROM python:3.12-slim AS base
+
+# - PYTHONUNBUFFERED: logs stream immediately (important for container log capture)
+# - PYTHONDONTWRITEBYTECODE: no .pyc clutter in the image layer
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# Install deps first (their own layer) so code edits don't bust the pip cache.
+COPY api/requirements.txt ./api/requirements.txt
+RUN pip install -r api/requirements.txt
+
+# pymysql is pure-Python, so no apt build deps are needed here - that's the whole
+# point of the API using mysql+pymysql instead of mysqlclient.
+
+# App code (small). api/ is self-contained; it imports no project packages.
+COPY api ./api
+
+# Run as a non-root user (good container hygiene; required by some platforms).
+RUN useradd --create-home --uid 10001 appuser
+USER appuser
+
+EXPOSE 8000
+
+# uvicorn serves the ASGI app. --host 0.0.0.0 so it's reachable from outside the
+# container. Single worker is fine behind a load balancer that runs N tasks;
+# scale by task count, not by in-container workers.
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

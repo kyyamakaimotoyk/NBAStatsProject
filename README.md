@@ -206,6 +206,28 @@ nba_ml_features.csv (all rows, sorted by GAME_DATE)
 
 **TL;DR**: train 80%, calibrate on 20%, ship a 100%-retrained model wrapped with the calibrator, and refuse to backfill predict for dates the production model saw.
 
+### Feature-level leakage audit
+
+The split above keeps *training* honest. Separately, every **feature** in `nba_ml_features.csv` is computed strictly from data *before* each game, so a row never sees its own outcome. Audited 2026-05-26; each vector and its cutoff:
+
+| Feature vector | Why it's clean | Where (file:line) |
+|---|---|---|
+| Rolling box-score stats (`PTS_L5`, `offensiveRating_L10`, …) | `shift(1)` drops the current game before the rolling mean — a row's `_L10` is the average of the team's *previous* 10 games. | `feature_engineering.py:305` |
+| Current-game raw stats (`HOME_PTS`, …) | Present in the dataframe but **not selected as features** — `core.features.select_features` only matches `_L5`/`_L10`/`STREAK`/`REST_DAYS`/etc., none of which match a raw column. Today's score appears only as the *label* (`TARGET_WIN`, `TARGET_MARGIN`). | `core/features.py` |
+| Player projections (`PROJ_PTS_FROM_PLAYERS`, …) | Every query uses `GAME_DATE < as_of_date` (strict), `as_of_date` = the game's own date. | `player_projections.py:148,212,302,409` |
+| Player-impact computation | `populate_player_impact_table(as_of_date=D)` aggregates `GAME_DATE >= D-365 AND GAME_DATE < D`. So a `compute_date=D` row used only games strictly before D. | `player_impact.py:848` |
+| Player-impact → game match | For a game on date G, takes the most-recent `compute_date <= G` (`bisect_right` then `pos-1`). Safe even when `compute_date == G`, because that snapshot was itself computed with `< G`. Worst case is *staleness*, not leakage. | `player_impact.py:1456-1463` |
+| Pregame availability (E7) | `*_SLOT_X_AVAILABLE` comes from the official **pre-tip** injury report (`historical_injury_report`), not the post-game boxscore — the model sees who was *announced out*, not who actually played. | `feature_engineering.py` (`availability_source='pregame'`) |
+| `start_date` / `end_date` / 180-day buffer | The window only bounds *which rows land in the CSV*. The 180-day pre-`start_date` buffer feeds rolling context then is dropped. A given row's feature values are identical regardless of the window — so different train/backfill date ranges never change feature computation. | `feature_engineering.py:1388,1571` |
+
+**Known accepted residual — preprocessing fit (deliberately not fixed):** In `_prepare_training_data` (`predict_games.py:1955-1959`), the `SimpleImputer` (median) and `StandardScaler` are `fit_transform`ed on the **full** dataset *before* the 80/20 eval split. So those preprocessing statistics (median, mean, std) are computed using the held-out 20% too — textbook preprocessing leakage. It is left as-is on purpose because:
+
+1. **It does not affect the headline walk-forward metrics.** The walk-forward experiments (`e2`/`e3`/`e17`) refit the imputer/scaler on the *train window only* (e.g. `experiments/e17_series_eval.py:84`). Only the in-`load_or_train` registry "test" numbers carry the small optimistic bias.
+2. **RF and XGB are scale-invariant** — they split on thresholds, so a globally-fit `StandardScaler` changes nothing for them. Only the NN has any sensitivity, and it's second-order.
+3. The **production** model *should* use a scaler fit on all available data (it's the deployment artifact), so the line is correct for production — it's only slightly optimistic for the eval-metric reporting.
+
+To make the registry test metrics airtight, fit imputer/scaler on `X_train` only for the eval pass, then refit on all data for production. Not currently done; the registry numbers should be read as marginally optimistic, and the walk-forward numbers used for any keep/drop decision.
+
 ---
 
 ## Scripts Overview

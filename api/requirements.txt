@@ -1,0 +1,9 @@
+# Public API dependencies - deliberately minimal (no torch/sklearn/pandas/numpy).
+# This is what goes into Dockerfile.api, keeping the web image ~200MB and
+# fast to cold-start. Pinned loosely; tighten before the first prod deploy.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+SQLAlchemy>=2.0
+PyMySQL>=1.1
+python-dotenv>=1.0
+pydantic>=2.6

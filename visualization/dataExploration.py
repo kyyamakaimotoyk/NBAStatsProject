@@ -952,6 +952,21 @@ try:
     PREDICTIONS_AVAILABLE = True
 except (ImportError, OSError) as e:
     print(f"Warning: Could not import prediction functions: {e}")
+
+# Injury data for the per-game injury rows in the Game Predictions table.
+# Two sources, chosen by slate date:
+#   - upcoming/recent slates: live ESPN current report (get_current_injuries)
+#   - past slates: the point-in-time PRE-GAME report from historical_injury_report
+#     (_fetch_historical_injuries_for_date) — the same E7 source the model uses for
+#     backfilled predictions, so the row matches what the model actually saw.
+# Separate try/except so a failure here never disables predictions.
+try:
+    from data_engineering.injury_data import get_current_injuries
+    from modeling.predict_games import _fetch_historical_injuries_for_date
+    INJURY_DATA_AVAILABLE_GUI = True
+except (ImportError, OSError) as e:
+    INJURY_DATA_AVAILABLE_GUI = False
+    print(f"Warning: injury_data not available for GUI ({e}); injury rows disabled.")
     PREDICTIONS_AVAILABLE = False
     NBA_API_AVAILABLE = False
     PYTORCH_AVAILABLE = False
@@ -1137,11 +1152,51 @@ def make_predictions(n_clicks, game_date):
                 dbc.Alert("No models are loaded. Check console for load errors.", color='warning'),
                 [], go.Figure(), go.Figure(), [])
 
+        # Slate-level injury fetch (one league-wide ESPN call, reused for every game's
+        # injury row). Source depends on the slate date:
+        #   - upcoming/recent (>= today - 2d): live ESPN current report.
+        #   - past: point-in-time PRE-GAME report from historical_injury_report — the
+        #     same source the model used for its backfilled prediction, so the row
+        #     reflects what was actually known before tip, not today's report.
+        # Keyed by team abbrev -> [(player, status), ...].
+        engine = pred_create_engine()
+        injuries_by_team = {}
+        injury_source_label = None
+        try:
+            _slate_d = datetime.strptime(game_date, '%Y-%m-%d').date()
+            _is_recent_or_future = _slate_d >= (datetime.now().date() - timedelta(days=2))
+        except (ValueError, TypeError):
+            _slate_d, _is_recent_or_future = None, False
+        if INJURY_DATA_AVAILABLE_GUI and _slate_d is not None:
+            try:
+                if _is_recent_or_future:
+                    raw_injuries = get_current_injuries()
+                    injury_source_label = "Current injury report (ESPN)"
+                else:
+                    # Point-in-time pre-game report from the DB (E7). Returns the same
+                    # dict shape; only Out/Doubtful are stored for historical dates.
+                    raw_injuries = _fetch_historical_injuries_for_date(engine, game_date)
+                    injury_source_label = "Pre-game injury report (historical, point-in-time)"
+                _KEEP_STATUS = {'OUT', 'DOUBTFUL', 'QUESTIONABLE'}
+                for inj in raw_injuries:
+                    status = str(inj.get('status', '')).upper()
+                    if status not in _KEEP_STATUS:
+                        continue
+                    ab = inj.get('team_abbrev')
+                    if not ab:
+                        continue
+                    injuries_by_team.setdefault(ab, []).append(
+                        (inj.get('player_name', '?'), status))
+                _sev = {'OUT': 0, 'DOUBTFUL': 1, 'QUESTIONABLE': 2}
+                for ab in injuries_by_team:
+                    injuries_by_team[ab].sort(key=lambda t: _sev.get(t[1], 9))
+            except Exception as e:
+                print(f"[predict] injury fetch failed (non-fatal): {e}")
+
         # Per-game prediction loop. predictions_by_key[key] is a list of dicts (one per game),
         # each carrying the standard fields plus the matchup teams. Lists stay aligned by index.
         predictions_by_key = {s.key: [] for s in active_specs}
 
-        engine = pred_create_engine()
         for _, game in games.iterrows():
             home_id = game['HOME_TEAM_ID']
             away_id = game['AWAY_TEAM_ID']
@@ -1221,7 +1276,7 @@ def make_predictions(n_clicks, game_date):
                                       style={'textAlign': 'center', 'backgroundColor': bg_top}))
             header_bot += [
                 html.Th("Pick", style={'backgroundColor': bg_bot}),
-                html.Th("Win%", style={'backgroundColor': bg_bot}),
+                html.Th("Home Team Win %", style={'backgroundColor': bg_bot}),
                 html.Th("Margin", style={'backgroundColor': bg_bot}),
             ]
         # Vegas line column group (spread + total), between the models and Agreement.
@@ -1277,10 +1332,23 @@ def make_predictions(n_clicks, game_date):
                         margin_txt = f"{p['margin_mean']:+.1f}  (80%: {iv80[0]:+.0f}..{iv80[1]:+.0f})"
                     else:
                         margin_txt = f"{p['margin_mean']:+.1f}"
+                    # Two-headed-model disagreement flag: the Pick comes from the
+                    # isotonic-calibrated CLASSIFIER (win prob), the Margin from the
+                    # REGRESSOR. They can disagree on close games (e.g. classifier says
+                    # 82% home, regressor says home loses by 4.5). Surface it instead of
+                    # letting it read as a bug.
+                    margin_cell = [margin_txt]
+                    heads_split = ((p['win_prob_calibrated'] > 0.5) != (p['margin_mean'] > 0))
+                    if heads_split:
+                        margin_cell.append(dbc.Badge(
+                            "⚠ vs pick", color="warning", className="ms-2",
+                            title=("Win-prob classifier and margin regressor disagree on this "
+                                   "game. Pick follows the calibrated win probability; the "
+                                   "margin is the regressor's separate estimate.")))
                     cells += [
                         html.Td(_pick(p), style={'fontWeight': 'bold', 'color': spec.color}),
                         html.Td(f"{p['win_prob_calibrated']:.1%}"),
-                        html.Td(margin_txt),
+                        html.Td(margin_cell),
                     ]
 
             # Vegas cells: spread shown home-perspective with the favored team, e.g.
@@ -1297,6 +1365,42 @@ def make_predictions(n_clicks, game_date):
 
             cells.append(html.Td(agree_badge))
             table_rows.append(html.Tr(cells))
+
+            # Injury sub-row: key injuries (OUT/DOUBTFUL/QUESTIONABLE) per team,
+            # spanning the full width directly under the game. Only rendered when we
+            # have live injury data for this (today/upcoming) slate.
+            if injuries_by_team:
+                total_cols = 1 + 3 * len(active_specs) + 2 + 1  # matchup + models + vegas + agreement
+
+                def _team_inj(abbrev):
+                    items = injuries_by_team.get(abbrev, [])
+                    if not items:
+                        return [html.Span(f"{abbrev}: ", style={'fontWeight': 'bold'}),
+                                html.Span("no key injuries reported",
+                                          style={'color': '#888', 'marginRight': '18px'})]
+                    sev_color = {'OUT': '#e74c3c', 'DOUBTFUL': '#e67e22', 'QUESTIONABLE': '#f1c40f'}
+                    parts = [html.Span(f"{abbrev}: ", style={'fontWeight': 'bold'})]
+                    for k, (name, status) in enumerate(items[:6]):  # cap to keep the row readable
+                        parts.append(html.Span(
+                            f"{name} ({status})",
+                            style={'color': sev_color.get(status, '#ccc'), 'marginRight': '10px'}))
+                    if len(items) > 6:
+                        parts.append(html.Span(f"+{len(items) - 6} more",
+                                               style={'color': '#888', 'marginRight': '10px'}))
+                    parts.append(html.Span(' ', style={'marginRight': '8px'}))
+                    return parts
+
+                inj_content = ([html.Span(f"🏥 {injury_source_label or 'Injuries'}: ",
+                                          style={'marginRight': '6px', 'color': '#aaa',
+                                                 'fontStyle': 'italic'})]
+                               + _team_inj(spine['home_team'])
+                               + [html.Span("│ ", style={'color': '#555', 'marginRight': '8px'})]
+                               + _team_inj(spine['away_team']))
+                table_rows.append(html.Tr(
+                    html.Td(inj_content, colSpan=total_cols,
+                            style={'fontSize': '11px', 'backgroundColor': 'rgba(255,255,255,0.03)',
+                                   'paddingTop': '3px', 'paddingBottom': '6px'})
+                ))
 
         results_table = dbc.Table([
             html.Thead([html.Tr(header_top), html.Tr(header_bot)]),
@@ -1333,7 +1437,10 @@ def make_predictions(n_clicks, game_date):
             xaxis=dict(tickformat='.0%', range=[0, 1]),
             yaxis_title='',
             template='minty_dark',
-            height=max(400, n_games * 60 * max(1, len(active_specs) // 2 + 1)),
+            # Scale vertically with both the number of games and the number of grouped
+            # model bars per game, so a full 15-game slate stays legible (each game gets
+            # ~one bar-group's worth of height per active model + padding).
+            height=max(400, n_games * (30 + 26 * max(1, len(active_specs)))),
             margin=dict(l=150),
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
         )
@@ -1344,68 +1451,99 @@ def make_predictions(n_clicks, game_date):
         # E5: overlay the Vegas spread per matchup as a gold marker (vegas_lookup built
         # above, before the comparison table), so users can see at a glance whether our
         # model agrees with the line.
+        # Forest-plot layout: each (matchup, model) gets its own horizontal LANE so the
+        # point estimate, conformal interval, and (where it exists) the distribution
+        # violin never collapse onto the x-axis or onto each other. Matchup i sits at
+        # integer row i; models are spread within a band around it. This fixes:
+        #   - XGB invisibility: its margin distribution is degenerate (a single value),
+        #     so a violin renders as nothing. We always draw a POINT MARKER, so the
+        #     point estimate is visible for every model.
+        #   - Intervals hugging the axis: lanes give each interval its own y, well off
+        #     the baseline.
         fig_margin = go.Figure()
         vegas_legend_added = False
+        m = len(active_specs)
+        lane_gap = (0.6 / m) if m else 0.0  # vertical spacing between model lanes in a band
+        legend_added = set()
+
+        def _lane(i_row, j_model):
+            return i_row + ((j_model - (m - 1) / 2.0) * lane_gap if m > 1 else 0.0)
+
         for i in range(n_games):
             spine_pred = predictions_by_key[spine_key][i]
             matchup_label = f"{spine_pred['away_team']} @ {spine_pred['home_team']}"
-            for spec in active_specs:
+            for j, spec in enumerate(active_specs):
                 p = _pred_for(spec.key, i)
-                if p is None or len(p.get('margin_samples', [])) == 0:
+                if p is None:
                     continue
-                rgba_fill = f'rgba({int(spec.color[1:3], 16)}, {int(spec.color[3:5], 16)}, {int(spec.color[5:7], 16)}, 0.5)'
-                fig_margin.add_trace(go.Violin(
-                    y=[matchup_label] * len(p['margin_samples']),
-                    x=p['margin_samples'],
-                    name=f"{spec.key.upper()}: {matchup_label}",
-                    orientation='h',
-                    side='positive',
-                    meanline_visible=True,
-                    box_visible=True,
-                    points=False,
-                    showlegend=(i == 0),
-                    legendgroup=spec.key,
-                    fillcolor=rgba_fill,
-                    line_color=spec.color,
-                ))
-                # E14: split-conformal prediction intervals, drawn ON the category baseline
-                # (below the side='positive' violin). Thick bar = 80% (validated ~75-78%
-                # coverage), dotted line = 90% (~91%). The violin shows the model's *internal*
-                # spread; the conformal bar shows *total* predictive uncertainty incl. the
-                # irreducible game variance — and is the honest range for XGB (whose violin is
-                # a degenerate spike).
+                y = _lane(i, j)
+                color = spec.color
+                rgba_fill = f'rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.35)'
+                samples = p.get('margin_samples')
+                has_spread = (samples is not None and len(samples) > 0
+                              and float(np.std(samples)) > 0.5)
+                show_leg = spec.key not in legend_added
+
+                # Distribution violin only when there is real internal spread (RF/NN).
+                # XGB is a degenerate spike → skip the violin (the point + intervals carry it).
+                if has_spread:
+                    vwidth = lane_gap if m > 1 else 0.75
+                    fig_margin.add_trace(go.Violin(
+                        x=samples, y=[y] * len(samples),
+                        orientation='h', side='positive', width=vwidth,
+                        points=False, box_visible=False, meanline_visible=False,
+                        line_color=color, fillcolor=rgba_fill, opacity=0.6,
+                        hoverinfo='skip', showlegend=False, legendgroup=spec.key,
+                    ))
+
+                # E14 conformal intervals — drawn on the lane line.
+                # 90% = thin dotted line with end caps; 80% = thick bar.
                 iv90 = p.get('margin_interval_90')
                 iv80 = p.get('margin_interval_80')
                 if iv90:
                     fig_margin.add_trace(go.Scatter(
-                        x=iv90, y=[matchup_label, matchup_label], mode='lines',
-                        line=dict(color=spec.color, width=1.5, dash='dot'),
-                        showlegend=(i == 0), legendgroup=f'{spec.key}_ci',
-                        name=f"{spec.key.upper()} 90% interval",
-                        hovertemplate=f"{spec.key.upper()} 90 pct interval: "
+                        x=list(iv90), y=[y, y], mode='lines+markers',
+                        line=dict(color=color, width=1.5, dash='dot'),
+                        marker=dict(symbol='line-ns', size=14,
+                                    line=dict(color=color, width=1.5)),
+                        showlegend=False, legendgroup=spec.key,
+                        hovertemplate=f"{spec.key.upper()} 90% interval: "
                                       f"{iv90[0]:+.0f} .. {iv90[1]:+.0f}<extra></extra>",
                     ))
                 if iv80:
                     fig_margin.add_trace(go.Scatter(
-                        x=iv80, y=[matchup_label, matchup_label], mode='lines',
-                        line=dict(color=spec.color, width=6), opacity=0.65,
-                        showlegend=False, legendgroup=f'{spec.key}_ci',
-                        name=f"{spec.key.upper()} 80% interval",
-                        hovertemplate=f"{spec.key.upper()} 80 pct interval: "
+                        x=list(iv80), y=[y, y], mode='lines',
+                        line=dict(color=color, width=7), opacity=0.55,
+                        showlegend=False, legendgroup=spec.key,
+                        hovertemplate=f"{spec.key.upper()} 80% interval: "
                                       f"{iv80[0]:+.0f} .. {iv80[1]:+.0f}<extra></extra>",
                     ))
-            # Vegas marker: ESPN uses convention "spread of -7.5 from the favored team's perspective"
-            # — vegas_lines.home_spread is already home-perspective (negative = home favored). To
-            # overlay on a "+ = home wins" margin axis, we want the MARGIN value Vegas predicts:
-            # margin = -home_spread (so home_spread=-7.5 means Vegas predicts home wins by 7.5).
+
+                # Point estimate — ALWAYS drawn. This is what makes XGB visible and is
+                # the regressor's predicted margin. Note in hover that the table's Pick
+                # comes from the win-prob classifier, which can differ in sign.
+                fig_margin.add_trace(go.Scatter(
+                    x=[p['margin_mean']], y=[y], mode='markers',
+                    marker=dict(symbol='circle', size=12, color=color,
+                                line=dict(color='white', width=1.5)),
+                    name=spec.display_name, legendgroup=spec.key, showlegend=show_leg,
+                    hovertemplate=(f"<b>{spec.display_name}</b> — {matchup_label}<br>"
+                                   f"Predicted margin (regressor): {p['margin_mean']:+.1f}<br>"
+                                   f"Pick (win-prob classifier): {_pick(p)} "
+                                   f"({p['win_prob_calibrated']:.0%})<extra></extra>"),
+                ))
+                legend_added.add(spec.key)
+
+            # Vegas marker at the matchup band center. vegas_lines.home_spread is
+            # home-perspective (negative = home favored); implied margin = -home_spread.
             vegas = vegas_lookup.get((spine_pred['home_team'], spine_pred['away_team']))
             if vegas is not None and vegas.get('home_spread') is not None:
                 vegas_margin = -vegas['home_spread']
                 bookmaker = vegas.get('bookmaker', 'Vegas')
                 fig_margin.add_trace(go.Scatter(
-                    x=[vegas_margin], y=[matchup_label],
+                    x=[vegas_margin], y=[i],
                     mode='markers+text',
-                    marker=dict(symbol='diamond-tall', size=18,
+                    marker=dict(symbol='diamond-tall', size=16,
                                 color='gold', line=dict(width=2, color='black')),
                     text=[f' Vegas {vegas_margin:+.1f}'],
                     textposition='middle right',
@@ -1418,24 +1556,38 @@ def make_predictions(n_clicks, game_date):
                                   f'Implied margin: {vegas_margin:+.1f}<extra></extra>',
                 ))
                 vegas_legend_added = True
+
         fig_margin.update_layout(
-            title=f'Margin: model distribution + conformal interval + Vegas line — {game_date}',
+            title=f'Margin: point estimate + conformal interval + Vegas line — {game_date}',
             xaxis_title='Point Margin (+ = Home Team Wins)',
-            yaxis_title='',
+            yaxis=dict(
+                tickmode='array',
+                tickvals=list(range(n_games)),
+                ticktext=[f"{predictions_by_key[spine_key][k]['away_team']} @ "
+                          f"{predictions_by_key[spine_key][k]['home_team']}" for k in range(n_games)],
+                range=[-0.6, n_games - 0.4],
+            ),
             template='minty_dark',
-            height=max(400, n_games * 100),
-            margin=dict(l=150, b=90),
+            # Each game band stacks one lane per active model (point + 80%/90% interval +
+            # violin for RF/NN). Allocate generous height per game (~3x the earlier value)
+            # so the RF/NN distribution violins have real vertical room to show their
+            # shape, and grow it with the model count. The chart lives in an 80vh
+            # scrollable pane (see layout), so tall slates scroll rather than stretch.
+            height=max(500, n_games * (60 + 165 * max(1, len(active_specs)))),
+            margin=dict(l=150, b=100),
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
         )
         fig_margin.add_vline(x=0, line_dash="dash", line_color="yellow", opacity=0.7,
                             annotation_text="Even", annotation_position="top")
-        # Caption: explain the interval semantics + the honest coverage caveat (E14).
+        # Caption: explain the marks + the two-heads caveat + the honest coverage caveat (E14).
         fig_margin.add_annotation(
-            xref='paper', yref='paper', x=0, y=-0.14, showarrow=False, align='left',
+            xref='paper', yref='paper', x=0, y=-0.16, showarrow=False, align='left',
             font=dict(size=10, color='lightgray'),
-            text=("Thick bar = 80% prediction interval, dotted = 90% (split-conformal, E14). "
-                  "Validated coverage on held-out games: ~91% of margins land inside the 90% band. "
-                  "Bands are wide (±18-25 pts) because NBA margin variance is irreducibly large."),
+            text=("Dot = predicted margin (regressor). Thick bar = 80% interval, dotted = 90% "
+                  "(split-conformal, E14; ~91% of margins land inside the 90% band). Violin (RF/NN) "
+                  "shows the model's internal spread; XGB has none so only its dot + bars appear. "
+                  "Note: the table's Pick uses the win-prob classifier, so it can differ in sign "
+                  "from the regressor dot on close games."),
         )
 
         # ---------- SHAP cards (one column per active model, per game) ----------
@@ -2842,14 +2994,24 @@ app.layout = html.Div(
                             html.Span('Blue = Random Forest', style={'color': '#3498db', 'marginRight': '20px'}),
                             html.Span('Red = Neural Network', style={'color': '#e74c3c'})
                         ]),
-                        dcc.Graph(id='predictionProbChart')
+                        # Scrollable pane: the figure grows per-game (see height formula in
+                        # the callback), so on a full slate it can be ~2700px. Wrapping it in
+                        # a fixed-height overflow container keeps the page compact — the tall
+                        # chart scrolls inside its own pane instead of stretching the page.
+                        html.Div(
+                            dcc.Graph(id='predictionProbChart'),
+                            style={'maxHeight': '80vh', 'overflowY': 'auto'},
+                        ),
                     ], width=6),
                     dbc.Col([
                         html.H5('Margin Distribution Comparison'),
                         html.Div([
                             'RF uses 100 decision trees. NN uses Monte Carlo Dropout (100 forward passes with dropout enabled).'
                         ]),
-                        dcc.Graph(id='predictionMarginChart')
+                        html.Div(
+                            dcc.Graph(id='predictionMarginChart'),
+                            style={'maxHeight': '80vh', 'overflowY': 'auto'},
+                        ),
                     ], width=6),
                 ]),
                 html.Br(),

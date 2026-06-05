@@ -1,0 +1,61 @@
+# syntax=docker/dockerfile:1
+#
+# Pipeline image - the COMPUTE half of the app. The "everything" image:
+# data fetch, feature engineering, training, and batch prediction. Heavy by
+# design (torch + sklearn + xgboost + pandas). Target ~2GB.
+#
+# Build (from project root):
+#   docker build -f Dockerfile.pipeline -t nba-pipeline .
+#
+# Run examples (override the command per job; this is what ECS/EventBridge does):
+#   # nightly predictions (default CMD)
+#   docker run --rm --env-file .env nba-pipeline
+#   # full pipeline
+#   docker run --rm --env-file .env nba-pipeline python orchestration/pipeline.py run --stages all
+#   # weekly retrain
+#   docker run --rm --env-file .env nba-pipeline python orchestration/pipeline.py run --stages train
+
+FROM python:3.12-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# System deps:
+#  - build-essential, pkg-config, default-libmysqlclient-dev: needed to build the
+#    `mysqlclient` wheel (the project's mysql:// driver). pymysql would avoid this,
+#    but core/db.py uses mysqlclient project-wide, so we install the build deps.
+#  - libgomp1: OpenMP runtime required by xgboost/lightgbm at import time.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        pkg-config \
+        default-libmysqlclient-dev \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 1) Install CPU-only torch FIRST from the dedicated PyTorch index. Plain PyPI
+#    would pull the multi-GB CUDA build, which we don't need (no GPU on Fargate).
+RUN pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu
+
+# 2) Install the rest. Copy only the requirements files first so this layer is
+#    cached across code changes.
+COPY requirements.txt requirements-pipeline.txt ./
+RUN pip install -r requirements-pipeline.txt
+
+# 3) Application code. .dockerignore strips the venv, git, CSVs, models/, and the
+#    dashboard - so this copies just the code packages the pipeline runs.
+COPY . .
+
+# Models are NOT baked in - load_model_bundle pulls them from the artifact store
+# (S3 in prod) on first use. Features come from MySQL, not a local CSV. So a
+# fresh container is fully functional with only env vars + network.
+
+RUN useradd --create-home --uid 10001 appuser
+USER appuser
+
+# Default job = nightly prediction. ECS scheduled tasks override `command` for
+# train / features / full-pipeline runs (see header examples).
+CMD ["python", "modeling/batch_predict_today.py"]

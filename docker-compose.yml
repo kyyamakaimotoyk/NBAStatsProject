@@ -1,0 +1,51 @@
+# Local end-to-end harness for the two prod images.
+#
+# Design: both containers talk to your EXISTING host MySQL (not a throwaway DB
+# container), so the test runs against real features / predictions / models.
+# On Docker Desktop the host is reachable at `host.docker.internal`.
+#
+# Usage:
+#   docker compose build                      # build both images
+#   docker compose up api                     # run the public API on :8000
+#   docker compose run --rm pipeline \
+#       python modeling/batch_predict_today.py --no-log --models rf   # smoke-test compute
+#
+# The `pipeline` service is a batch job, not a server — it's behind the `jobs`
+# profile so `docker compose up` starts only the API. Invoke jobs explicitly
+# with `docker compose run`.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: nba-api:local
+    env_file: .env
+    environment:
+      # Override the .env's NBA_DB_HOST=localhost: from inside a container,
+      # "localhost" is the container itself. host.docker.internal is the host.
+      NBA_DB_HOST: host.docker.internal
+      ALLOWED_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      # Makes host.docker.internal resolve on Linux too (no-op on Desktop).
+      - "host.docker.internal:host-gateway"
+    restart: "no"
+
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    image: nba-pipeline:local
+    env_file: .env
+    environment:
+      NBA_DB_HOST: host.docker.internal
+    volumes:
+      # Supply model bundles at runtime without S3. In prod these are pulled
+      # from the artifact store instead (MODELS_S3_BUCKET); the mount is the
+      # local stand-in. Read-only: the container never writes models here.
+      - ./models:/app/models:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles: ["jobs"]    # don't auto-start on `docker compose up`

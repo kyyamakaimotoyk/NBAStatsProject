@@ -1,0 +1,16 @@
+# Heavy dependencies for the data/training/prediction pipeline image
+# (Dockerfile.pipeline). This is the "everything" image: data fetch, feature
+# engineering, training, and batch prediction all run from it.
+#
+# The base requirements.txt intentionally omits torch/xgboost/shap (they were
+# installed by hand in dev). They are pinned here to the dev-environment
+# versions for reproducible image builds.
+#
+# NOTE: torch must be installed from the CPU wheel index, NOT plain PyPI (which
+# serves the multi-GB CUDA build). The Dockerfile does that in a separate step;
+# this file lists the rest.
+
+-r requirements.txt
+
+xgboost==3.2.0
+shap==0.50.0

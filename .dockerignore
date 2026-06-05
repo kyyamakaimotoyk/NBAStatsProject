@@ -1,0 +1,45 @@
+# Keep the Docker build context small and free of secrets/junk.
+# Anything matched here is NOT sent to the daemon or copied by `COPY . .`.
+
+# Virtualenv / VCS / IDE
+.venv/
+.git/
+.gitignore
+.idea/
+.claude/
+.vscode/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Secrets - provided at runtime via env, never baked into an image
+.env
+.env.example
+
+# Large generated data - features come from MySQL, not the CSV (see core/features_io.py)
+nba_ml_features.csv
+nba_ml_features*.csv
+*.csv.backup_*
+nul
+
+# Model artifacts - pulled from the artifact store at runtime (see core/artifact_store.py)
+models/
+.artifact_store_mirror/
+
+# Run artifacts
+logs/
+outputs/
+tmp/
+scratch/
+
+# Things the prod images don't run
+experiments/
+tests/
+deprecated/
+visualization/
+docs/
+*.md
+README.md

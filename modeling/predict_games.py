@@ -79,8 +79,19 @@ import shutil
 import warnings
 warnings.filterwarnings('ignore')
 
-# For visualization
-import matplotlib.pyplot as plt
+# For visualization. Guarded + lazy: the headless batch path (batch_predict_today.py)
+# imports primitives from this module but never plots, and the pipeline Docker image
+# deliberately omits matplotlib. Use the non-interactive 'Agg' backend when present so
+# plotting works in a container with no display. plt is None when unavailable; the two
+# plotting functions below check MATPLOTLIB_AVAILABLE before using it.
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    plt = None
+    MATPLOTLIB_AVAILABLE = False
 
 # For prediction tracking
 try:
@@ -3092,6 +3103,11 @@ def plot_model_comparison(rf_predictions: list, nn_predictions: list, game_date:
     - Red dashed line = Even (0)
     - Team codes annotated on histogram near the even line
     """
+    if not MATPLOTLIB_AVAILABLE:
+        print("matplotlib not installed; skipping plot. (Install it for charts, "
+              "or run with --no-plot.)")
+        return
+
     # Handle case where only one model's predictions are provided
     if not rf_predictions and not nn_predictions:
         print("No predictions to visualize")

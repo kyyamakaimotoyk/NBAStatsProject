@@ -79,3 +79,7 @@ models/*.pt
 .artifact_store_mirror/
 # Smoke-test scratch outputs
 outputs/*smoketest*.json
+
+# Personal planning + learning notes (kept local, not part of the public repo)
+docs/aws_deployment_plan.md
+docker-learn/

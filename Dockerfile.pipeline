@@ -53,7 +53,14 @@ COPY . .
 # (S3 in prod) on first use. Features come from MySQL, not a local CSV. So a
 # fresh container is fully functional with only env vars + network.
 
-RUN useradd --create-home --uid 10001 appuser
+# Non-root user. /app is owned by root (from COPY above), so the runtime dirs the
+# app writes to must be created and handed to appuser explicitly — otherwise the
+# S3 artifact-store pull (which hydrates models/bundles/ on a fresh container) and
+# any disk writes fail with PermissionError, and the predictor silently falls back
+# to retraining. models/ is stripped by .dockerignore, so these start empty.
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app/models/bundles /app/logs /app/outputs \
+    && chown -R appuser:appuser /app/models /app/logs /app/outputs
 USER appuser
 
 # Default job = nightly prediction. ECS scheduled tasks override `command` for

@@ -1,0 +1,2 @@
+my_ip = "126.139.124.198"
+bastion_public_key_path = "C:/Users/Kai/.ssh/nba_bastion.pub"

@@ -800,6 +800,53 @@ GID_PREFIX_REGIME = {'001': 'preseason', '002': 'regular', '003': 'allstar',
 _SCHEDULE_CACHE = {'df': None, 'ts': 0.0}
 _SCHEDULE_TTL_SEC = 600  # 10 minutes
 
+# The full-season schedule is available from two NBA sources:
+#   1. cdn.nba.com   - static JSON behind Akamai. Reachable from ANY IP, including
+#                      datacenter/AWS ranges; this is what nba.com's own site uses.
+#   2. stats.nba.com - the ScheduleLeagueV2 stats endpoint. Rate-limits / blocks
+#                      datacenter IPs, so it times out from Fargate/AWS.
+# We PREFER the CDN (works in the cloud) and fall back to the stats endpoint only
+# if the CDN is unreachable. Both are normalized to the same flat columns so the
+# rest of the code never has to know which source answered.
+_SCHEDULE_CDN_URL = 'https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json'
+_SCHEDULE_CDN_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    'Referer': 'https://www.nba.com/',
+    'Origin': 'https://www.nba.com',
+    'Accept': 'application/json',
+}
+
+
+def _fetch_league_schedule_cdn(timeout: int = 20) -> pd.DataFrame:
+    """Fetch the full-season schedule from the NBA CDN (cdn.nba.com).
+
+    The CDN returns a nested ``leagueSchedule.gameDates[].games[]`` structure; we
+    flatten it to the SAME columns ScheduleLeagueV2 produces (gameId, gameDate,
+    gameStatusText, arenaName, homeTeam_teamId, awayTeam_teamId,
+    homeTeam_teamTricode, awayTeam_teamTricode) so callers are source-agnostic.
+    Raises on network/parse failure (caller decides whether to fall back).
+    """
+    import requests
+    resp = requests.get(_SCHEDULE_CDN_URL, headers=_SCHEDULE_CDN_HEADERS, timeout=timeout)
+    resp.raise_for_status()
+    game_dates = resp.json()['leagueSchedule']['gameDates']
+    rows = []
+    for gd in game_dates:
+        for g in gd.get('games', []):
+            home = g.get('homeTeam', {})
+            away = g.get('awayTeam', {})
+            rows.append({
+                'gameId': g.get('gameId'),
+                'gameDate': gd.get('gameDate'),
+                'gameStatusText': g.get('gameStatusText', 'Scheduled'),
+                'arenaName': g.get('arenaName', 'Unknown'),
+                'homeTeam_teamId': home.get('teamId'),
+                'awayTeam_teamId': away.get('teamId'),
+                'homeTeam_teamTricode': home.get('teamTricode'),
+                'awayTeam_teamTricode': away.get('teamTricode'),
+            })
+    return pd.DataFrame(rows)
+
 
 def _fetch_league_schedule(force: bool = False) -> pd.DataFrame:
     """Fetch (and cache) the full league schedule from ScheduleLeagueV2.
@@ -817,7 +864,14 @@ def _fetch_league_schedule(force: bool = False) -> pd.DataFrame:
             and (now - _SCHEDULE_CACHE['ts']) < _SCHEDULE_TTL_SEC):
         return cached
 
-    sched = ScheduleLeagueV2().get_data_frames()[0].copy()
+    # CDN first (works from AWS); fall back to the stats endpoint if it fails.
+    try:
+        sched = _fetch_league_schedule_cdn()
+    except Exception as cdn_err:
+        print(f"  CDN schedule fetch failed ({cdn_err}); falling back to stats.nba.com...")
+        if not NBA_API_AVAILABLE:
+            raise
+        sched = ScheduleLeagueV2().get_data_frames()[0].copy()
     sched['_date'] = pd.to_datetime(sched['gameDate'], errors='coerce').dt.normalize()
     _SCHEDULE_CACHE['df'] = sched
     _SCHEDULE_CACHE['ts'] = now

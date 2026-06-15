@@ -83,3 +83,27 @@ outputs/*smoketest*.json
 # Personal planning + learning notes (kept local, not part of the public repo)
 docs/aws_deployment_plan.md
 docker-learn/
+
+# Terraform (infra/)
+# State can contain secrets (e.g. RDS password) and, with local state, is
+# machine-specific — never commit it. Provider binaries are large + regenerable.
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+# tfvars often hold environment-specific or secret values; commit *.example only
+*.tfvars
+*.tfvars.json
+# NOTE: .terraform.lock.hcl is intentionally NOT ignored — it pins provider
+# versions (like package-lock.json) and SHOULD be committed.
+# Claude's reference copy of the infra files (kept local during the hand-rebuild)
+infra_reference/
+# Throwaway bastion scaffolding — kept locally for reference, not in the repo
+# (covers bastion.tf and the renamed bastion.tf.reference after teardown)
+infra/bastion.tf*
+# Throwaway one-off Fargate launcher (holds env-specific subnet/SG IDs + ad-hoc
+# run args); regenerated as needed, not part of the repo.
+infra/runtask.json
+# Full local DB dump before migrating to RDS
+infra/nba_data.sql

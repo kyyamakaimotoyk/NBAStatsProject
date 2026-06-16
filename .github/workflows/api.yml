@@ -1,0 +1,59 @@
+name: Deploy API
+
+# Runs only when the API image's inputs change.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "api/**"
+      - "Dockerfile.api"
+      - "requirements*.txt"
+      - ".github/workflows/api.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+# Don't cancel an in-flight API deploy — let it finish rolling.
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::583686634997:role/nba-game-predictor-github-deploy
+  ECR_REPO: 583686634997.dkr.ecr.us-east-1.amazonaws.com/nba-game-predictor-api
+  ECS_CLUSTER: nba-game-predictor-cluster
+  ECS_SERVICE: nba-game-predictor-api
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      # Tag both :latest (what the task definition pulls) and :<commit> (a
+      # rollback handle pointing at the exact source that built it).
+      - name: Build and push image
+        run: |
+          docker build -f Dockerfile.api \
+            -t "${ECR_REPO}:latest" \
+            -t "${ECR_REPO}:${GITHUB_SHA}" .
+          docker push "${ECR_REPO}:latest"
+          docker push "${ECR_REPO}:${GITHUB_SHA}"
+
+      # Force a new deployment so the service re-pulls :latest. Same task
+      # definition — only the image behind the tag changed.
+      - name: Roll the API service
+        run: |
+          aws ecs update-service \
+            --cluster "${ECS_CLUSTER}" \
+            --service "${ECS_SERVICE}" \
+            --force-new-deployment

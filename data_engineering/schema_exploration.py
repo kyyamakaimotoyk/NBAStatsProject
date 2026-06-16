@@ -1,3 +1,4 @@
+
 """
 Schema Exploration Script
 =========================

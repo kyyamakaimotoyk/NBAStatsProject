@@ -1,0 +1,64 @@
+name: Deploy frontend
+
+# Runs only when the site source changes (or this workflow itself).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/frontend.yml"
+
+# id-token: write is what lets the run request a GitHub OIDC token to assume the
+# AWS role. contents: read is enough to check out the code.
+permissions:
+  id-token: write
+  contents: read
+
+# If two pushes land quickly, only deploy the latest.
+concurrency:
+  group: deploy-frontend
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::583686634997:role/nba-game-predictor-github-deploy
+  SITE_BUCKET: nba-game-predictor-site-583686634997
+  # Fill from: terraform -chdir=infra output -raw site_cloudfront_id
+  CLOUDFRONT_SITE_ID: ESGL2AUW580WD
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - name: Build static site
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: https://api.hoopmodel.com
+
+      # Exchange the OIDC token for temporary AWS credentials (no stored keys).
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sync to S3
+        run: aws s3 sync out "s3://${SITE_BUCKET}/" --delete
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${CLOUDFRONT_SITE_ID}" \
+            --paths "/*"

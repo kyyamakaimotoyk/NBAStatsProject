@@ -119,6 +119,53 @@ output "public_subnet_ids" {
   value       = aws_subnet.public[*].id
 }
 
+# --- DNS / TLS (Week 3.2) ---
+output "acm_certificate_arn" {
+  description = "Validated cert ARN; used by the ALB listener (3.3) and CloudFront (3.5)"
+  value       = aws_acm_certificate_validation.main.certificate_arn
+}
+
+output "route53_zone_id" {
+  value = data.aws_route53_zone.main.zone_id
+}
+
+# --- API load balancer (Week 3.3) ---
+output "alb_dns_name" {
+  description = "ALB's AWS hostname (api.hoopmodel.com aliases to this)"
+  value       = aws_lb.main.dns_name
+}
+
+output "api_url" {
+  description = "Public HTTPS base URL for the API once DNS propagates"
+  value       = "https://api.${var.domain_name}"
+}
+
+output "api_cloudfront_domain" {
+  description = "CloudFront distribution domain fronting the API (api.hoopmodel.com aliases here)"
+  value       = aws_cloudfront_distribution.api.domain_name
+}
+
+# --- Static site (Week 3.5) ---
+output "site_bucket" {
+  description = "S3 bucket holding the built site; aws s3 sync web/out here"
+  value       = aws_s3_bucket.site.bucket
+}
+
+output "site_cloudfront_id" {
+  description = "Site distribution id; used for cache invalidations after a deploy"
+  value       = aws_cloudfront_distribution.site.id
+}
+
+output "site_url" {
+  value = "https://${var.domain_name}"
+}
+
+# --- CI/CD (Week 3.6) ---
+output "github_deploy_role_arn" {
+  description = "Role GitHub Actions assumes via OIDC (set as repo variable AWS_ROLE_ARN)"
+  value       = aws_iam_role.github_deploy.arn
+}
+
 # Terraform: terraform output ecr_api_url (and ecr_pipeline_url)
 #
 #  AWS CLI:

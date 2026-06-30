@@ -26,6 +26,7 @@ from api import queries
 from api.db import db_healthy
 from api.schemas import (
     PredictionsResponse,
+    PerformanceResultsResponse,
     AccuracySummaryResponse,
     RollingResponse,
     HealthResponse,
@@ -91,6 +92,18 @@ def predictions_by_date(
     _check_model(model)
     rows = queries.predictions_for_date(date, model)
     return PredictionsResponse(game_date=date, count=len(rows), predictions=rows)
+
+
+@app.get("/api/performance/results", response_model=PerformanceResultsResponse, tags=["performance"])
+def performance_results(
+    days: int = Query(default=90, ge=1, le=365),
+    model: Optional[str] = Query(default=None),
+):
+    """Predicted-vs-actual rows over the last N days of completed games. The public
+    Model Performance page aggregates these client-side into all of its charts."""
+    _check_model(model)
+    rows = queries.performance_results(days, model)
+    return PerformanceResultsResponse(days=days, count=len(rows), results=rows)
 
 
 @app.get("/api/accuracy/summary", response_model=AccuracySummaryResponse, tags=["accuracy"])

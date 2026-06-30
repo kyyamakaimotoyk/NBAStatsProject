@@ -9,6 +9,19 @@ project's** images (`nba-pipeline:local`, `nba-api:local`). Companion to the
 > directory is fine for `docker run` (the image is self-contained); the
 > build-context investigations at the end need the **project root**.
 
+## The lab series
+
+Five hands-on companions to the "Kai Learning" parts in `aws_deployment_plan.md`,
+each grounded in this repo's real code. Read in any order:
+
+| Lab | Covers | Pairs with |
+|---|---|---|
+| **Docker** (this lab) | images, layers, containers, the troubleshooting loop | Parts A, D, E |
+| [Terraform](terraform_lab.md) | state, plan/apply, drift, the dependency graph | Parts C, F–I |
+| [Frontend / TypeScript](frontend_lab.md) | Next.js, types-as-contract, client fetch, static export | Part H |
+| [CI/CD](cicd_lab.md) | GitHub Actions, OIDC, path filters, push-to-deploy | Part I |
+| [Ops](ops_lab.md) | scheduling, alarms, budgets, logs, the egress probe | Part J |
+
 ---
 
 ## 0. Prerequisites

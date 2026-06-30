@@ -34,6 +34,14 @@ class PredictionsResponse(BaseModel):
     predictions: list[Prediction]
 
 
+class PerformanceResultsResponse(BaseModel):
+    """Predicted-vs-actual rows over a date window. The public Model Performance page
+    computes all its charts client-side from these (reuses the Prediction shape)."""
+    days: int
+    count: int
+    results: list[Prediction]
+
+
 class AccuracySummary(BaseModel):
     model_type: str
     total_predictions: int

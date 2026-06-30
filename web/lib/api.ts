@@ -67,3 +67,16 @@ export const getAccuracySummary = (days = 30) =>
 
 export const getRollingAccuracy = (days = 90) =>
   getJSON<RollingResponse>(`/api/accuracy/rolling?days=${days}`);
+
+// Predicted-vs-actual rows over a window; the Model Performance page computes all
+// its charts client-side from these (reuses the Prediction shape).
+export type PerformanceResultsResponse = {
+  days: number;
+  count: number;
+  results: Prediction[];
+};
+
+export const getPerformanceResults = (days = 90, model?: string) =>
+  getJSON<PerformanceResultsResponse>(
+    `/api/performance/results?days=${days}${model ? `&model=${model}` : ""}`,
+  );

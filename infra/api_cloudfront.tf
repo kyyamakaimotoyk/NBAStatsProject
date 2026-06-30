@@ -74,6 +74,20 @@ resource "aws_cloudfront_distribution" "api" {
     compress                 = true
   }
 
+  # Model-performance data only changes nightly, so cache it (~5 min) at the edge
+  # instead of hitting RDS on every visit. The cache key includes the Origin header
+  # (correct CORS per origin) and the days/model query strings (windows cache apart).
+  ordered_cache_behavior {
+    path_pattern             = "/api/performance/*"
+    target_origin_id         = "alb-api"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS"]
+    cached_methods           = ["GET", "HEAD"]
+    cache_policy_id          = aws_cloudfront_cache_policy.api_perf.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+    compress                 = true
+  }
+
   viewer_certificate {
     acm_certificate_arn      = aws_acm_certificate_validation.main.certificate_arn
     ssl_support_method       = "sni-only"
@@ -87,6 +101,37 @@ resource "aws_cloudfront_distribution" "api" {
   }
 
   # To add a WAF later: set web_acl_id = aws_wafv2_web_acl.<name>.arn
+}
+
+
+# Short-TTL cache policy for /api/performance/* — keeps the nightly-changing model
+# data fresh-enough (~5 min) while collapsing repeat reads off RDS.
+resource "aws_cloudfront_cache_policy" "api_perf" {
+  name        = "${var.project}-api-perf"
+  comment     = "Short-TTL cache for /api/performance/* (data changes nightly)"
+  default_ttl = 300
+  min_ttl     = 0
+  max_ttl     = 3600
+
+  parameters_in_cache_key_and_forwarded_to_origin {
+    cookies_config {
+      cookie_behavior = "none"
+    }
+    headers_config {
+      header_behavior = "whitelist"
+      headers {
+        items = ["Origin"] # cache per-origin so the CORS allow-origin header is correct
+      }
+    }
+    query_strings_config {
+      query_string_behavior = "whitelist"
+      query_strings {
+        items = ["days", "model"]
+      }
+    }
+    enable_accept_encoding_gzip   = true
+    enable_accept_encoding_brotli = true
+  }
 }
 
 

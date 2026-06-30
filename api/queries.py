@@ -83,6 +83,40 @@ def predictions_for_date(game_date: str, model_type: Optional[str] = None) -> li
         return _rows(conn.execute(sa.text(q), params))
 
 
+def performance_results(days: int = 90, model_type: Optional[str] = None) -> list[dict]:
+    """Per-(game, model) predicted-vs-actual rows over the last ``days`` (completed
+    games only — actual_winner filled in by backfill).
+
+    This is the raw material the public Model Performance page aggregates CLIENT-SIDE
+    into every chart (headline accuracy/MAE/calibration, rolling accuracy, calibration/
+    reliability, ROC, confusion matrix, residuals). The web tier never computes models;
+    it just reads these already-stored rows. Public-safe columns only (same policy as
+    predictions_for_date — no raw probabilities, model_version, or feature internals).
+    One row per (game, model): the latest prediction_timestamp, like predictions_for_date.
+    """
+    q = f"""
+    SELECT {_PUBLIC_PREDICTION_COLS}
+    FROM (
+        SELECT *,
+               ROW_NUMBER() OVER (
+                   PARTITION BY game_id, model_type
+                   ORDER BY prediction_timestamp DESC
+               ) AS _rn
+        FROM model_predictions
+        WHERE actual_winner IS NOT NULL
+          AND game_date >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+    ) ranked
+    WHERE _rn = 1
+    """
+    params: dict = {'days': days}
+    if model_type:
+        q += " AND model_type = :mt"
+        params['mt'] = model_type
+    q += " ORDER BY game_date ASC, game_id, model_type"
+    with get_engine().connect() as conn:
+        return _rows(conn.execute(sa.text(q), params))
+
+
 def accuracy_summary(days: int = 30, model_type: Optional[str] = None) -> list[dict]:
     """Aggregate accuracy over the last ``days`` of completed games, per model.
 

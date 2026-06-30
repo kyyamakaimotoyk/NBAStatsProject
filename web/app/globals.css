@@ -101,3 +101,55 @@ h2 {
   color: var(--muted);
   font-size: 0.85rem;
 }
+
+.subtle {
+  color: var(--muted);
+  margin-bottom: 1rem;
+}
+
+.controls {
+  margin: 0.5rem 0 1.25rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.controls select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+}
+
+.cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  min-width: 160px;
+  flex: 1;
+}
+.card-title {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.card-metric {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1.2;
+}
+.card-sub {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.card-row {
+  font-size: 0.8rem;
+  color: var(--text);
+  margin-top: 0.35rem;
+}

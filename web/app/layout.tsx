@@ -21,6 +21,7 @@ export default function RootLayout({
           <nav>
             <Link href="/">Tonight</Link>
             <Link href="/accuracy">Accuracy</Link>
+            <Link href="/performance">Model</Link>
           </nav>
         </header>
         <main className="container">{children}</main>

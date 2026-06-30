@@ -15,6 +15,7 @@ Only fan-facing fields (teams, pick, probability, margin, actual result) ship.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Optional
 import sqlalchemy as sa
 
@@ -235,3 +236,165 @@ def feature_timeseries(feature: str, window: str = "L5", days: int = 365) -> lis
     except Exception as e:  # unknown column / empty feature set → degrade gracefully
         print(f"[explore] feature_timeseries failed for {home_col}: {e}")
         return []
+
+
+# ---------------------------------------------------------------------------
+# Data exploration: per-team-game scatter (Dash Tabs 1 & 3 port)
+# ---------------------------------------------------------------------------
+
+# Curated public-safe scatter stats -> their qualified column in the boxscore join.
+# x/y are validated against these keys, so the interpolated SQL is injection-safe.
+_SCATTER_COLUMNS: dict[str, str] = {
+    # Traditional (the team game log itself)
+    "PTS": "gl.PTS", "FGM": "gl.FGM", "FGA": "gl.FGA", "FG_PCT": "gl.FG_PCT",
+    "FG3M": "gl.FG3M", "FG3A": "gl.FG3A", "FG3_PCT": "gl.FG3_PCT",
+    "FTM": "gl.FTM", "FTA": "gl.FTA", "FT_PCT": "gl.FT_PCT",
+    "OREB": "gl.OREB", "DREB": "gl.DREB", "REB": "gl.REB", "AST": "gl.AST",
+    "STL": "gl.STL", "BLK": "gl.BLK", "TOV": "gl.TOV", "PF": "gl.PF",
+    "PLUS_MINUS": "gl.PLUS_MINUS",
+    # Four Factors
+    "effectiveFieldGoalPercentage": "bff.effectiveFieldGoalPercentage",
+    "freeThrowAttemptRate": "bff.freeThrowAttemptRate",
+    "teamTurnoverPercentage": "bff.teamTurnoverPercentage",
+    "offensiveReboundPercentage": "bff.offensiveReboundPercentage",
+    # Player tracking
+    "distance": "bpt.distance", "touches": "bpt.touches", "passes": "bpt.passes",
+    "secondaryAssists": "bpt.secondaryAssists",
+    # Hustle
+    "contestedShots": "bsh.contestedShots", "deflections": "bsh.deflections",
+    "chargesDrawn": "bsh.chargesDrawn", "screenAssists": "bsh.screenAssists",
+    "boxOuts": "bsh.boxOuts",
+    # Misc
+    "pointsPaint": "bsm.pointsPaint", "pointsSecondChance": "bsm.pointsSecondChance",
+    "pointsOffTurnovers": "bsm.pointsOffTurnovers",
+    # Scoring
+    "percentagePoints3pt": "bss.percentagePoints3pt",
+    "percentageAssistedFGM": "bss.percentageAssistedFGM",
+}
+
+# LEFT JOIN clause per table alias (only the ones a request needs get joined).
+_SCATTER_JOINS: dict[str, str] = {
+    "bff": "LEFT JOIN boxscorefourfactorsv3_team bff ON gl.GAME_ID = bff.gameId AND gl.TEAM_ID = bff.teamId",
+    "bpt": "LEFT JOIN boxscoreplayertrackv3_team bpt ON gl.GAME_ID = bpt.gameId AND gl.TEAM_ID = bpt.teamId",
+    "bst": "LEFT JOIN boxscoretraditionalv3_team bst ON gl.GAME_ID = bst.gameId AND gl.TEAM_ID = bst.teamId",
+    "bsh": "LEFT JOIN boxscorehustlev2_team bsh ON gl.GAME_ID = bsh.gameId AND gl.TEAM_ID = bsh.teamId",
+    "bss": "LEFT JOIN boxscorescoringv3_team bss ON gl.GAME_ID = bss.gameId AND gl.TEAM_ID = bss.teamId",
+    "bsm": "LEFT JOIN boxscoremiscv3_team bsm ON gl.GAME_ID = bsm.gameId AND gl.TEAM_ID = bsm.teamId",
+}
+
+
+def scatter_data(x: str, y: str, days: int = 365) -> list[dict]:
+    """One point per team-game: the chosen x/y stats, the team, and win/loss.
+
+    Replicates the Dash boxscore join, but only across the tables the requested
+    columns need (+ bst for teamName). x/y are validated against _SCATTER_COLUMNS.
+    """
+    if x not in _SCATTER_COLUMNS or y not in _SCATTER_COLUMNS:
+        raise ValueError("unknown x or y column")
+    xq, yq = _SCATTER_COLUMNS[x], _SCATTER_COLUMNS[y]
+
+    needed = {"bst"}  # always: teamName
+    for expr in (xq, yq):
+        alias = expr.split(".", 1)[0]
+        if alias in _SCATTER_JOINS:
+            needed.add(alias)
+    joins = "\n        ".join(_SCATTER_JOINS[a] for a in sorted(needed))
+
+    q = f"""
+        SELECT DATE(gl.GAME_DATE) AS game_date, bst.teamName AS team, gl.WL AS wl,
+               {xq} AS x, {yq} AS y
+        FROM game_list gl
+        {joins}
+        WHERE gl.GAME_DATE >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+          AND {xq} IS NOT NULL AND {yq} IS NOT NULL
+        ORDER BY gl.GAME_DATE ASC
+    """
+    try:
+        with get_engine().connect() as conn:
+            return _rows(conn.execute(sa.text(q), {"days": days}))
+    except Exception as e:
+        print(f"[explore] scatter_data failed for {xq},{yq}: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Data exploration: feature correlations with winning margin (Dash Tab 5 port)
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def _features_columns() -> frozenset[str]:
+    """Column names present in the features table (cached for the process)."""
+    q = """
+        SELECT COLUMN_NAME FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = 'features'
+    """
+    try:
+        with get_engine().connect() as conn:
+            return frozenset(r[0] for r in conn.execute(sa.text(q)))
+    except Exception:
+        return frozenset()
+
+
+def _pearson(pairs: list[tuple[float, float]]) -> Optional[float]:
+    """Pearson correlation over (x, y) pairs; None if undefined."""
+    n = len(pairs)
+    if n < 3:
+        return None
+    sx = sy = sxx = syy = sxy = 0.0
+    for x, y in pairs:
+        sx += x
+        sy += y
+        sxx += x * x
+        syy += y * y
+        sxy += x * y
+    num = n * sxy - sx * sy
+    den = ((n * sxx - sx * sx) * (n * syy - sy * sy)) ** 0.5
+    return num / den if den else None
+
+
+def margin_correlations(kind: str = "DIFF", window: str = "L5") -> list[dict]:
+    """Pearson correlation of each curated rolling feature with TARGET_MARGIN.
+
+    Returns the full curated set (one ``kind`` + ``window``, ~50 features) ranked by
+    |correlation| — the frontend slices the top-N. Computed in pure Python over a
+    bounded column set (no pandas/numpy in the API), then cached at the edge.
+    """
+    if kind not in ("DIFF", "HOME", "AWAY"):
+        raise ValueError("kind must be DIFF, HOME, or AWAY")
+    if window not in ("L5", "L10"):
+        raise ValueError("window must be L5 or L10")
+
+    existing = _features_columns()
+    if "TARGET_MARGIN" not in existing:
+        return []
+    cols = [(feat, f"{kind}_{feat}_{window}") for feat in sorted(_EXPLORE_FEATURES)]
+    cols = [(feat, c) for feat, c in cols if c in existing]
+    if not cols:
+        return []
+
+    select = ", ".join(f"`{c}`" for _, c in cols)
+    q = f"""
+        SELECT {select}, TARGET_MARGIN
+        FROM features
+        WHERE feature_set_version = (SELECT version FROM feature_set_current WHERE id = 1)
+          AND TARGET_MARGIN IS NOT NULL
+    """
+    try:
+        with get_engine().connect() as conn:
+            rows = conn.execute(sa.text(q)).mappings().all()
+    except Exception as e:
+        print(f"[explore] margin_correlations query failed: {e}")
+        return []
+
+    out: list[dict] = []
+    for feat, c in cols:
+        pairs = [
+            (float(r[c]), float(r["TARGET_MARGIN"]))
+            for r in rows
+            if r[c] is not None and r["TARGET_MARGIN"] is not None
+        ]
+        corr = _pearson(pairs)
+        if corr is not None:
+            out.append({"feature": feat, "column": c, "correlation": round(corr, 4)})
+    out.sort(key=lambda d: abs(d["correlation"]), reverse=True)
+    return out

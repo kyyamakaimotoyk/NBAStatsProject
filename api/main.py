@@ -28,6 +28,8 @@ from api.schemas import (
     PredictionsResponse,
     PerformanceResultsResponse,
     FeatureTimeseriesResponse,
+    ScatterResponse,
+    MarginCorrResponse,
     AccuracySummaryResponse,
     RollingResponse,
     HealthResponse,
@@ -122,6 +124,35 @@ def explore_feature(
     return FeatureTimeseriesResponse(
         feature=feature, window=window, days=days, count=len(rows), rows=rows
     )
+
+
+@app.get("/api/explore/scatter", response_model=ScatterResponse, tags=["explore"])
+def explore_scatter(
+    x: str = Query(..., description="X-axis stat (e.g. PTS)"),
+    y: str = Query(..., description="Y-axis stat (e.g. AST)"),
+    days: int = Query(default=365, ge=1, le=1100),
+):
+    """Per-team-game scatter points for two chosen stats. The browser colors by W/L,
+    filters by team, and fits the trendline."""
+    try:
+        pts = queries.scatter_data(x, y, days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return ScatterResponse(x=x, y=y, days=days, count=len(pts), points=pts)
+
+
+@app.get("/api/explore/margin-corr", response_model=MarginCorrResponse, tags=["explore"])
+def explore_margin_corr(
+    kind: str = Query(default="DIFF", description="Feature side: DIFF, HOME, or AWAY"),
+    window: str = Query(default="L5", description="Rolling window: L5 or L10"),
+):
+    """Curated rolling features ranked by correlation with winning margin. The
+    frontend slices the top-N and computes the summary."""
+    try:
+        corrs = queries.margin_correlations(kind, window)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return MarginCorrResponse(kind=kind, window=window, count=len(corrs), correlations=corrs)
 
 
 @app.get("/api/accuracy/summary", response_model=AccuracySummaryResponse, tags=["accuracy"])

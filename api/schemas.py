@@ -60,6 +60,38 @@ class FeatureTimeseriesResponse(BaseModel):
     rows: list[FeatureTimeseriesRow]
 
 
+class ScatterPoint(BaseModel):
+    game_date: date
+    team: Optional[str] = None
+    wl: Optional[str] = None
+    x: Optional[float] = None
+    y: Optional[float] = None
+
+
+class ScatterResponse(BaseModel):
+    """Per-team-game points for the scatter explorer (browser colors by W/L,
+    filters by team, and fits the trendline)."""
+    x: str
+    y: str
+    days: int
+    count: int
+    points: list[ScatterPoint]
+
+
+class MarginCorrItem(BaseModel):
+    feature: str
+    column: str
+    correlation: float
+
+
+class MarginCorrResponse(BaseModel):
+    """Curated rolling features ranked by |correlation| with winning margin."""
+    kind: str
+    window: str
+    count: int
+    correlations: list[MarginCorrItem]
+
+
 class AccuracySummary(BaseModel):
     model_type: str
     total_predictions: int

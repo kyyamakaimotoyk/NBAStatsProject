@@ -102,3 +102,38 @@ export const getFeatureTimeseries = (feature: string, window: "L5" | "L10", days
   getJSON<FeatureTimeseriesResponse>(
     `/api/explore/feature?feature=${encodeURIComponent(feature)}&window=${window}&days=${days}`,
   );
+
+// Per-team-game scatter points for two chosen stats.
+export type ScatterPoint = {
+  game_date: string;
+  team: string | null;
+  wl: string | null;
+  x: number | null;
+  y: number | null;
+};
+
+export type ScatterResponse = {
+  x: string;
+  y: string;
+  days: number;
+  count: number;
+  points: ScatterPoint[];
+};
+
+export const getScatter = (x: string, y: string, days = 365) =>
+  getJSON<ScatterResponse>(
+    `/api/explore/scatter?x=${encodeURIComponent(x)}&y=${encodeURIComponent(y)}&days=${days}`,
+  );
+
+// Features ranked by correlation with winning margin.
+export type MarginCorrItem = { feature: string; column: string; correlation: number };
+
+export type MarginCorrResponse = {
+  kind: string;
+  window: string;
+  count: number;
+  correlations: MarginCorrItem[];
+};
+
+export const getMarginCorrelations = (kind: "DIFF" | "HOME" | "AWAY", window: "L5" | "L10") =>
+  getJSON<MarginCorrResponse>(`/api/explore/margin-corr?kind=${kind}&window=${window}`);

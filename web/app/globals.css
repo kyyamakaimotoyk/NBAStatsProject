@@ -168,3 +168,8 @@ h2 {
 .explore-controls select[multiple] {
   min-width: 200px;
 }
+.explore-controls label.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+}

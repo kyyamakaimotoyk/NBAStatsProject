@@ -36,6 +36,47 @@ export const FEATURE_CATALOG: { category: string; features: string[] }[] = [
   },
 ];
 
+// Scatter stats (must stay in sync with _SCATTER_COLUMNS in api/queries.py).
+export const SCATTER_CATALOG: { category: string; stats: string[] }[] = [
+  {
+    category: "Traditional",
+    stats: ["PTS", "FGM", "FGA", "FG_PCT", "FG3M", "FG3A", "FG3_PCT", "FTM", "FTA",
+      "FT_PCT", "OREB", "DREB", "REB", "AST", "STL", "BLK", "TOV", "PF", "PLUS_MINUS"],
+  },
+  {
+    category: "Four Factors",
+    stats: ["effectiveFieldGoalPercentage", "freeThrowAttemptRate",
+      "teamTurnoverPercentage", "offensiveReboundPercentage"],
+  },
+  { category: "Tracking", stats: ["distance", "touches", "passes", "secondaryAssists"] },
+  {
+    category: "Hustle",
+    stats: ["contestedShots", "deflections", "chargesDrawn", "screenAssists", "boxOuts"],
+  },
+  { category: "Misc", stats: ["pointsPaint", "pointsSecondChance", "pointsOffTurnovers"] },
+  { category: "Scoring", stats: ["percentagePoints3pt", "percentageAssistedFGM"] },
+];
+
+/** Ordinary least-squares fit; null if fewer than 2 points or vertical. */
+export function linreg(
+  pts: { x: number; y: number }[],
+): { slope: number; intercept: number } | null {
+  const n = pts.length;
+  if (n < 2) return null;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (const p of pts) {
+    sx += p.x;
+    sy += p.y;
+    sxx += p.x * p.x;
+    sxy += p.x * p.y;
+  }
+  const d = n * sxx - sx * sx;
+  if (d === 0) return null;
+  const slope = (n * sxy - sx * sy) / d;
+  const intercept = (sy - slope * sx) / n;
+  return { slope, intercept };
+}
+
 /** Distinct team names present in the response (home or away). */
 export function allTeams(rows: FeatureTimeseriesRow[]): string[] {
   const s = new Set<string>();

@@ -23,6 +23,8 @@ export default function RootLayout({
             <Link href="/accuracy">Accuracy</Link>
             <Link href="/performance">Model</Link>
             <Link href="/explore">Explore</Link>
+            <Link href="/scatter">Scatter</Link>
+            <Link href="/drivers">Drivers</Link>
           </nav>
         </header>
         <main className="container">{children}</main>

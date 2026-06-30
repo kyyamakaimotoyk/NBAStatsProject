@@ -36,7 +36,7 @@ export default function MarginCorrChart({ items }: { items: MarginCorrItem[] }) 
         />
         <Tooltip
           contentStyle={{ background: "#141a2e", border: "1px solid #243049" }}
-          formatter={(v: number) => v.toFixed(3)}
+          formatter={(v) => (typeof v === "number" ? v.toFixed(3) : `${v}`)}
         />
         <ReferenceLine x={0} stroke="#555" />
         <Bar dataKey="correlation" isAnimationActive={false}>

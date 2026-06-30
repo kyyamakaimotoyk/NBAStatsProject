@@ -89,6 +89,13 @@ resource "aws_cloudfront_distribution" "site" {
   price_class         = "PriceClass_100"
   aliases             = [var.domain_name, "www.${var.domain_name}"]
 
+  # Access logs -> S3 (Week 4.4). See cf_logs.tf for the bucket + ACL setup.
+  logging_config {
+    bucket          = aws_s3_bucket.logs.bucket_domain_name
+    prefix          = "cf-site/"
+    include_cookies = false
+  }
+
   origin {
     origin_id                = "s3-site"
     domain_name              = aws_s3_bucket.site.bucket_regional_domain_name

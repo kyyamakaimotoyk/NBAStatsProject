@@ -1,0 +1,29 @@
+{
+    "launchType":  "FARGATE",
+    "overrides":  {
+                      "containerOverrides":  [
+                                                 {
+                                                     "command":  [
+                                                                     "python",
+                                                                     "-c",
+                                                                     "import time, requests\nH = {\u0027User-Agent\u0027:\u0027Mozilla/5.0 (Windows NT 10.0; Win64; x64)\u0027,\u0027Referer\u0027:\u0027https://stats.nba.com/\u0027,\u0027Origin\u0027:\u0027https://www.nba.com\u0027,\u0027Accept\u0027:\u0027application/json, text/plain, */*\u0027,\u0027x-nba-stats-origin\u0027:\u0027stats\u0027,\u0027x-nba-stats-token\u0027:\u0027true\u0027,\u0027Accept-Language\u0027:\u0027en-US,en;q=0.9\u0027}\ntry:\n    r = requests.get(\u0027https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json\u0027, headers=H, timeout=20)\n    print(\u0027CONTROL cdn.nba.com: HTTP\u0027, r.status_code, len(r.content), \u0027bytes\u0027, flush=True)\nexcept Exception as e:\n    print(\u0027CONTROL cdn.nba.com FAILED:\u0027, type(e).__name__, str(e)[:140], flush=True)\ntests = [(\u0027scoreboardv2\u0027,\u0027https://stats.nba.com/stats/scoreboardv2?GameDate=01%2F15%2F2026\u0026LeagueID=00\u0026DayOffset=0\u0027),(\u0027leaguegamefinder\u0027,\u0027https://stats.nba.com/stats/leaguegamefinder?LeagueID=00\u0026Season=2025-26\u0026SeasonType=Regular+Season\u0026PlayerOrTeam=T\u0027)]\nfor name, url in tests:\n    print(\u0027===\u0027, name, \u0027===\u0027, flush=True)\n    ok = False\n    for i in range(3):\n        t = time.time()\n        try:\n            r = requests.get(url, headers=H, timeout=45)\n            dt = time.time() - t\n            print(\u0027  attempt\u0027, i+1, \u0027HTTP\u0027, r.status_code, \u0027in\u0027, round(dt,1), \u0027s\u0027, len(r.content), \u0027bytes\u0027, flush=True)\n            if r.status_code == 200:\n                ok = True\n                break\n        except Exception as e:\n            dt = time.time() - t\n            print(\u0027  attempt\u0027, i+1, type(e).__name__, \u0027after\u0027, round(dt,1), \u0027s:\u0027, str(e)[:140], flush=True)\n        time.sleep(5 * (i + 1))\n    print(\u0027  RESULT\u0027, name, \u0027SUCCESS\u0027 if ok else \u0027FAILED\u0027, flush=True)\nprint(\u0027DIAGNOSTIC DONE\u0027, flush=True)"
+                                                                 ],
+                                                     "name":  "pipeline"
+                                                 }
+                                             ]
+                  },
+    "networkConfiguration":  {
+                                 "awsvpcConfiguration":  {
+                                                             "subnets":  [
+                                                                             "subnet-0654a110961e20555"
+                                                                         ],
+                                                             "assignPublicIp":  "ENABLED",
+                                                             "securityGroups":  [
+                                                                                    "sg-0f2779ed5363c863b"
+                                                                                ]
+                                                         }
+                             },
+    "cluster":  "nba-game-predictor-cluster",
+    "count":  1,
+    "taskDefinition":  "nba-game-predictor-pipeline"
+}

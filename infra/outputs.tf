@@ -160,6 +160,11 @@ output "site_url" {
   value = "https://${var.domain_name}"
 }
 
+output "logs_bucket" {
+  description = "CloudFront access logs land here (prefix cf-site/); query with Athena"
+  value       = aws_s3_bucket.logs.bucket
+}
+
 # --- CI/CD (Week 3.6) ---
 output "github_deploy_role_arn" {
   description = "Role GitHub Actions assumes via OIDC (set as repo variable AWS_ROLE_ARN)"

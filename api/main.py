@@ -27,6 +27,7 @@ from api.db import db_healthy
 from api.schemas import (
     PredictionsResponse,
     PerformanceResultsResponse,
+    FeatureTimeseriesResponse,
     AccuracySummaryResponse,
     RollingResponse,
     HealthResponse,
@@ -104,6 +105,23 @@ def performance_results(
     _check_model(model)
     rows = queries.performance_results(days, model)
     return PerformanceResultsResponse(days=days, count=len(rows), results=rows)
+
+
+@app.get("/api/explore/feature", response_model=FeatureTimeseriesResponse, tags=["explore"])
+def explore_feature(
+    feature: str = Query(..., description="Base feature name, e.g. PTS or offensiveRating"),
+    window: str = Query(default="L5", description="Rolling window: L5 or L10"),
+    days: int = Query(default=365, ge=1, le=3650),
+):
+    """Rolling-feature time series for the data-exploration page. The browser builds
+    per-team lines from the home/away values of each game."""
+    try:
+        rows = queries.feature_timeseries(feature, window, days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return FeatureTimeseriesResponse(
+        feature=feature, window=window, days=days, count=len(rows), rows=rows
+    )
 
 
 @app.get("/api/accuracy/summary", response_model=AccuracySummaryResponse, tags=["accuracy"])

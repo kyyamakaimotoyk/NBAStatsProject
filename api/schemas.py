@@ -42,6 +42,24 @@ class PerformanceResultsResponse(BaseModel):
     results: list[Prediction]
 
 
+class FeatureTimeseriesRow(BaseModel):
+    game_date: date
+    home_team: Optional[str] = None
+    away_team: Optional[str] = None
+    home_value: Optional[float] = None
+    away_value: Optional[float] = None
+
+
+class FeatureTimeseriesResponse(BaseModel):
+    """Rolling-feature time series for the data-exploration page (one row per game;
+    the browser builds per-team series from the home/away values)."""
+    feature: str
+    window: str
+    days: int
+    count: int
+    rows: list[FeatureTimeseriesRow]
+
+
 class AccuracySummary(BaseModel):
     model_type: str
     total_predictions: int

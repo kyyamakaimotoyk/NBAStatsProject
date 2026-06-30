@@ -171,3 +171,67 @@ def accuracy_rolling(days: int = 90, model_type: Optional[str] = None) -> list[d
     q += " GROUP BY game_date, model_type ORDER BY game_date ASC, model_type"
     with get_engine().connect() as conn:
         return _rows(conn.execute(sa.text(q), params))
+
+
+# ---------------------------------------------------------------------------
+# Data exploration: rolling-feature time series (Dash Tab 4 port)
+# ---------------------------------------------------------------------------
+
+# Curated, public-safe base features (mirrors the Dash feature_categories). The
+# column name is built as HOME_<feature>_<window> — so `feature` MUST be validated
+# against this allowlist before it touches SQL (no column-name injection).
+_EXPLORE_FEATURES: frozenset[str] = frozenset({
+    # Traditional
+    "PTS", "FGM", "FGA", "FG_PCT", "FG3M", "FG3A", "FG3_PCT", "FTM", "FTA", "FT_PCT",
+    "OREB", "DREB", "REB", "AST", "STL", "BLK", "TOV", "PF", "PLUS_MINUS",
+    # Advanced
+    "offensiveRating", "defensiveRating", "netRating", "pace", "possessions",
+    "EFG_PCT", "TS_PCT", "assistPercentage", "assistToTurnover", "PIE",
+    # Four Factors
+    "FT_RATE", "TOV_PCT", "OREB_PCT", "OPP_EFG_PCT", "OPP_FT_RATE", "OPP_TOV_PCT",
+    # Hustle
+    "contestedShots", "deflections", "chargesDrawn", "looseBallsRecovered", "boxOuts",
+    # Tracking
+    "speed", "distance", "touches", "passes", "secondaryAssists",
+    # Misc
+    "pointsOffTurnovers", "pointsSecondChance", "pointsFastBreak", "pointsPaint",
+    # Scoring
+    "pctFGA_2pt", "pctFGA_3pt", "pctPTS_2pt", "pctPTS_3pt", "pctAssisted",
+})
+
+
+def feature_timeseries(feature: str, window: str = "L5", days: int = 365) -> list[dict]:
+    """Rolling-feature time series from the CURRENT feature_set_version.
+
+    Returns one row per game in the window with each side's rolling value
+    (``HOME_<feature>_<window>`` / ``AWAY_<feature>_<window>``). The frontend picks
+    home_value or away_value per selected team to build per-team series.
+
+    ``feature`` is validated against ``_EXPLORE_FEATURES`` and ``window`` against
+    {L5, L10}, so the interpolated column names are safe. Returns [] (not an error)
+    if the column happens not to exist in this feature set.
+    """
+    if feature not in _EXPLORE_FEATURES:
+        raise ValueError(f"unknown feature {feature!r}")
+    if window not in ("L5", "L10"):
+        raise ValueError("window must be 'L5' or 'L10'")
+
+    home_col = f"HOME_{feature}_{window}"
+    away_col = f"AWAY_{feature}_{window}"
+    q = f"""
+        SELECT DATE(GAME_DATE)              AS game_date,
+               HOME_TEAM_NAME               AS home_team,
+               AWAY_TEAM_NAME               AS away_team,
+               `{home_col}`                 AS home_value,
+               `{away_col}`                 AS away_value
+        FROM features
+        WHERE feature_set_version = (SELECT version FROM feature_set_current WHERE id = 1)
+          AND GAME_DATE >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+        ORDER BY GAME_DATE ASC
+    """
+    try:
+        with get_engine().connect() as conn:
+            return _rows(conn.execute(sa.text(q), {"days": days}))
+    except Exception as e:  # unknown column / empty feature set → degrade gracefully
+        print(f"[explore] feature_timeseries failed for {home_col}: {e}")
+        return []

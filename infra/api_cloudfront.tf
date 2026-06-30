@@ -74,11 +74,23 @@ resource "aws_cloudfront_distribution" "api" {
     compress                 = true
   }
 
-  # Model-performance data only changes nightly, so cache it (~5 min) at the edge
-  # instead of hitting RDS on every visit. The cache key includes the Origin header
-  # (correct CORS per origin) and the days/model query strings (windows cache apart).
+  # Model-performance + data-exploration data only changes nightly / on feature
+  # regen, so cache it (~5 min) at the edge instead of hitting RDS every visit. The
+  # cache key includes the Origin header (correct CORS per origin) and all query
+  # strings (so each window/feature caches separately).
   ordered_cache_behavior {
     path_pattern             = "/api/performance/*"
+    target_origin_id         = "alb-api"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS"]
+    cached_methods           = ["GET", "HEAD"]
+    cache_policy_id          = aws_cloudfront_cache_policy.api_perf.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+    compress                 = true
+  }
+
+  ordered_cache_behavior {
+    path_pattern             = "/api/explore/*"
     target_origin_id         = "alb-api"
     viewer_protocol_policy   = "redirect-to-https"
     allowed_methods          = ["GET", "HEAD", "OPTIONS"]
@@ -124,10 +136,9 @@ resource "aws_cloudfront_cache_policy" "api_perf" {
       }
     }
     query_strings_config {
-      query_string_behavior = "whitelist"
-      query_strings {
-        items = ["days", "model"]
-      }
+      # Key on all query strings so every distinct request (days/model for
+      # performance, feature/window/days for explore) caches separately.
+      query_string_behavior = "all"
     }
     enable_accept_encoding_gzip   = true
     enable_accept_encoding_brotli = true

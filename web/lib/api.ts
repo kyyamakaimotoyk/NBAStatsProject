@@ -80,3 +80,25 @@ export const getPerformanceResults = (days = 90, model?: string) =>
   getJSON<PerformanceResultsResponse>(
     `/api/performance/results?days=${days}${model ? `&model=${model}` : ""}`,
   );
+
+// Rolling-feature time series for the data-exploration page.
+export type FeatureTimeseriesRow = {
+  game_date: string;
+  home_team: string | null;
+  away_team: string | null;
+  home_value: number | null;
+  away_value: number | null;
+};
+
+export type FeatureTimeseriesResponse = {
+  feature: string;
+  window: string;
+  days: number;
+  count: number;
+  rows: FeatureTimeseriesRow[];
+};
+
+export const getFeatureTimeseries = (feature: string, window: "L5" | "L10", days = 365) =>
+  getJSON<FeatureTimeseriesResponse>(
+    `/api/explore/feature?feature=${encodeURIComponent(feature)}&window=${window}&days=${days}`,
+  );

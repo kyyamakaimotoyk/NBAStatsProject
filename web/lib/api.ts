@@ -110,6 +110,9 @@ export type ScatterPoint = {
   wl: string | null;
   x: number | null;
   y: number | null;
+  home_team: string | null; // abbreviations (e.g. "LAL"), derived from MATCHUP
+  away_team: string | null;
+  winner: string | null;
 };
 
 export type ScatterResponse = {

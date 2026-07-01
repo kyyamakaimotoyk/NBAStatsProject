@@ -283,8 +283,28 @@ _SCATTER_JOINS: dict[str, str] = {
 }
 
 
+def _parse_matchup(matchup, wl):
+    """Derive (home, away, winner) team abbreviations from an NBA MATCHUP string.
+
+    MATCHUP is "<team> vs. <opp>" when <team> is home, "<team> @ <opp>" when away;
+    the left token is always this row's team, and WL says whether that team won.
+    """
+    m = (matchup or "").strip()
+    if " vs. " in m:
+        this_t, opp_t = [s.strip() for s in m.split(" vs. ", 1)]
+        home, away = this_t, opp_t
+    elif " @ " in m:
+        this_t, opp_t = [s.strip() for s in m.split(" @ ", 1)]
+        home, away = opp_t, this_t
+    else:
+        return None, None, None
+    winner = this_t if wl == "W" else opp_t
+    return home, away, winner
+
+
 def scatter_data(x: str, y: str, days: int = 365) -> list[dict]:
-    """One point per team-game: the chosen x/y stats, the team, and win/loss.
+    """One point per team-game: the chosen x/y stats, the team, win/loss, and the
+    game's home/away/winning teams (derived from MATCHUP) for the hover tooltip.
 
     Replicates the Dash boxscore join, but only across the tables the requested
     columns need (+ bst for teamName). x/y are validated against _SCATTER_COLUMNS.
@@ -302,7 +322,7 @@ def scatter_data(x: str, y: str, days: int = 365) -> list[dict]:
 
     q = f"""
         SELECT DATE(gl.GAME_DATE) AS game_date, bst.teamName AS team, gl.WL AS wl,
-               {xq} AS x, {yq} AS y
+               gl.MATCHUP AS matchup, {xq} AS x, {yq} AS y
         FROM game_list gl
         {joins}
         WHERE gl.GAME_DATE >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
@@ -311,10 +331,16 @@ def scatter_data(x: str, y: str, days: int = 365) -> list[dict]:
     """
     try:
         with get_engine().connect() as conn:
-            return _rows(conn.execute(sa.text(q), {"days": days}))
+            rows = _rows(conn.execute(sa.text(q), {"days": days}))
     except Exception as e:
         print(f"[explore] scatter_data failed for {xq},{yq}: {e}")
         return []
+    # Split the MATCHUP string into home/away/winner (abbreviations) per point.
+    for r in rows:
+        r["home_team"], r["away_team"], r["winner"] = _parse_matchup(
+            r.pop("matchup", None), r.get("wl")
+        )
+    return rows
 
 
 # ---------------------------------------------------------------------------

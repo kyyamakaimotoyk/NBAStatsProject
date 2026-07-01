@@ -66,12 +66,17 @@ export default function ScatterPage() {
     );
   }, [points, teams]);
 
-  const wins = visible
-    .filter((p) => p.wl === "W")
-    .map((p) => ({ x: p.x as number, y: p.y as number, team: p.team }));
-  const losses = visible
-    .filter((p) => p.wl !== "W")
-    .map((p) => ({ x: p.x as number, y: p.y as number, team: p.team }));
+  const toPt = (p: ScatterPoint) => ({
+    x: p.x as number,
+    y: p.y as number,
+    team: p.team,
+    date: p.game_date,
+    home: p.home_team,
+    away: p.away_team,
+    winner: p.winner,
+  });
+  const wins = visible.filter((p) => p.wl === "W").map(toPt);
+  const losses = visible.filter((p) => p.wl !== "W").map(toPt);
 
   const trend = useMemo(() => {
     if (!showTrend || visible.length < 2) return null;

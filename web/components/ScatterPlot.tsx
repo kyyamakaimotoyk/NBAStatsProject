@@ -12,7 +12,54 @@ import {
   ReferenceLine,
 } from "recharts";
 
-type Pt = { x: number; y: number; team: string | null };
+type Pt = {
+  x: number;
+  y: number;
+  team: string | null;
+  date: string;
+  home: string | null;
+  away: string | null;
+  winner: string | null;
+};
+
+function PointTooltip({
+  active,
+  payload,
+  xLabel,
+  yLabel,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: Pt }>;
+  xLabel: string;
+  yLabel: string;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+  const p = payload[0].payload;
+  return (
+    <div
+      style={{
+        background: "#141a2e",
+        border: "1px solid #243049",
+        borderRadius: 4,
+        padding: "8px 10px",
+        fontSize: 12,
+        color: "#e7ecf5",
+      }}
+    >
+      <div style={{ color: "#9aa6c0", marginBottom: 2 }}>{p.date}</div>
+      <div>
+        <strong>{p.away ?? "?"}</strong> @ <strong>{p.home ?? "?"}</strong>
+      </div>
+      <div>
+        Winner: <strong>{p.winner ?? "—"}</strong>
+      </div>
+      <div style={{ marginTop: 4, color: "#9aa6c0" }}>
+        {p.team ? `${p.team} · ` : ""}
+        {xLabel} {p.x} · {yLabel} {p.y}
+      </div>
+    </div>
+  );
+}
 
 export default function ScatterPlot({
   wins,
@@ -49,8 +96,21 @@ export default function ScatterPlot({
           label={{ value: yLabel, angle: -90, position: "insideLeft", fill: "#9aa6c0", fontSize: 12 }}
         />
         <Tooltip
-          contentStyle={{ background: "#141a2e", border: "1px solid #243049" }}
           cursor={{ strokeDasharray: "3 3" }}
+          content={(props: unknown) => {
+            const { active, payload } = props as {
+              active?: boolean;
+              payload?: Array<{ payload: Pt }>;
+            };
+            return (
+              <PointTooltip
+                active={active}
+                payload={payload}
+                xLabel={xLabel}
+                yLabel={yLabel}
+              />
+            );
+          }}
         />
         <Legend />
         {trend && (

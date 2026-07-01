@@ -66,6 +66,9 @@ class ScatterPoint(BaseModel):
     wl: Optional[str] = None
     x: Optional[float] = None
     y: Optional[float] = None
+    home_team: Optional[str] = None  # abbreviations, derived from MATCHUP
+    away_team: Optional[str] = None
+    winner: Optional[str] = None
 
 
 class ScatterResponse(BaseModel):

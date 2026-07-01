@@ -1,0 +1,4 @@
+# hoopmodel.com - static NBA game-prediction site.
+# Everything here is public; crawl away.
+User-agent: *
+Allow: /

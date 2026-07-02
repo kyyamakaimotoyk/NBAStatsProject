@@ -1,0 +1,79 @@
+"use client";
+
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ReferenceLine,
+  ResponsiveContainer,
+} from "recharts";
+import type { RocPoint } from "@/lib/perf";
+
+export type RocCurveData = {
+  model: string;
+  label: string;
+  color: string;
+  auc: number;
+  points: RocPoint[];
+};
+
+export default function RocChart({ curves }: { curves: RocCurveData[] }) {
+  if (curves.length === 0)
+    return <p className="status">Not enough graded games for a ROC curve yet.</p>;
+
+  return (
+    <ResponsiveContainer width="100%" height={380}>
+      {/* No shared data: each model's curve has its own (fpr, tpr) points. */}
+      <LineChart margin={{ top: 8, right: 16, bottom: 20, left: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#243049" />
+        <XAxis
+          type="number"
+          dataKey="fpr"
+          domain={[0, 100]}
+          unit="%"
+          tick={{ fontSize: 12, fill: "#9aa6c0" }}
+          label={{
+            value: "False positive rate (called home win, away won)",
+            position: "insideBottom",
+            offset: -8,
+            fill: "#9aa6c0",
+            fontSize: 12,
+          }}
+        />
+        <YAxis
+          type="number"
+          dataKey="tpr"
+          domain={[0, 100]}
+          unit="%"
+          tick={{ fontSize: 12, fill: "#9aa6c0" }}
+        />
+        <Tooltip contentStyle={{ background: "#141a2e", border: "1px solid #243049" }} />
+        <Legend />
+        <ReferenceLine
+          segment={[
+            { x: 0, y: 0 },
+            { x: 100, y: 100 },
+          ]}
+          stroke="#555"
+          strokeDasharray="4 4"
+        />
+        {curves.map((c) => (
+          <Line
+            key={c.model}
+            data={c.points}
+            type="linear"
+            dataKey="tpr"
+            name={`${c.label} (AUC ${c.auc.toFixed(2)})`}
+            stroke={c.color}
+            dot={false}
+            strokeWidth={2}
+          />
+        ))}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}

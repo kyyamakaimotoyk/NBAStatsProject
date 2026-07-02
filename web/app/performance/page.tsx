@@ -2,9 +2,20 @@
 
 import { useEffect, useState } from "react";
 import { getPerformanceResults, type Prediction } from "@/lib/api";
-import { summaryByModel, dailyAccuracy, calibrationBins, MODEL_LABELS } from "@/lib/perf";
+import {
+  summaryByModel,
+  dailyAccuracy,
+  calibrationBins,
+  rocCurve,
+  confusionCounts,
+  MODEL_LABELS,
+} from "@/lib/perf";
 import PerfLineChart from "@/components/PerfLineChart";
 import ResultsTable from "@/components/ResultsTable";
+import RocChart, { type RocCurveData } from "@/components/RocChart";
+import ConfusionMatrix from "@/components/ConfusionMatrix";
+
+const COLORS: Record<string, string> = { rf: "#3b82f6", nn: "#22c55e", xgb: "#f59e0b" };
 
 const WINDOWS = [
   { label: "30 days", days: 30 },
@@ -88,6 +99,47 @@ export default function PerformancePage() {
               />
             );
           })()}
+
+          <h2>ROC — how cleanly each model separates home wins from losses</h2>
+          {(() => {
+            const models = [...new Set(rows.map((r) => r.model_type))].sort();
+            const curves: RocCurveData[] = [];
+            for (const m of models) {
+              const roc = rocCurve(rows.filter((r) => r.model_type === m));
+              if (roc)
+                curves.push({
+                  model: m,
+                  label: MODEL_LABELS[m] ?? m,
+                  color: COLORS[m] ?? "#888",
+                  auc: roc.auc,
+                  points: roc.points,
+                });
+            }
+            return <RocChart curves={curves} />;
+          })()}
+          <p className="caption">
+            How to read: each point along a curve is a different confidence cutoff for
+            calling &quot;home win.&quot; The higher a curve bows above the dashed diagonal
+            (coin-flip), the better that model ranks games — AUC 0.5 is no skill, 1.0 is
+            perfect. Unlike accuracy, this scores the probabilities, not just the picks.
+          </p>
+
+          <h2>Confusion matrix — where the misses live</h2>
+          <div className="conf-row">
+            {[...new Set(rows.map((r) => r.model_type))].sort().map((m) => {
+              const counts = confusionCounts(rows.filter((r) => r.model_type === m));
+              return counts ? (
+                <ConfusionMatrix key={m} label={MODEL_LABELS[m] ?? m} counts={counts} />
+              ) : null;
+            })}
+          </div>
+          <p className="caption">
+            How to read: rows are what actually happened, columns are what the model
+            picked. The two green diagonal cells are correct calls; off-diagonal are
+            mistakes. TN = correctly called an away win, TP = correctly called a home win,
+            FP = picked home but away won, FN = picked away but home won. Comparing FP vs
+            FN shows whether a model leans too hard on home court.
+          </p>
 
           <h2>Recent results</h2>
           <ResultsTable rows={rows} />

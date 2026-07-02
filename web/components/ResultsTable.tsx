@@ -23,8 +23,12 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
         {recent.map((p) => {
           const homePct = Math.round(p.home_win_probability * 100);
           const pickPct = p.predicted_winner === p.home_team ? homePct : 100 - homePct;
+          const rowClass =
+            p.is_correct === null ? "" : p.is_correct ? "row-win" : "row-loss";
+          const resultClass =
+            p.is_correct === null ? "" : p.is_correct ? "result-win" : "result-loss";
           return (
-            <tr key={`${p.game_id}-${p.model_type}`}>
+            <tr key={`${p.game_id}-${p.model_type}`} className={rowClass}>
               <td>{p.game_date}</td>
               <td>
                 {p.away_team} @ {p.home_team}
@@ -34,7 +38,9 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
               <td>{pickPct}%</td>
               <td>by {Math.abs(p.predicted_margin).toFixed(1)}</td>
               <td>{p.actual_winner ?? "—"}</td>
-              <td>{p.is_correct === null ? "—" : p.is_correct ? "✓" : "✗"}</td>
+              <td className={resultClass}>
+                {p.is_correct === null ? "—" : p.is_correct ? "✓" : "✗"}
+              </td>
             </tr>
           );
         })}

@@ -175,6 +175,61 @@ export function marketCompare(modelRows: Prediction[]): MarketCompare | null {
   };
 }
 
+export type RocPoint = { fpr: number; tpr: number };
+
+/**
+ * ROC for "home team wins" as the positive class, swept over the model's predicted
+ * home-win probability. Returns points in % (0-100) plus the AUC. Null when the
+ * window lacks both a home win and a home loss (curve undefined).
+ */
+export function rocCurve(rows: Prediction[]): { points: RocPoint[]; auc: number } | null {
+  const graded = rows
+    .filter((r) => r.actual_winner !== null)
+    .map((r) => ({ p: r.home_win_probability, pos: homeWon(r) }))
+    .sort((a, b) => b.p - a.p);
+  const P = graded.filter((g) => g.pos).length;
+  const N = graded.length - P;
+  if (P === 0 || N === 0) return null;
+
+  const points: RocPoint[] = [{ fpr: 0, tpr: 0 }];
+  let tp = 0;
+  let fp = 0;
+  let auc = 0;
+  let prevFpr = 0;
+  let prevTpr = 0;
+  for (let i = 0; i < graded.length; i++) {
+    if (graded[i].pos) tp++;
+    else fp++;
+    // Emit a point only when the threshold actually moves (ties stay grouped).
+    if (i + 1 < graded.length && graded[i + 1].p === graded[i].p) continue;
+    const fpr = fp / N;
+    const tpr = tp / P;
+    auc += ((fpr - prevFpr) * (tpr + prevTpr)) / 2; // trapezoid
+    prevFpr = fpr;
+    prevTpr = tpr;
+    points.push({ fpr: Math.round(fpr * 1000) / 10, tpr: Math.round(tpr * 1000) / 10 });
+  }
+  return { points, auc };
+}
+
+export type Confusion = { tp: number; fp: number; fn: number; tn: number };
+
+/** 2x2 winner-call outcomes: predicted home/away pick vs the actual winner. */
+export function confusionCounts(rows: Prediction[]): Confusion | null {
+  const graded = rows.filter((r) => r.actual_winner !== null);
+  if (graded.length === 0) return null;
+  const c: Confusion = { tp: 0, fp: 0, fn: 0, tn: 0 };
+  for (const r of graded) {
+    const predHome = r.predicted_winner === r.home_team;
+    const actHome = homeWon(r);
+    if (predHome && actHome) c.tp++;
+    else if (predHome && !actHome) c.fp++;
+    else if (!predHome && actHome) c.fn++;
+    else c.tn++;
+  }
+  return c;
+}
+
 /**
  * Reliability/calibration: bin the predicted home-win probability into deciles; for
  * each bin, the observed fraction of home wins (%). A well-calibrated model tracks the

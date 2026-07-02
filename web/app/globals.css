@@ -154,6 +154,82 @@ h2 {
   margin-top: 0.35rem;
 }
 
+/* Result rows: same colorway as the picks strip, softened for full rows */
+.pred-table tr.row-win {
+  background: rgba(34, 197, 94, 0.1);
+}
+.pred-table tr.row-loss {
+  background: rgba(239, 68, 68, 0.09);
+}
+.pred-table td.result-win {
+  color: #22c55e;
+  font-weight: 700;
+}
+.pred-table td.result-loss {
+  color: #ef4444;
+  font-weight: 700;
+}
+
+/* Confusion matrices (one per model) */
+.conf-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+.conf-box {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  flex: 1;
+  min-width: 300px;
+}
+.conf-title {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+.conf-grid {
+  width: 100%;
+  border-collapse: collapse;
+}
+.conf-grid th {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 0.35rem 0.5rem;
+  text-align: center;
+}
+.conf-grid tbody th {
+  text-align: right;
+}
+.conf-cell {
+  text-align: center;
+  padding: 0.7rem 0.5rem;
+  border: 1px solid var(--line);
+}
+.conf-cell.good {
+  background: rgba(34, 197, 94, 0.12);
+}
+.conf-cell.bad {
+  background: rgba(239, 68, 68, 0.1);
+}
+.conf-n {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+.conf-cell.good .conf-n {
+  color: #22c55e;
+}
+.conf-cell.bad .conf-n {
+  color: #ef4444;
+}
+.conf-sub {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
 /* Track record: recent-picks strip + chart captions */
 .picks-strip {
   display: flex;

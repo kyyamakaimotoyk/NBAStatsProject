@@ -36,7 +36,7 @@ export default function DriversPage() {
 
   return (
     <section>
-      <h1>What drives winning</h1>
+      <h1>What wins games</h1>
       <p className="subtle">
         How strongly each rolling team stat correlates with a game&apos;s final margin.
         Positive = more of it tends to go with winning.

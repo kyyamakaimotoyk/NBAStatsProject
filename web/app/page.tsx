@@ -173,6 +173,10 @@ export default function HomePage() {
           </p>
         </div>
       </div>
+      <p className="caption">
+        Want the longer version — data, models, the nightly cycle?{" "}
+        <Link href="/about">How HoopModel works →</Link>
+      </p>
     </section>
   );
 }

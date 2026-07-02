@@ -45,7 +45,7 @@ except ImportError:
 
 import argparse
 import sys
-from datetime import datetime, timedelta, date as date_cls
+from datetime import datetime, timedelta, timezone, date as date_cls
 from typing import Iterable
 
 # Pull primitives out of predict_games. This is the seam: batch_predict_today
@@ -79,6 +79,75 @@ except Exception:
 
 
 MODEL_KEYS = ('rf', 'nn', 'xgb')
+
+
+# ---------------------------------------------------------------------------
+# Data-freshness guard
+# ---------------------------------------------------------------------------
+
+def _run_freshness_checks(engine, bucket) -> None:
+    """Print a ``DATA_FRESHNESS_ALERT: <reason>`` line for each staleness problem.
+
+    The token is load-bearing: a CloudWatch metric filter (infra/alarms.tf)
+    turns it into an email. Two checks:
+      1. Home-job liveness — a drop should land in S3 EVERY day (the reference
+         tables ship even in the offseason), so the newest drop being >26h old
+         means the home PC slept through the task, the task is disabled, or the
+         upload broke.
+      2. Boxscore completeness — if the schedule says games happened yesterday,
+         game_list should have final (WL set) rows for that date by now.
+    """
+    problems = []
+
+    if bucket:
+        try:
+            import boto3
+            s3 = boto3.client('s3')
+            stamps = []
+            for prefix in ('processed/', 'pending/'):
+                resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, Delimiter='/')
+                stamps += [p['Prefix'].split('/')[1] for p in resp.get('CommonPrefixes', [])]
+            if not stamps:
+                problems.append('no ingest drops in S3 at all')
+            else:
+                newest = max(stamps)  # ISO-like stamps sort lexicographically
+                newest_dt = datetime.strptime(newest, '%Y-%m-%dT%H%M%SZ').replace(
+                    tzinfo=timezone.utc)
+                age_h = (datetime.now(timezone.utc) - newest_dt).total_seconds() / 3600
+                if age_h > 26:
+                    problems.append(f'newest ingest drop is {age_h:.0f}h old '
+                                    f'(home ingest job not running?)')
+        except Exception as exc:
+            problems.append(f'could not check ingest drop age: {exc}')
+
+    try:
+        import sqlalchemy as sa
+        yday = (datetime.now().date() - timedelta(days=1)).isoformat()
+        with engine.connect() as conn:
+            has_sched = conn.execute(sa.text(
+                "SELECT COUNT(*) FROM information_schema.tables "
+                "WHERE table_schema = DATABASE() AND table_name = 'league_schedule'"
+            )).scalar()
+            if has_sched:  # table appears once the season's schedule is published
+                n_sched = conn.execute(sa.text(
+                    'SELECT COUNT(*) FROM league_schedule WHERE gameDate = :d'),
+                    {'d': yday}).scalar()
+                if n_sched:
+                    n_final = conn.execute(sa.text(
+                        'SELECT COUNT(DISTINCT GAME_ID) FROM game_list '
+                        'WHERE GAME_DATE = :d AND WL IS NOT NULL'), {'d': yday}).scalar()
+                    if not n_final:
+                        problems.append(
+                            f'{n_sched} games scheduled for {yday} but game_list has '
+                            f'no final rows (home fetch failed or ran mid-slate?)')
+    except Exception as exc:
+        # A broken DB connection has its own alarm; don't double-report it here.
+        print(f'WARN: boxscore freshness check failed — {exc}')
+
+    for p in problems:
+        print(f'DATA_FRESHNESS_ALERT: {p}')
+    if not problems:
+        print('freshness: OK')
 
 
 # ---------------------------------------------------------------------------
@@ -395,11 +464,16 @@ def main(argv=None) -> int:
             except Exception as exc:
                 print(f"WARN: vegas refresh failed — {exc}")
 
+        # After loading, check the data is actually fresh — prints
+        # DATA_FRESHNESS_ALERT lines that the CloudWatch alarm emails on.
+        _run_freshness_checks(engine, _os.environ.get('INGEST_S3_BUCKET'))
+
         model_bundles = load_model_bundles(engine, model_keys)
         game_dates = resolve_game_dates(args)
         game_dates = apply_leakage_guard(game_dates, args.allow_leakage)
         if not game_dates:
             print("Nothing to predict. Exiting.")
+            print("NIGHTLY_RUN_OK dates=0 predictions=0")  # dead-man heartbeat
             return 0
 
         today_iso = datetime.now().strftime('%Y-%m-%d')
@@ -420,6 +494,12 @@ def main(argv=None) -> int:
         print()
         print(f"Done. {totals['n_predictions']} predictions across {totals['n_games']} games; "
               f"{totals['n_errors']} errors.")
+        if totals['n_errors'] == 0:
+            # Dead-man heartbeat: printed ONLY on a clean run. If the nightly task
+            # never launches or errors out, this line is absent and the heartbeat
+            # alarm (infra/alarms.tf) fires within a day.
+            print(f"NIGHTLY_RUN_OK dates={len(game_dates)} "
+                  f"predictions={totals['n_predictions']}")
         return min(totals['n_errors'], 127)
     finally:
         engine.dispose()

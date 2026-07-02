@@ -1,11 +1,10 @@
 # =============================================================================
-# CloudWatch alarms for the public API (Week 4.3)
+# CloudWatch alarms: public API (Week 4.3) + nightly pipeline (2026-07-02)
 # =============================================================================
-# Two alarms that page you if the public API is unhealthy, delivered by email via
-# an SNS topic. (The nightly-task-failure alarm is DEFERRED to pre-season: today
-# the scheduled task legitimately finds "no games" and can't reach NBA data from
-# AWS, so alarming on it would be constant false positives. Add it with the
-# pre-season egress fix, when the task is actually expected to succeed.)
+# Alarms 1-3 page you if the public API is unhealthy. Alarms 4-6 watch the
+# nightly pipeline — added with the residential-ingest handoff (ingest.tf),
+# which made the nightly task's success actually expected, closing the
+# long-deferred "nightly task failure alarm" item. All email via one SNS topic.
 # =============================================================================
 
 
@@ -115,6 +114,122 @@ resource "aws_cloudwatch_metric_alarm" "api_db_errors" {
   treat_missing_data  = "notBreaching"
 
   alarm_description = "API logged a database OperationalError (stale password after rotation, or DB unreachable)."
+  alarm_actions     = [aws_sns_topic.alerts.arn]
+  ok_actions        = [aws_sns_topic.alerts.arn]
+}
+
+
+# -----------------------------------------------------------------------------
+# Alarm 4: the nightly job says its data is STALE (home ingest broke)
+# -----------------------------------------------------------------------------
+# batch_predict_today runs freshness checks after loading S3 drops and prints
+# "DATA_FRESHNESS_ALERT: <reason>" when the newest drop is >26h old or when
+# yesterday's scheduled games have no final boxscores. The job itself still
+# exits 0 (predicting with slightly stale form beats not predicting) — this
+# alarm is how you HEAR about it.
+resource "aws_cloudwatch_log_metric_filter" "pipeline_freshness" {
+  name           = "${var.project}-pipeline-freshness"
+  log_group_name = aws_cloudwatch_log_group.pipeline.name
+  pattern        = "DATA_FRESHNESS_ALERT"
+
+  metric_transformation {
+    name          = "PipelineFreshnessAlerts"
+    namespace     = "${var.project}/pipeline"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "pipeline_freshness" {
+  alarm_name          = "${var.project}-pipeline-data-stale"
+  namespace           = "${var.project}/pipeline"
+  metric_name         = "PipelineFreshnessAlerts"
+  statistic           = "Sum"
+  period              = 86400 # daily job -> daily window
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_description = "Nightly pipeline reported stale data (home ingest missed a day, or yesterday's boxscores never arrived)."
+  alarm_actions     = [aws_sns_topic.alerts.arn]
+  ok_actions        = [aws_sns_topic.alerts.arn]
+}
+
+
+# -----------------------------------------------------------------------------
+# Alarm 5: the pipeline logged an ERROR (S3 load failed, prediction crashed, ...)
+# -----------------------------------------------------------------------------
+# Case-sensitive on purpose: our own failure paths print the token "ERROR"
+# (s3_ingest_loader, batch_predict_today), while benign fallback chatter like
+# "Error fetching league schedule" (title case) does not match.
+resource "aws_cloudwatch_log_metric_filter" "pipeline_errors" {
+  name           = "${var.project}-pipeline-errors"
+  log_group_name = aws_cloudwatch_log_group.pipeline.name
+  pattern        = "ERROR"
+
+  metric_transformation {
+    name          = "PipelineErrors"
+    namespace     = "${var.project}/pipeline"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "pipeline_errors" {
+  alarm_name          = "${var.project}-pipeline-errors"
+  namespace           = "${var.project}/pipeline"
+  metric_name         = "PipelineErrors"
+  statistic           = "Sum"
+  period              = 86400
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_description = "Nightly pipeline logged an ERROR line (S3 drop failed to load, prediction error, ...)."
+  alarm_actions     = [aws_sns_topic.alerts.arn]
+  ok_actions        = [aws_sns_topic.alerts.arn]
+}
+
+
+# -----------------------------------------------------------------------------
+# Alarm 6: dead-man switch — the nightly job DIDN'T RUN (or died mid-run)
+# -----------------------------------------------------------------------------
+# The inverse of the others: batch_predict_today prints "NIGHTLY_RUN_OK" only on
+# a clean finish, and this alarm fires when that heartbeat goes MISSING. Catches
+# what no error-based alarm can: the schedule not firing, the image failing to
+# pull, the task dying before it logs anything.
+#
+# Shape: two 12-hour buckets, alarm when BOTH contain no heartbeat. One 24h
+# bucket would flap on scheduler jitter (a run at 11:00 and the next at 11:04
+# leaves a moment where the trailing day has zero heartbeats); with 2x12h, a
+# single daily heartbeat always lands in one of the two buckets.
+resource "aws_cloudwatch_log_metric_filter" "pipeline_heartbeat" {
+  name           = "${var.project}-pipeline-heartbeat"
+  log_group_name = aws_cloudwatch_log_group.pipeline.name
+  pattern        = "NIGHTLY_RUN_OK"
+
+  metric_transformation {
+    name          = "PipelineHeartbeat"
+    namespace     = "${var.project}/pipeline"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "pipeline_heartbeat" {
+  alarm_name          = "${var.project}-pipeline-missed-run"
+  namespace           = "${var.project}/pipeline"
+  metric_name         = "PipelineHeartbeat"
+  statistic           = "Sum"
+  period              = 43200 # 12h
+  evaluation_periods  = 2     # both halves of the day empty = missed run
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching" # NO log activity at all is exactly the bad case
+
+  alarm_description = "Nightly predict heartbeat missing for a full day — the scheduled task didn't run or died before finishing."
   alarm_actions     = [aws_sns_topic.alerts.arn]
   ok_actions        = [aws_sns_topic.alerts.arn]
 }

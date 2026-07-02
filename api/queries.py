@@ -84,6 +84,44 @@ def predictions_for_date(game_date: str, model_type: Optional[str] = None) -> li
         return _rows(conn.execute(sa.text(q), params))
 
 
+# Preferred vegas_lines source order (mirrors the internal Dash app):
+# DraftKings > other current-day books/consensus > kaggle historical > anything.
+_VEGAS_SOURCE_PRIORITY = {
+    'espn_draftkings': 0, 'espn_consensus': 1, 'espn_fanduel': 1,
+    'espn_espnbet': 1, 'kaggle_sbr': 2, 'espn_teamrankings': 3,
+}
+
+
+def _market_margins(days: int) -> dict:
+    """(game_date_iso, home, away) -> the market closing line's implied home margin.
+
+    home_spread is home-perspective (negative = home favored), so the market's
+    predicted home margin is -home_spread. One line per game, best source wins.
+    Returns {} on any failure — the market benchmark is optional garnish.
+    """
+    q = """
+        SELECT game_date, home_team_abbrev, away_team_abbrev, source, home_spread
+        FROM vegas_lines
+        WHERE home_spread IS NOT NULL
+          AND game_date >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+    """
+    best: dict = {}
+    try:
+        with get_engine().connect() as conn:
+            for r in conn.execute(sa.text(q), {'days': days}).mappings():
+                gd = r['game_date']
+                key = (gd.isoformat() if hasattr(gd, 'isoformat') else str(gd),
+                       r['home_team_abbrev'], r['away_team_abbrev'])
+                prio = _VEGAS_SOURCE_PRIORITY.get(r['source'], 99)
+                cur = best.get(key)
+                if cur is None or prio < cur[0]:
+                    best[key] = (prio, -float(r['home_spread']))
+    except Exception as e:
+        print(f"[performance] market margin lookup failed: {e}")
+        return {}
+    return {k: v[1] for k, v in best.items()}
+
+
 def performance_results(days: int = 90, model_type: Optional[str] = None) -> list[dict]:
     """Per-(game, model) predicted-vs-actual rows over the last ``days`` (completed
     games only — actual_winner filled in by backfill).
@@ -115,7 +153,15 @@ def performance_results(days: int = 90, model_type: Optional[str] = None) -> lis
         params['mt'] = model_type
     q += " ORDER BY game_date ASC, game_id, model_type"
     with get_engine().connect() as conn:
-        return _rows(conn.execute(sa.text(q), params))
+        rows = _rows(conn.execute(sa.text(q), params))
+    # Attach the market closing line (benchmark) to each row where one exists.
+    market = _market_margins(days)
+    for r in rows:
+        gd = r['game_date']
+        key = (gd.isoformat() if hasattr(gd, 'isoformat') else str(gd),
+               r['home_team'], r['away_team'])
+        r['market_margin'] = market.get(key)
+    return rows
 
 
 def accuracy_summary(days: int = 30, model_type: Optional[str] = None) -> list[dict]:

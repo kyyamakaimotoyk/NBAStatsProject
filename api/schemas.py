@@ -26,6 +26,9 @@ class Prediction(BaseModel):
     actual_winner: Optional[str] = None
     actual_margin: Optional[float] = None
     is_correct: Optional[bool] = None
+    # The betting market's closing-line implied home margin — a public benchmark,
+    # not model output. Populated by /api/performance/results; null elsewhere.
+    market_margin: Optional[float] = None
 
 
 class PredictionsResponse(BaseModel):

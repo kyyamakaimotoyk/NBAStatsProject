@@ -67,6 +67,114 @@ export function dailyAccuracy(rows: Prediction[]): Pivot {
   return { data, models: [...models].sort() };
 }
 
+const dayNum = (iso: string) => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 86_400_000);
+
+export type TrendRow = Record<string, number | string>;
+
+/**
+ * Trailing-window trend per game date: for each date, look back `windowDays` and
+ * compute each model's winner accuracy (%) and margin MAE, plus the market closing
+ * line's MAE over the same games (deduped by game so multi-model rows don't
+ * double-count). Keys: `<model>_acc`, `<model>_mae`, `market_mae`.
+ */
+export function trendSeries(
+  rows: Prediction[],
+  windowDays = 7,
+): { data: TrendRow[]; models: string[] } {
+  const graded = rows.filter((r) => r.is_correct !== null);
+  const models = [...new Set(graded.map((r) => r.model_type))].sort();
+  const dates = [...new Set(graded.map((r) => r.game_date))].sort();
+
+  const data = dates.map((d) => {
+    const end = dayNum(d);
+    const win = graded.filter((r) => {
+      const t = dayNum(r.game_date);
+      return t <= end && t > end - windowDays;
+    });
+    const row: TrendRow = { date: d };
+    for (const m of models) {
+      const rs = win.filter((r) => r.model_type === m);
+      if (rs.length === 0) continue;
+      row[`${m}_acc`] = Math.round(
+        (rs.filter((r) => r.is_correct === true).length / rs.length) * 1000,
+      ) / 10;
+      const withMargin = rs.filter((r) => r.actual_margin !== null);
+      if (withMargin.length > 0) {
+        row[`${m}_mae`] =
+          Math.round(
+            (withMargin.reduce(
+              (s, r) => s + Math.abs(r.predicted_margin - (r.actual_margin as number)),
+              0,
+            ) / withMargin.length) * 10,
+          ) / 10;
+      }
+    }
+    // Market MAE over the window's distinct games that have a line + a result.
+    const seen = new Set<string>();
+    let mErr = 0;
+    let mN = 0;
+    for (const r of win) {
+      if (r.market_margin == null || r.actual_margin === null || seen.has(r.game_id)) continue;
+      seen.add(r.game_id);
+      mErr += Math.abs(r.market_margin - r.actual_margin);
+      mN++;
+    }
+    if (mN > 0) row.market_mae = Math.round((mErr / mN) * 10) / 10;
+    return row;
+  });
+  return { data, models };
+}
+
+export type HomeAwaySplit = {
+  home: { n: number; pct: number };
+  away: { n: number; pct: number };
+};
+
+/** How often the model is right when it picks the home team vs the away team. */
+export function homeAwaySplit(rows: Prediction[]): HomeAwaySplit | null {
+  const graded = rows.filter((r) => r.is_correct !== null);
+  const home = graded.filter((r) => r.predicted_winner === r.home_team);
+  const away = graded.filter((r) => r.predicted_winner !== r.home_team);
+  if (home.length === 0 && away.length === 0) return null;
+  const pct = (rs: Prediction[]) =>
+    rs.length === 0 ? 0 : Math.round((rs.filter((r) => r.is_correct === true).length / rs.length) * 100);
+  return {
+    home: { n: home.length, pct: pct(home) },
+    away: { n: away.length, pct: pct(away) },
+  };
+}
+
+export type MarketCompare = {
+  n: number; // games with both a market line and a result
+  modelMae: number;
+  marketMae: number;
+  closerPct: number; // % of those games where the model was nearer the final margin
+};
+
+/** Model vs the market closing line, over the games where both exist. */
+export function marketCompare(modelRows: Prediction[]): MarketCompare | null {
+  const both = modelRows.filter(
+    (r) => r.market_margin != null && r.actual_margin !== null,
+  );
+  if (both.length === 0) return null;
+  let modelErr = 0;
+  let marketErr = 0;
+  let closer = 0;
+  for (const r of both) {
+    const me = Math.abs(r.predicted_margin - (r.actual_margin as number));
+    const ve = Math.abs((r.market_margin as number) - (r.actual_margin as number));
+    modelErr += me;
+    marketErr += ve;
+    if (me < ve) closer++;
+  }
+  return {
+    n: both.length,
+    modelMae: modelErr / both.length,
+    marketMae: marketErr / both.length,
+    closerPct: Math.round((closer / both.length) * 100),
+  };
+}
+
 /**
  * Reliability/calibration: bin the predicted home-win probability into deciles; for
  * each bin, the observed fraction of home wins (%). A well-calibrated model tracks the

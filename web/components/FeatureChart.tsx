@@ -36,10 +36,10 @@ export default function FeatureChart({
         {teams.map((t, i) => (
           <Line
             key={t}
-            type="monotone"
+            type="linear"
             dataKey={t}
             stroke={PALETTE[i % PALETTE.length]}
-            dot={false}
+            dot={{ r: 2 }}
             connectNulls
           />
         ))}

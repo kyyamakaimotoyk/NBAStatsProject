@@ -83,6 +83,7 @@ outputs/*smoketest*.json
 # Personal planning + learning notes (kept local, not part of the public repo)
 docs/aws_deployment_plan.md
 docker-learn/
+*lab*
 
 # Terraform (infra/)
 # State can contain secrets (e.g. RDS password) and, with local state, is

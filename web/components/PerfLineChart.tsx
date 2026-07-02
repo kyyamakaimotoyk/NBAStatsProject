@@ -64,11 +64,11 @@ export default function PerfLineChart({
         {models.map((m) => (
           <Line
             key={m}
-            type="monotone"
+            type="linear"
             dataKey={m}
             name={MODEL_LABELS[m] ?? m}
             stroke={COLORS[m] ?? "#888"}
-            dot={numericX}
+            dot={{ r: 2.5 }}
             connectNulls
           />
         ))}

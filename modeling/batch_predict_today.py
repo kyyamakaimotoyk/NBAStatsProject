@@ -69,6 +69,7 @@ from modeling.prediction_tracker import (
     log_prediction,
     ensure_table_exists,
     get_model_version,
+    backfill_actuals,
 )
 
 try:
@@ -417,6 +418,10 @@ def parse_args(argv=None):
                    help='Skip loading pending home-ingest drops from S3 (INGEST_S3_BUCKET)')
     p.add_argument('--skip-vegas', action='store_true',
                    help='Skip refreshing today\'s market lines from ESPN')
+    p.add_argument('--skip-backfill', action='store_true',
+                   help='Skip grading past predictions against final scores')
+    p.add_argument('--backfill-lookback', type=int, default=30,
+                   help='Days to look back when grading past predictions (default 30)')
     return p.parse_args(argv)
 
 
@@ -446,6 +451,18 @@ def main(argv=None) -> int:
                           f"(predicting with existing DB state)")
             else:
                 print("S3 ingest load skipped (INGEST_S3_BUCKET not set)")
+
+        # Grade past predictions against final scores. Must come AFTER the S3
+        # load (game_list's final WL rows arrive in the drops) and run nightly —
+        # the Track Record page only shows games with actual_winner set, so
+        # skipping this freezes the public record. 30-day lookback self-heals
+        # after idle stretches.
+        if not args.skip_backfill:
+            try:
+                bf = backfill_actuals(engine, lookback_days=args.backfill_lookback)
+                print(f"backfill: {bf}")
+            except Exception as exc:
+                print(f"ERROR: backfill failed — {exc} (predictions still run)")
 
         # Refresh today's market lines. ESPN's APIs answer from AWS (probed
         # 2026-07-02) so this stays cloud-side. Skipped in backfill mode —

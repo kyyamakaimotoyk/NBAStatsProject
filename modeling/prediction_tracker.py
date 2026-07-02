@@ -374,8 +374,16 @@ def backfill_actuals(engine, lookback_days: int = 30, verbose: bool = True) -> D
             actual_margin = home_pts - away_pts
             actual_winner = home_team if actual_margin > 0 else away_team
 
-            # Update both RF and NN predictions for this game
-            for model_type in ['rf', 'nn']:
+            # Update every model's predictions for this game. Derived from
+            # MODEL_TYPES, not hardcoded — a hardcoded ['rf', 'nn'] here left
+            # xgb rows permanently ungraded (found 2026-07-02; same bug class
+            # as the E8 train-stage omission).
+            try:
+                from modeling.model_types import MODEL_TYPES
+                model_keys = [s.key for s in MODEL_TYPES]
+            except Exception:
+                model_keys = ['rf', 'nn', 'xgb']
+            for model_type in model_keys:
                 rows_updated = update_actual_result(
                     engine, game_id, model_type, actual_winner, actual_margin
                 )

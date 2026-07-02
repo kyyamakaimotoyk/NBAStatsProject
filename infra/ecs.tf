@@ -154,6 +154,9 @@ resource "aws_ecs_task_definition" "pipeline" {
         { name = "NBA_DB_USER", value = var.db_username },
         { name = "NBA_DB_NAME", value = var.db_name },
         { name = "MODELS_S3_BUCKET", value = aws_s3_bucket.models.bucket },
+        # Residential-ingest handoff (ingest.tf): batch_predict_today loads any
+        # pending home-box drops from this bucket before predicting.
+        { name = "INGEST_S3_BUCKET", value = aws_s3_bucket.ingest.bucket },
       ]
 
       # Secret value injected at launch. The ":password::" suffix tells ECS to pull

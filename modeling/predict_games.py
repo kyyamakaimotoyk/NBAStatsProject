@@ -805,9 +805,14 @@ _SCHEDULE_TTL_SEC = 600  # 10 minutes
 #                      datacenter/AWS ranges; this is what nba.com's own site uses.
 #   2. stats.nba.com - the ScheduleLeagueV2 stats endpoint. Rate-limits / blocks
 #                      datacenter IPs, so it times out from Fargate/AWS.
-# We PREFER the CDN (works in the cloud) and fall back to the stats endpoint only
-# if the CDN is unreachable. Both are normalized to the same flat columns so the
-# rest of the code never has to know which source answered.
+# Schedule sources, in preference order:
+#   1. league_schedule DB table — pushed daily by the home ingest job
+#      (home_ingest_push.py). The ONLY source that works on AWS: stats.nba.com
+#      hard-blocks datacenter IPs and cdn.nba.com started 403-ing too (2026-06).
+#   2. cdn.nba.com — works locally, kept as fallback in case the DB is stale.
+#   3. stats.nba.com ScheduleLeagueV2 — works locally only.
+# All are normalized to the same flat columns so the rest of the code never has
+# to know which source answered.
 _SCHEDULE_CDN_URL = 'https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json'
 _SCHEDULE_CDN_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -848,6 +853,23 @@ def _fetch_league_schedule_cdn(timeout: int = 20) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _fetch_league_schedule_db() -> pd.DataFrame:
+    """Schedule from the ``league_schedule`` table (home-ingest push).
+
+    Same flat columns as the CDN/stats sources. Raises if the table is missing
+    or empty (caller decides whether to fall back to the network sources).
+    """
+    eng = create_engine()
+    df = pd.read_sql(
+        'SELECT gameId, gameDate, gameStatusText, arenaName, '
+        '       homeTeam_teamId, awayTeam_teamId, '
+        '       homeTeam_teamTricode, awayTeam_teamTricode '
+        'FROM league_schedule', eng)
+    if df.empty:
+        raise RuntimeError('league_schedule table is empty')
+    return df
+
+
 def _fetch_league_schedule(force: bool = False) -> pd.DataFrame:
     """Fetch (and cache) the full league schedule from ScheduleLeagueV2.
 
@@ -864,14 +886,39 @@ def _fetch_league_schedule(force: bool = False) -> pd.DataFrame:
             and (now - _SCHEDULE_CACHE['ts']) < _SCHEDULE_TTL_SEC):
         return cached
 
-    # CDN first (works from AWS); fall back to the stats endpoint if it fails.
+    # DB first (the only source that works on AWS), then CDN, then stats. A
+    # stale DB copy — no games yesterday-or-later — defers to the network
+    # sources but is kept as the very last resort so a total network block
+    # still yields whatever schedule we have.
+    sched = None
+    stale_db = None
     try:
-        sched = _fetch_league_schedule_cdn()
-    except Exception as cdn_err:
-        print(f"  CDN schedule fetch failed ({cdn_err}); falling back to stats.nba.com...")
-        if not NBA_API_AVAILABLE:
-            raise
-        sched = ScheduleLeagueV2().get_data_frames()[0].copy()
+        db_sched = _fetch_league_schedule_db()
+        db_dates = pd.to_datetime(db_sched['gameDate'], errors='coerce')
+        if (db_dates >= pd.Timestamp.now().normalize() - pd.Timedelta(days=1)).any():
+            print("  schedule: using league_schedule table (DB)")
+            sched = db_sched
+        else:
+            stale_db = db_sched
+            print("  schedule: league_schedule table is stale; trying network sources...")
+    except Exception as db_err:
+        print(f"  schedule: DB source unavailable ({db_err}); trying CDN...")
+
+    if sched is None:
+        try:
+            sched = _fetch_league_schedule_cdn()
+        except Exception as cdn_err:
+            print(f"  CDN schedule fetch failed ({cdn_err}); falling back to stats.nba.com...")
+            try:
+                if not NBA_API_AVAILABLE:
+                    raise RuntimeError('nba_api not available')
+                sched = ScheduleLeagueV2().get_data_frames()[0].copy()
+            except Exception as stats_err:
+                if stale_db is not None:
+                    print(f"  stats fetch failed ({stats_err}); using STALE league_schedule table")
+                    sched = stale_db
+                else:
+                    raise
     sched['_date'] = pd.to_datetime(sched['gameDate'], errors='coerce').dt.normalize()
     _SCHEDULE_CACHE['df'] = sched
     _SCHEDULE_CACHE['ts'] = now

@@ -344,6 +344,10 @@ def parse_args(argv=None):
                    help='Permit backfill predictions for dates inside the model\'s training window.')
     p.add_argument('--injury-source', choices=('auto', 'live', 'historical'), default='auto',
                    help="auto = live for today/future, historical for older dates")
+    p.add_argument('--skip-s3-load', action='store_true',
+                   help='Skip loading pending home-ingest drops from S3 (INGEST_S3_BUCKET)')
+    p.add_argument('--skip-vegas', action='store_true',
+                   help='Skip refreshing today\'s market lines from ESPN')
     return p.parse_args(argv)
 
 
@@ -357,6 +361,40 @@ def main(argv=None) -> int:
     engine = create_engine()
     try:
         ensure_table_exists(engine)
+
+        # Residential-ingest handoff: load any pending home-box drops FIRST so
+        # tonight's grading + rolling features see the freshest boxscores and
+        # the league_schedule table is current (the ONLY schedule source that
+        # works on AWS — cdn/stats both block datacenter IPs).
+        if not args.skip_s3_load:
+            bucket = _os.environ.get('INGEST_S3_BUCKET')
+            if bucket:
+                try:
+                    from data_engineering.s3_ingest_loader import load_pending
+                    load_pending(engine=engine, bucket=bucket)
+                except Exception as exc:
+                    print(f"ERROR: S3 ingest load failed — {exc} "
+                          f"(predicting with existing DB state)")
+            else:
+                print("S3 ingest load skipped (INGEST_S3_BUCKET not set)")
+
+        # Refresh today's market lines. ESPN's APIs answer from AWS (probed
+        # 2026-07-02) so this stays cloud-side. Skipped in backfill mode —
+        # historical lines come from the kaggle import, not ESPN.
+        if not args.skip_vegas and not args.start_date:
+            try:
+                from data_engineering.vegas_lines_espn import (
+                    build_team_id_resolver, build_game_id_resolver, fetch_lines_for_date)
+                v_start = datetime.now().date()
+                v_end = v_start + timedelta(days=1)
+                team_res = build_team_id_resolver(engine)
+                game_res = build_game_id_resolver(engine, v_start, v_end + timedelta(days=14))
+                n_lines = sum(fetch_lines_for_date(engine, d, team_res, game_res)
+                              for d in (v_start, v_end))
+                print(f"vegas: {n_lines} new rows for {v_start}..{v_end}")
+            except Exception as exc:
+                print(f"WARN: vegas refresh failed — {exc}")
+
         model_bundles = load_model_bundles(engine, model_keys)
         game_dates = resolve_game_dates(args)
         game_dates = apply_leakage_guard(game_dates, args.allow_leakage)

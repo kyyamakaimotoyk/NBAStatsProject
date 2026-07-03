@@ -54,10 +54,36 @@ resource "aws_cloudwatch_log_group" "api" {
 
 
 # -----------------------------------------------------------------------------
+# API task role — lets the app RE-READ the rotating DB secret at runtime
+# -----------------------------------------------------------------------------
+# The execution role's secret read only happens once, at task LAUNCH (the
+# `secrets` env injection). The weekly password rotation therefore stranded
+# long-lived tasks with a stale password (2026-06-29 / 2026-07-03 incidents).
+# api/db.py now fetches the secret itself on new connections and refreshes on
+# auth failure — which needs the TASK role (the app's own identity) to read it.
+resource "aws_iam_role" "api_task" {
+  name               = "${var.project}-api-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
+}
+
+data "aws_iam_policy_document" "api_task_secret" {
+  statement {
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_db_instance.main.master_user_secret[0].secret_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "api_task_secret" {
+  name   = "${var.project}-api-task-secret"
+  role   = aws_iam_role.api_task.id
+  policy = data.aws_iam_policy_document.api_task_secret.json
+}
+
+
+# -----------------------------------------------------------------------------
 # Task definition — one small uvicorn container (0.25 vCPU / 0.5 GB)
 # -----------------------------------------------------------------------------
 # Reuses aws_iam_role.ecs_execution from ecs.tf (ECR pull + logs + secret read).
-# No task_role: the API talks only to RDS (network), it calls no AWS APIs.
 resource "aws_ecs_task_definition" "api" {
   family                   = "${var.project}-api"
   requires_compatibilities = ["FARGATE"]
@@ -65,6 +91,7 @@ resource "aws_ecs_task_definition" "api" {
   cpu                      = "256" # 0.25 vCPU
   memory                   = "512" # 0.5 GB
   execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.api_task.arn
 
   runtime_platform {
     operating_system_family = "LINUX"
@@ -87,7 +114,13 @@ resource "aws_ecs_task_definition" "api" {
         # CORS allow-list for the production site (browser enforces this on the
         # cross-origin fetch from hoopmodel.com to api.hoopmodel.com).
         { name = "ALLOWED_ORIGINS", value = "https://${var.domain_name},https://www.${var.domain_name}" },
+        # Rotation-aware DB auth: api/db.py fetches the password from this
+        # secret on new connections and re-fetches on auth failure, so the
+        # weekly rotation no longer strands a long-lived task.
+        { name = "NBA_DB_SECRET_ARN", value = aws_db_instance.main.master_user_secret[0].secret_arn },
       ]
+      # Launch-time injection kept as a fallback (and for any old image without
+      # the rotation-aware connector). api/db.py prefers NBA_DB_SECRET_ARN.
       secrets = [
         {
           name      = "NBA_DB_PASSWORD"

@@ -240,13 +240,13 @@ def _fit_isotonic_calibrator(eval_probs, y_eval):
     return iso
 
 
-# E20 degeneracy guard: a healthy calibrator barely moves the pick threshold.
-# The 2025-26 live incident (RF picking home 97% of games, flipping correct raw
-# picks) came from a stale calibrator that mapped nearly every prob above 0.5.
-# We can't stop that at fit time with certainty, but we CAN measure how much the
-# calibrator moves the home-pick share on the eval slice and refuse to let a
-# degenerate map drive picks.
-_CALIBRATOR_MAX_PICK_SHIFT = 0.10
+# E20 introduced this fit-time degeneracy check at +/-10pp; E21's 96-healthy-fit
+# distribution showed that threshold flags ~40% of NORMAL isotonic fits (healthy
+# |shift|: median 0.076, p90 0.185, p99 0.233 RF / 0.271 XGB). Re-set to the
+# healthy p99: exceeding 0.25 is a genuine extreme worth an ERROR email. Picks
+# no longer depend on this either way (E21 raw-pick policy) — it's telemetry
+# plus an extreme-degeneracy tripwire.
+_CALIBRATOR_MAX_PICK_SHIFT = 0.25
 
 
 def _calibrator_pick_shift(iso, eval_probs) -> float:
@@ -1500,19 +1500,17 @@ def load_or_train_rf_models(engine, force_retrain=False):
     # those games), then wrap the full-data production clf so its predict_proba
     # returns calibrated probabilities. AUC is unchanged (isotonic is monotonic);
     # ECE/Brier improve. See docs/e13_calibration_report.md.
+    # E21 decision (user-approved 2026-07-03): RF ships UNWRAPPED. Three seasons
+    # of walk-forward showed isotonic does nothing for RF's calibration (raw ECE
+    # 0.080 vs iso 0.084, Wilcoxon p=0.78) while carrying the staleness/degeneracy
+    # risk observed live twice. RF's displayed probability IS its raw probability.
+    # The map is still FIT and stored in the bundle ('clf_calibrator') for
+    # telemetry and easy revert, but it is not applied. XGB keeps its wrap — its
+    # calibrator halves ECE (p<0.001).
     rf_calibrator = _fit_isotonic_calibrator(clf_prob, y_clf_test)
     _shift = _calibrator_pick_shift(rf_calibrator, clf_prob)
-    _trusted = abs(_shift) <= _CALIBRATOR_MAX_PICK_SHIFT
-    if not _trusted:
-        # E21 demoted this from ERROR to a note: healthy isotonic fits on ~200
-        # games routinely shift 10-25pp (median 7.6pp, p90 18.5pp), so the
-        # threshold can't separate degenerate from normal — and picks no longer
-        # depend on the calibrator at all (raw-pick policy). Kept as telemetry.
-        print(f"  NOTE: rf calibrator pick shift {_shift:+.2f} exceeds "
-              f"{_CALIBRATOR_MAX_PICK_SHIFT:.2f} (informational; picks are raw-derived).")
-    clf = IsotonicCalibratedClassifier(clf, rf_calibrator, trusted=_trusted)
-    print(f"  RF classifier wrapped with isotonic calibrator (E13; pick shift "
-          f"{_shift:+.3f}, trusted={_trusted}).")
+    print(f"  RF isotonic fit for telemetry only, NOT applied (E21: display=raw; "
+          f"fit shift {_shift:+.3f}).")
 
     # E14 split-conformal: half-widths from the eval regressor's holdout residuals
     rf_halfwidths = _compute_conformal_halfwidths(reg_pred, y_reg_test)
@@ -2008,9 +2006,10 @@ def load_or_train_xgb_models(engine, force_retrain=False):
     _shift = _calibrator_pick_shift(xgb_calibrator, clf_prob)
     _trusted = abs(_shift) <= _CALIBRATOR_MAX_PICK_SHIFT
     if not _trusted:
-        # E21: informational only — see the RF site's note. Picks are raw-derived.
-        print(f"  NOTE: xgb calibrator pick shift {_shift:+.2f} exceeds "
-              f"{_CALIBRATOR_MAX_PICK_SHIFT:.2f} (informational; picks are raw-derived).")
+        # Beyond the healthy p99 (E21) = genuine extreme. ASCII only (cp932).
+        print(f"ERROR: CALIBRATOR_DEGENERATE xgb - pick shift {_shift:+.2f} exceeds "
+              f"the healthy p99 ({_CALIBRATOR_MAX_PICK_SHIFT:.2f}). Picks are "
+              f"raw-derived regardless; displayed probabilities are suspect.")
     clf = IsotonicCalibratedClassifier(clf, xgb_calibrator, trusted=_trusted)
     print(f"  XGB classifier wrapped with isotonic calibrator (E13; pick shift "
           f"{_shift:+.3f}, trusted={_trusted}).")

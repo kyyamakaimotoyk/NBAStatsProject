@@ -348,12 +348,15 @@ def load_model_bundles(engine, model_keys: Iterable[str]) -> dict:
             try:
                 bundles['nn'] = load_or_train_pytorch_models(engine, force_retrain=False)
             except Exception as exc:
-                print(f"WARN: skipping nn — {exc}")
+                # ERROR, not WARN: a requested-but-unloadable model is a config
+                # problem (E21 found xgb silently skipped ALL season because its
+                # bundle was never pushed to S3). The alarm emails on ERROR.
+                print(f"ERROR: requested model 'nn' unavailable - {exc}")
         elif key == 'xgb':
             try:
                 bundles['xgb'] = load_or_train_xgb_models(engine, force_retrain=False)
             except Exception as exc:
-                print(f"WARN: skipping xgb — {exc}")
+                print(f"ERROR: requested model 'xgb' unavailable - {exc}")
         else:
             print(f"WARN: unknown model key {key!r}")
     if not bundles:

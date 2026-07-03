@@ -36,6 +36,9 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **E15** | **Cross-context generalization** — Phase 1 | (a) How much data is needed (learning curve)? (b) Can a regular-season model be trusted in the playoffs? Uses E13/E14 coverage+ECE as the cross-context lens. | `experiments/e15_cross_context.py` two modes. **Learning curve**: fix test=W5, vary train-start (0.5-4 seasons), 5 seeds. **Regime**: per-season temporal train on regular games before each season's playoffs, pool ~400 playoff test games; compare regular(control)/playin/playoffs on acc/AUC/MAE/ECE/coverage + KS feature-shift. Write-up: docs/e15_cross_context_report.md. | **Learning curve flat past ~1 season** (1k→4.5k games buys ~0 acc/MAE) → don't chase more history. **Playoffs**: winner-prediction degrades hard (RF acc 0.713→0.635, AUC 0.790→**0.637**; XGB similar) — playoffs are a harder, ELO-compressed, slower-pace subset (KS DIFF_ELO p=0.029). **But intervals/calibration transfer**: playoff cov90≈0.88-0.90, ECE stays low. Coverage-as-diagnostic worked: spread is similar (bands hold) but winner is less predictable (AUC craters). Play-in n=30 too small to trust. | **Diagnostic, no model change 2026-05-19** — recommendations: set playoff expectations ~63% not ~71%; trust intervals in playoffs; future playoff-specific features. |
 | **E19** | **Season-end audit + lineage-tracked retrain** | User-surfaced (2026-07-03): RF picks home ~97% of the time; a 64.6-pt margin showed on the public site; XGB has no season predictions. Full current-state audit before further development. | Read-only audit of `model_predictions` (2025-26 season, local + RDS via API), registry, feature snapshots. Then: feature rebuild through the Finals (first `--db-description`-tagged snapshot), retrain all 3 models (first registry rows carrying `feature_set_version` lineage), validate. See §E19 below. | **Audit**: (1) RF live acc 0.583 vs test 0.742 — the E13 isotonic layer maps ~97% of games above 0.5 (reliability bin 0.7 → only 40% real home wins) and FLIPS correct raw picks (2026-06-13: raw 0.449→cal 0.604); when RF does pick away it's 79.4% correct. (2) The 64.6-pt margin exists only on RDS — cloud NN fed degenerate rolling stats (no June boxscores on RDS pre-handoff); local NN on same game: −3.1, correct. (3) XGB: zero season rows — backfills used `--model both` (pre-dates xgb) + `backfill_actuals` hardcoded rf/nn (fixed 2026-07-02). (4) Prod models trained through 2026-03-05 only, on a 1043-game Nov→Apr snapshot. **Retrain**: new snapshot `20260703T022649Z` (1,234 games through the Finals) + first lineage-carrying registry rows (`*_20260703`). New playoff-heavy holdout (Mar 24–Jun 13): RF 0.729/0.785 AUC — expected E15 regime shift, not regression. NOT promoted to prod — E20 (calibration) retrains again first. Validate-stage gap found: it ignores `data_through_date` (in-sample windows accepted). | **Baseline established 2026-07-03** |
 | **E20** | **Calibration protocol A/B + pick-policy decision + degeneracy guard** | E19 found the E13 calibrator collapsing RF into 97% home picks live and flipping correct raw picks. Hypothesis: K-fold OOF isotonic (more calibration data, production-config fit) fixes it. | `experiments/e20_calibration.py`: raw vs eval-slice isotonic (faithful production mirror incl. the fit-on-eval/apply-to-full subtlety) vs 5-fold OOF isotonic; W5 test window; RF/XGB 10 seeds, NN 5; ECE/Brier/AUC/acc/home-pick-share + disagreement-game win rates. | **Hypothesis partly REJECTED**: OOF best for RF display-ECE (10/10 seeds beat raw) but not significantly better than eval-slice (5/10) and WORSE than raw for XGB (0/10) → not shipped. Live pathology did NOT reproduce with a fresh calibrator (home share ~0.60, not 0.97) → root cause = STALE calibrator + no guard, not the protocol. Pick policy: fresh-cal picks ≈ raw (RF −1pp, XGB +0.6pp, NN +0.9pp). **Shipped**: keep eval-slice isotonic; pick stays calibrated-derived BUT bundles now carry a train-time **degeneracy guard** (eval-slice home-pick shift > 10pp → `calibrator_trusted=False` → picks auto-fall back to RAW + "ERROR: CALIBRATOR_DEGENERATE" line that the pipeline alarm emails on). | **Implemented 2026-07-03** |
+| **E21** | **Multi-season calibration backtest + empirical guard threshold + online-recalibration pilot** | E20 shipped on one test window and a round-number ±10pp guard; its residuals deferred both to E21. Three legs: (1) does eval-slice isotonic actually beat raw / Platt across seasons? (2) what guard threshold does the healthy-fit pick-shift distribution justify? (3) does weekly online recalibration on live logged pairs beat the shipped map? | `experiments/e21_calibration_backtest.py`: 16 monthly walk-forward windows across 2023-24 → 2025-26 (fresh 4,167-game multi-season CSV, prod config, `--no-db-write`), RF+XGB × 3 seeds, raw vs iso_eval vs platt_eval; every fit logs its eval-slice pick-shift (48 healthy fits/model). `experiments/e21_online_pilot.py`: weekly chronological replay of the 186 live (raw prob, outcome) pairs/model from E18 logging; raw vs shipped-stale vs online iso vs online Platt. | **Leg 1**: calibration is accuracy-neutral for both models (Wilcoxon p>0.14 everywhere; mean −0.4 to −0.9pp). ECE: RF raw is already calibrated — iso does NOT improve it (p=0.78); XGB raw is genuinely miscalibrated (~0.12) and both calibrators fix it decisively (−0.038 iso / −0.034 Platt, p≤0.001). **Leg 2**: the ±10pp guard is not discriminative — **40% of healthy fits exceed it**, 25% exceed even the known-degenerate +14.2pp; healthy p99 ≈ 23pp (RF) / 27pp (XGB). **Leg 3 (pilot, n=129)**: raw RF beat everything live (0.667 vs shipped 0.620); online isotonic actively harmful (0.597 acc, 0.225 ECE); Platt the least-bad online option. | **Measured 2026-07-03** — recommendations pending: drop RF calibrator, keep XGB's, guard → per-model p99 tripwire + live home-share monitor; see §E21. |
+| **E21b** | *(same experiment — decision)* | | | **Shipped raw-derived picks** for all models (`_derive_pick_probability` returns raw; calibrated stays as displayed/logged `home_win_probability`); guard demoted to informational NOTE (no more ERROR emails on healthy variance); live drift monitor queued for next season's nightly job. One-line revert if the ~7% coin-flip pick/display mismatch proves annoying in practice. | **Implemented 2026-07-03** |
+| **E21** | **Multi-season calibration backtest + guard-threshold audit + online-recal pilot** | User-challenged E20's scope: why not test more protocols (Platt), why a heuristic ±10pp tripwire, why only one test window? | Leg 1: 3-season feature rebuild (`20260703T072718Z`, 4,167 games, NOT promoted) + 16 monthly walk-forward windows × 3 seeds × RF/XGB comparing raw / eval-slice isotonic / Platt (`experiments/e21_calibration_backtest.py`). Leg 2: pick-shift distribution across the 96 healthy fits. Leg 3: online-recalibration replay on the 186 live logged (raw, outcome) pairs (`experiments/e21_online_pilot.py`). | (1) **Raw picks beat calibrated picks everywhere**: RF −0.47pp from iso (raw better 10/16 windows), XGB −0.50pp; ~1,900 flipped picks across the sweep, raw right 53%; live A/B raw right 62%. (2) **RF raw is already well-calibrated** (mean ECE 0.080 vs iso 0.084) — E13's "RF underconfident 0.131" was a W5-window artifact (only 2026-03/04 show raw ECE ≥0.127). **XGB genuinely needs display calibration** (raw 0.120 → iso 0.082, consistent). (3) **The fit-time pick-shift statistic cannot separate healthy from degenerate**: healthy iso fits shift median 7.6pp, p90 ~18.5pp, max 26-31pp — the ±10pp guard would flag ~40% of healthy fits, and the live disaster's +22pp sits INSIDE the healthy tail. The real live failure mode is sustained drift → only a LIVE monitor can catch it. (4) Online-iso REJECTED (weekly refits on ≤180 pairs: acc 0.597, ECE 0.225 — worse than the stale map); online-Platt tame but no benefit shown. | **Findings final 2026-07-03; production change pending sign-off** (recommend: raw-derived picks, iso display for XGB only, guard demoted to informational, live drift monitor next season) |
 | **E18** | **Calibration audit + logging fix + leakage guard** | User-surfaced bug: Game Predictions tab showed NYK winner for CLE@NYK 2026-05-25 while Model Evaluation tab showed CLE pick logged — same model, same game, different pick. Root cause: dashboard reads E13 isotonic-calibrated classifier; the logging path in `predict_games.py` still derived `predicted_winner` from the **regressor margin sign** (`result['win_prob']` = `np.mean(margin_samples > 0)`), an older signal that pre-dates E13. Two-headed model → two different picks near the boundary. Also surfaced: bundle metadata stored no `data_through_date`, so the backfill loop happily predicted for dates within the training window with no warning. | (1) Logging now uses calibrated classifier: `p_cal = result['win_prob_classifier']`; `predicted_winner = home if p_cal > 0.5 else away`. (2) New `home_win_probability_raw` column added via idempotent migration in `prediction_tracker.ensure_table_exists`; the pre-isotonic prob is logged alongside the calibrated one. NN/NN-embed have no isotonic wrapper → raw == calibrated. (3) Bundle metadata gains `train_start_date / train_end_date / eval_start_date / eval_end_date / data_through_date` (the latest GAME_DATE the production model saw). (4) Backfill loop in `predict_games.py` gates on `data_through_date`: dates ≤ that are skipped with a loud message; `--allow-leakage` overrides. (5) Model Evaluation per-game table now shows **Win% raw** + **Win% cal** side-by-side; for legacy rows raw is NULL. | Data fix only (no model retrain). Game Predictions and Model Evaluation now read the same field. Backfill predictions on training-window dates are refused by default — past metrics on those rows were optimistic by an unmeasured amount. **A/B comparison columns ready**: re-run `predict_games.py --start-date X --end-date Y --no-shap --no-plot` for `X > data_through_date` to populate `home_win_probability_raw` and start the raw-vs-calibrated comparison. | **Implemented 2026-05-26** — see "Calibration audit & leakage guard" section below. |
 
 ---
@@ -755,6 +758,76 @@ distribution-matched fit data possible); certification needs next season's volum
   the guard exists for the week something goes wrong. The ±10pp value itself is a
   heuristic (healthy fits observed ≤5pp, degenerate ones ≥14pp); E21's multi-season
   backtest should replace it with an empirically-derived tail threshold.
+- **(Superseded same day by E21**, which found the shift statistic cannot separate
+  healthy from degenerate fits and that raw picks beat calibrated picks everywhere —
+  picks are now raw-derived and the guard is informational. See §E21.)
+
+---
+
+## 2026-07-03 — Experiment 21: Multi-season calibration backtest, guard audit, online-recal pilot
+
+### Why
+User-challenged E20 on three fronts: the technique space was under-explored (no Platt),
+the ±10pp guard threshold was arbitrary, and one 230-game window is a thin decision
+basis. All three challenges were vindicated by the results below.
+
+### Method
+- **Leg 1**: 3-season feature rebuild (snapshot `20260703T072718Z`, 4,167 games
+  2023-10 → 2026-06, research-only, NOT promoted; 2022-23 rows didn't survive
+  feature-coverage filters). `experiments/e21_calibration_backtest.py`: 16 monthly
+  walk-forward windows (≥50 test / ≥800 train games, train strictly before each
+  window) × 3 seeds × RF/XGB, comparing raw vs eval-slice isotonic vs **Platt on the
+  identical eval slice** (same data, different function class).
+- **Leg 2**: every fit records its pick-shift on its own eval slice — 96 healthy fits
+  → the empirical distribution the guard threshold should have come from.
+- **Leg 3**: `experiments/e21_online_pilot.py` — weekly-refit online calibration
+  replayed on the 186 live logged (raw, outcome) pairs from E18's column.
+
+### Results
+1. **Raw picks win everywhere.** Backtest: iso picks cost RF −0.47pp (raw better
+   10/16 windows) and XGB −0.50pp; Platt similar (−0.35/−0.87pp). Across ~1,900
+   flipped picks, raw right **53%**; live A/B: raw right **62%** (26–16). Consistent
+   across three seasons, two models, and live production.
+2. **RF raw is already well-calibrated** — mean ECE 0.080 vs iso 0.084 / Platt 0.083.
+   E13's motivating "RF underconfident, ECE 0.131" was substantially a
+   **window artifact**: 2026-03/04 are the only months in the sweep with raw ECE
+   ≥ 0.127. **XGB genuinely needs display calibration**: raw 0.120 → iso 0.082,
+   consistently across windows. Platt ≈ iso on ECE (no reason to switch).
+3. **The fit-time pick-shift statistic cannot discriminate.** Healthy iso fits:
+   |shift| median 0.076, p90 0.185, p99 0.233, max 0.31. The ±10pp guard would flag
+   ~40% of healthy fits, and the live incident's +22pp lies inside the healthy tail.
+   The live failure mode was **drift over weeks**, invisible at fit time by
+   construction. Platt's shifts are tamer (median 0.035-0.064) but the conclusion
+   stands.
+4. **Online recalibration**: naive weekly-refit isotonic on ≤180 live pairs is a
+   variance disaster (acc 0.597, ECE 0.225 — worse than the stale map it would
+   replace). Online-Platt is tame but showed no benefit on the playoff-quarter pilot
+   window. Revisit with next season's volume (~90 pairs/model/week); Platt-form only.
+
+### Decision (shipped 2026-07-03)
+- **Picks derive from RAW probability, all models** (`_derive_pick_probability`
+  returns `win_prob_classifier_raw`; legacy results without it fall back to
+  calibrated). Works with existing bundles — no retrain required; takes effect at the
+  next pipeline-image push.
+- **Displayed/logged `home_win_probability` stays calibrated** (earns its keep for
+  XGB; harmless for RF where iso ≈ raw on ECE). Known cost: ~7% of games (coin
+  flips) show a pick that mildly disagrees with the displayed probability —
+  candidate UI treatment: a "coin-flip" badge for p ∈ [0.45, 0.55].
+- **Guard demoted to informational** (NOTE, not ERROR — no false-alarm emails on
+  healthy isotonic variance). `calibrator_trusted` still computed/stored as telemetry.
+- **Live drift monitor queued** (next-season nightly addition): rolling ~100-game
+  reliability of shipped probabilities vs outcomes → alarm on divergence. That is
+  the check that would have caught the 2025-26 incident within days.
+
+### The meta-lesson
+E13 added calibration on one window's evidence; E20 kept it with a guard on one
+window's evidence; E21's three-season sweep showed the layer never helped picks and
+only helps XGB's display. Each step was locally reasonable — the fix wasn't smarter
+hypotheses, it was **more windows**. Multi-window walk-forward is now the default
+evidence bar for policy-level changes, same as E12 made multi-seed the bar for
+feature changes.
+
+---
 - NN still has no calibrator (E20 showed no ECE benefit on this window from either
   protocol; its overconfident tails were an E19 *live* observation — revisit with
   next season's data).
@@ -975,3 +1048,103 @@ Existing rows have `home_win_probability_raw = NULL`. New predictions logged fro
 - The calibrator-on-eval-then-wrap-production subtlety from step 7 is still present.
 - Pre-E18 `model_predictions` rows have stale `predicted_winner` derived from the regressor. They are not corrupted — the probabilities and margins are honest — but Result reflects the old pick.
 - Bundles trained before 2026-05-26 lack `data_through_date`; the guard warns and continues. Any retrain after this date establishes the metadata going forward.
+
+---
+
+## 2026-07-03 — Experiment 21: Multi-season calibration backtest, empirical guard threshold, online-recalibration pilot
+
+### Why
+E20's decisions rested on a single test window, and its degeneracy guard on a round number
+(±10pp, from a handful of observed fits). Its residuals section explicitly deferred two
+things here: replace the heuristic threshold with an empirically-derived tail cutoff, and
+pilot online recalibration on the live logged pairs. Falsifiable claims: (1) eval-slice
+isotonic beats raw across many windows, not just W5; (2) healthy fits stay under ~10pp
+pick-shift; (3) a calibrator refit weekly on live pairs beats the stale shipped map.
+
+### Method
+**Legs 1+2** — `experiments/e21_calibration_backtest.py` on a fresh multi-season CSV
+(2023-08-01 → 2026-06-30, production config, `feature_engineering.py --no-db-write`;
+4,167 games, 55.3% home). 16 calendar-month test windows with ≥50 test / ≥800 train
+games; train strictly before each window; RF + XGB × seeds {42, 123, 456}. Protocols:
+`raw`, `iso_eval` (faithful production mirror: isotonic fit on the last-20% eval slice,
+applied to the full-data model), `platt_eval` (sigmoid on log-odds, same eval slice —
+same data, different function class). OOF excluded (rejected 0/10 in E20). Every fit
+records its eval-slice pick-shift — exactly the statistic the production guard thresholds.
+**Leg 3** — `experiments/e21_online_pilot.py`: the 186 graded live (raw prob, outcome)
+pairs per model from E18 logging (2026-04-02 → 06-13), replayed chronologically: each
+week, refit on ALL prior pairs (60-game warmup), score the coming week. 129 evaluated
+games. Protocols: `raw`, `stale_prod` (the p_cal that actually shipped — the E19 culprit),
+`online_iso`, `online_platt`.
+
+### Results
+
+**Leg 1 — protocol comparison (16 windows × 3 seeds, paired per-window Wilcoxon):**
+
+| paired delta vs raw | RF acc | XGB acc | RF ECE | XGB ECE |
+|---|---|---|---|---|
+| iso_eval | −0.005 (p=0.27) | −0.005 (p=0.26) | +0.004 (p=0.78) | **−0.038 (p<0.001)** |
+| platt_eval | −0.004 (p=0.14) | −0.009 (p=0.32) | +0.003 (p=0.71) | **−0.034 (p=0.001)** |
+
+Calibration never significantly changes pick accuracy. The ECE split is the finding:
+**RF's raw probabilities are already calibrated** (window ECE typically 0.04–0.10) and
+isotonic adds nothing (worse in 9/16 windows). **XGB's raw probabilities are genuinely
+miscalibrated** (typically 0.10–0.17) and both calibrators roughly halve ECE, decisively.
+Platt ≈ isotonic on every eval metric; its pick-shift tails are tamer (max 18/22pp vs
+26/31pp).
+
+**Leg 2 — pick-shift distribution across 48 healthy fits/model (|shift|, iso):**
+
+| model | median | p90 | p99 | max | >10pp | >14.2pp | >22pp |
+|---|---|---|---|---|---|---|---|
+| RF | 0.076 | 0.185 | 0.233 | 0.262 | 40% | 25% | 2% |
+| XGB | 0.079 | 0.188 | 0.271 | 0.311 | 40% | 25% | 4% |
+
+The ±10pp guard is mis-set: **40% of healthy fits would be flagged degenerate.** Worse,
+25% of healthy fits exceed +14.2pp — the shift of the fresh-XGB fit the guard "caught"
+in E20. That flag was plausibly a false positive, and fit-time pick-shift cannot separate
+that class of degeneracy from normal isotonic variance at eval-slice n. Only the live
+stale-RF level (+22pp) sits in the true tail (2–4%). E20's "healthy fits observed ≤5pp"
+was an artifact of a small sample from one window.
+
+**Leg 3 — online pilot on live pairs (129 games, Apr 10 → Jun 13):**
+
+| protocol | RF acc | RF ECE | RF home% | NN acc | NN ECE |
+|---|---|---|---|---|---|
+| raw | **0.667** | **0.085** | 0.75 | 0.620 | 0.077 |
+| stale_prod (shipped) | 0.620 | 0.137 | 0.95 | 0.620 | 0.077 |
+| online_iso | 0.597 | 0.225 | 0.60 | 0.628 | 0.140 |
+| online_platt | 0.643 | 0.133 | 0.76 | 0.628 | 0.094 |
+
+Raw RF beat everything, including both online recalibrators. Online isotonic was
+**actively harmful** at n≈60–180 fit pairs — worse than the stale map it was meant to
+replace — confirming the step-function-variance suspicion. Platt was the least-bad
+online option. NN control behaved as expected (raw == shipped; no calibrator exists).
+No XGB rows exist to replay (see residuals).
+
+### Recommendations (pending decision — not yet applied to production)
+1. **Drop RF's calibration layer entirely.** Multi-season: no ECE benefit (p=0.78), small
+   negative accuracy drift. Live: every calibrated variant lost to raw. The layer carries
+   real downside risk (staleness, degeneracy — both observed in production) and zero
+   measured upside. Raw RF display probabilities are honest (~0.08 ECE). This supersedes
+   E20's "operational simplicity" call for a uniform policy, on 16× the evidence.
+2. **Keep XGB's calibrator** — it does real, significant work (ECE halves, accuracy
+   neutral). Platt is a reasonable swap for isotonic (same benefit, tamer tails), but
+   the data doesn't force it.
+3. **Re-set the guard**: fit-time pick-shift stays only as an extreme-degeneracy tripwire
+   at the per-model healthy p99 (~23pp RF, ~27pp XGB), NOT ±10pp. The real protection
+   should be **live home-share drift monitoring** — the 0.95 home% signature was visible
+   in production data all along and is what actually separates the incident from noise.
+4. **Online recalibration: not certified.** Do not ship. If revisited with next season's
+   volume, use Platt, never isotonic, at these sample sizes.
+
+### Residuals / honest caveats
+- Pilot is n=129, playoff-heavy, single model era — direction-setting, not proof; the
+  multi-season backtest is the load-bearing evidence here.
+- XGB has zero live pairs to replay: beyond the E19 backfill-flag issue, the nightly
+  cloud job's `load_model_bundles` try/except has been printing `WARN: skipping xgb`
+  all season because no xgb bundle was ever pushed to the S3 artifact store
+  (`xgb_current.joblib` exists locally). Bundle promotion must include xgb, and the
+  silent skip should become a hard fail for requested-but-missing models.
+- Backtest eval slices are the last 20% of each training set (temporal adjacency to the
+  test window); a randomly-sampled slice might behave differently — untested.
+- Outputs: `outputs/e21_backtest.json` (per-seed, per-window, both legs).

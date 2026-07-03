@@ -256,18 +256,22 @@ def _calibrator_pick_shift(iso, eval_probs) -> float:
 
 
 def _derive_pick_probability(result: dict) -> float:
-    """E20 pick policy: the probability that decides `predicted_winner`.
+    """E21 pick policy: the probability that decides `predicted_winner` is the
+    RAW classifier probability.
 
-    Calibrated by default (site UX stays coherent: pick always agrees with the
-    displayed probability). Falls back to the RAW classifier probability when
-    the bundle's train-time guard flagged the calibrator as degenerate.
+    E21's 3-season backtest (16 windows x 3 seeds x RF/XGB) + the live A/B both
+    showed raw picks beat calibrated picks everywhere (raw right on 53% of
+    ~1,900 backtest flips, 62% of live flips; +0.5pp mean accuracy) and that
+    raw makes picks permanently immune to calibrator pathology (the 2025-26
+    stale-calibrator incident). Calibrated probabilities remain the DISPLAYED /
+    logged `home_win_probability` (they earn their keep for XGB display, ECE
+    0.120 -> 0.082). Supersedes the E20 calibrated-with-guard policy.
     """
-    p_cal = float(result.get('win_prob_classifier', result['win_prob']))
-    if not result.get('calibrator_trusted', True):
-        p_raw = result.get('win_prob_classifier_raw')
-        if p_raw is not None:
-            return float(p_raw)
-    return p_cal
+    p_raw = result.get('win_prob_classifier_raw')
+    if p_raw is not None:
+        return float(p_raw)
+    # Legacy results without a raw value (pre-E18 bundles): calibrated.
+    return float(result.get('win_prob_classifier', result['win_prob']))
 
 
 # ============================================================================
@@ -1500,10 +1504,12 @@ def load_or_train_rf_models(engine, force_retrain=False):
     _shift = _calibrator_pick_shift(rf_calibrator, clf_prob)
     _trusted = abs(_shift) <= _CALIBRATOR_MAX_PICK_SHIFT
     if not _trusted:
-        # "ERROR" is load-bearing: the pipeline log alarm emails on it.
-        # ASCII only: this can print to a cp932 Windows console.
-        print(f"ERROR: CALIBRATOR_DEGENERATE rf - calibration shifts home-pick "
-              f"share by {_shift:+.2f} on the eval slice; picks fall back to RAW.")
+        # E21 demoted this from ERROR to a note: healthy isotonic fits on ~200
+        # games routinely shift 10-25pp (median 7.6pp, p90 18.5pp), so the
+        # threshold can't separate degenerate from normal — and picks no longer
+        # depend on the calibrator at all (raw-pick policy). Kept as telemetry.
+        print(f"  NOTE: rf calibrator pick shift {_shift:+.2f} exceeds "
+              f"{_CALIBRATOR_MAX_PICK_SHIFT:.2f} (informational; picks are raw-derived).")
     clf = IsotonicCalibratedClassifier(clf, rf_calibrator, trusted=_trusted)
     print(f"  RF classifier wrapped with isotonic calibrator (E13; pick shift "
           f"{_shift:+.3f}, trusted={_trusted}).")
@@ -2002,9 +2008,9 @@ def load_or_train_xgb_models(engine, force_retrain=False):
     _shift = _calibrator_pick_shift(xgb_calibrator, clf_prob)
     _trusted = abs(_shift) <= _CALIBRATOR_MAX_PICK_SHIFT
     if not _trusted:
-        # ASCII only: this can print to a cp932 Windows console.
-        print(f"ERROR: CALIBRATOR_DEGENERATE xgb - calibration shifts home-pick "
-              f"share by {_shift:+.2f} on the eval slice; picks fall back to RAW.")
+        # E21: informational only — see the RF site's note. Picks are raw-derived.
+        print(f"  NOTE: xgb calibrator pick shift {_shift:+.2f} exceeds "
+              f"{_CALIBRATOR_MAX_PICK_SHIFT:.2f} (informational; picks are raw-derived).")
     clf = IsotonicCalibratedClassifier(clf, xgb_calibrator, trusted=_trusted)
     print(f"  XGB classifier wrapped with isotonic calibrator (E13; pick shift "
           f"{_shift:+.3f}, trusted={_trusted}).")

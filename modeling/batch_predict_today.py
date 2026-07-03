@@ -246,8 +246,8 @@ def _predict_and_log_one(engine, model_key: str, model_bundle, matchup: dict,
         from modeling.predict_games import _derive_pick_probability
         p_cal = float(result.get('win_prob_classifier', result['win_prob']))
         p_raw = result.get('win_prob_classifier_raw')
-        # E20: guard-aware pick (calibrated normally; raw when the bundle
-        # flagged its calibrator as degenerate at train time).
+        # E21: picks derive from the RAW classifier probability (calibrated
+        # value is display/logging only). See _derive_pick_probability.
         predicted_winner = (home_team if _derive_pick_probability(result) > 0.5
                             else away_team)
         log_prediction(

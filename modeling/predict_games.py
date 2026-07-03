@@ -529,6 +529,24 @@ def _player_impact_snapshot(engine):
     return None
 
 
+def _feature_set_version_snapshot(engine):
+    """The feature_set_current pointer at training time — the exact snapshot the
+    model learned from. Recorded in the hyperparameters JSON (same pattern as
+    player_impact_snapshot_date) so a registry row can be joined back to
+    feature_set_versions: "was v13's gain the model change or the features?"."""
+    try:
+        from core.features_io import get_current_version
+        return get_current_version(engine)
+    except Exception:
+        return None
+
+
+# Bookkeeping keys inside the hyperparameter dicts — lineage metadata, NOT
+# estimator kwargs. Anything splatting an hp dict into a constructor must
+# exclude these (XGB does; RF/NN pull named keys explicitly).
+_HP_METADATA_KEYS = ('class', 'player_impact_snapshot_date', 'feature_set_version')
+
+
 # ============================================================================
 # PYTORCH MODEL DEFINITIONS
 # ============================================================================
@@ -1371,10 +1389,13 @@ def load_or_train_rf_models(engine, force_retrain=False):
     # with identical hyperparams but different impact snapshots are now distinguishable in the registry.
     # Experiment 1 (2026-05-18): tightened from max_depth=10/leaf=1 to max_depth=5/leaf=20 to attack the
     # 24pp train/test gap from baseline runs 11-12. See docs/model_tuning_log.md.
+    fs_snapshot = _feature_set_version_snapshot(engine)
     rf_clf_hp = {'n_estimators': 100, 'max_depth': 5, 'min_samples_leaf': 20, 'random_state': 42,
-                 'class': 'RandomForestClassifier', 'player_impact_snapshot_date': pi_snapshot}
+                 'class': 'RandomForestClassifier', 'player_impact_snapshot_date': pi_snapshot,
+                 'feature_set_version': fs_snapshot}
     rf_reg_hp = {'n_estimators': 100, 'max_depth': 5, 'min_samples_leaf': 20, 'random_state': 42,
-                 'class': 'RandomForestRegressor', 'player_impact_snapshot_date': pi_snapshot}
+                 'class': 'RandomForestRegressor', 'player_impact_snapshot_date': pi_snapshot,
+                 'feature_set_version': fs_snapshot}
 
     # Train classifier (on the 80% train split — used for evaluation metrics)
     print("  Training RF classifier...")
@@ -1633,16 +1654,18 @@ def load_or_train_pytorch_models(engine, force_retrain=False):
     # player_impact_snapshot_date documents which player_impact compute_date was the latest at train time.
     # Experiment 1 (2026-05-18): bumped dropout 0.3 -> 0.5 and added weight_decay=1e-4 to attack the
     # 18pp NN train/test gap from baseline runs 13-14. See docs/model_tuning_log.md.
+    fs_snapshot = _feature_set_version_snapshot(engine)
     nn_clf_hp = {'class': 'NBAClassifier', 'hidden_dims': [128, 64, 32], 'dropout': 0.5,
                  'epochs': 100, 'lr': 0.001, 'weight_decay': 1e-4,
                  'optimizer': 'Adam', 'loss': 'BCEWithLogits',
                  'input_dim': int(input_dim), 'player_impact_snapshot_date': pi_snapshot,
-                 'seed': 42}
+                 'feature_set_version': fs_snapshot, 'seed': 42}
     nn_reg_hp = {'class': 'NBARegressor', 'hidden_dims': [128, 64, 32], 'dropout': 0.5,
                  'epochs': 100, 'lr': 0.001, 'weight_decay': 1e-4,
                  'optimizer': 'Adam', 'loss': 'MSE',
                  'target_scaling': 'StandardScaler', 'input_dim': int(input_dim),
-                 'player_impact_snapshot_date': pi_snapshot, 'seed': 42}
+                 'player_impact_snapshot_date': pi_snapshot,
+                 'feature_set_version': fs_snapshot, 'seed': 42}
 
     # Train classifier
     print("  Training NN classifier...")
@@ -1873,18 +1896,21 @@ def load_or_train_xgb_models(engine, force_retrain=False):
     # regularization profile to RF's (max_depth=5, min_samples_leaf=20). Boosting compounds
     # capacity over rounds, so we go shallower than RF. learning_rate=0.1 is the sklearn-API
     # default and works well at this dataset size.
+    fs_snapshot = _feature_set_version_snapshot(engine)
     xgb_clf_hp = {'n_estimators': 200, 'max_depth': 4, 'learning_rate': 0.1,
                   'min_child_weight': 10, 'subsample': 0.8, 'colsample_bytree': 0.8,
                   'reg_lambda': 1.0, 'random_state': 42, 'eval_metric': 'logloss',
-                  'class': 'XGBClassifier', 'player_impact_snapshot_date': pi_snapshot}
+                  'class': 'XGBClassifier', 'player_impact_snapshot_date': pi_snapshot,
+                  'feature_set_version': fs_snapshot}
     xgb_reg_hp = {'n_estimators': 200, 'max_depth': 4, 'learning_rate': 0.1,
                   'min_child_weight': 10, 'subsample': 0.8, 'colsample_bytree': 0.8,
                   'reg_lambda': 1.0, 'random_state': 42,
-                  'class': 'XGBRegressor', 'player_impact_snapshot_date': pi_snapshot}
+                  'class': 'XGBRegressor', 'player_impact_snapshot_date': pi_snapshot,
+                  'feature_set_version': fs_snapshot}
 
     print("  Training XGB classifier...")
     clf = xgb.XGBClassifier(**{k: v for k, v in xgb_clf_hp.items()
-                                if k not in ('class', 'player_impact_snapshot_date')},
+                                if k not in _HP_METADATA_KEYS},
                             n_jobs=-1, verbosity=0)
     clf.fit(X_train, y_clf_train)
     clf_prob = clf.predict_proba(X_test)[:, 1]
@@ -1904,7 +1930,7 @@ def load_or_train_xgb_models(engine, force_retrain=False):
 
     print("  Training XGB regressor...")
     reg = xgb.XGBRegressor(**{k: v for k, v in xgb_reg_hp.items()
-                              if k not in ('class', 'player_impact_snapshot_date')},
+                              if k not in _HP_METADATA_KEYS},
                            n_jobs=-1, verbosity=0)
     reg.fit(X_train, y_reg_train)
     reg_pred = reg.predict(X_test)
@@ -1919,11 +1945,11 @@ def load_or_train_xgb_models(engine, force_retrain=False):
     # Retrain on full data for production
     print("\n  Retraining on full dataset for production...")
     clf = xgb.XGBClassifier(**{k: v for k, v in xgb_clf_hp.items()
-                                if k not in ('class', 'player_impact_snapshot_date')},
+                                if k not in _HP_METADATA_KEYS},
                             n_jobs=-1, verbosity=0)
     clf.fit(X_scaled, y_clf)
     reg = xgb.XGBRegressor(**{k: v for k, v in xgb_reg_hp.items()
-                              if k not in ('class', 'player_impact_snapshot_date')},
+                              if k not in _HP_METADATA_KEYS},
                            n_jobs=-1, verbosity=0)
     reg.fit(X_scaled, y_reg)
 

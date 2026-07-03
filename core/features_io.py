@@ -35,6 +35,7 @@ from typing import Optional
 
 FEATURES_TABLE = 'features'
 CURRENT_POINTER_TABLE = 'feature_set_current'
+VERSIONS_TABLE = 'feature_set_versions'
 
 
 def make_version() -> str:
@@ -129,18 +130,41 @@ def _add_missing_columns(engine, df: pd.DataFrame):
 # Writer
 # ---------------------------------------------------------------------------
 
+def _ensure_versions_table(engine) -> None:
+    """Create the per-version metadata table if it doesn't exist.
+
+    One row per snapshot: what changed (human-written description) and shape
+    stats. This is what turns opaque timestamp tags into an experiment log —
+    and what a model-registry row's ``feature_set_version`` joins against.
+    """
+    with engine.begin() as conn:
+        conn.execute(sql.text(
+            f"CREATE TABLE IF NOT EXISTS {VERSIONS_TABLE} ("
+            "  feature_set_version VARCHAR(40) NOT NULL,"
+            "  description TEXT NULL,"
+            "  n_games INT NULL,"
+            "  n_columns INT NULL,"
+            "  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+            "  PRIMARY KEY (feature_set_version)"
+            ")"
+        ))
+
+
 def write_features(
     df: pd.DataFrame,
     engine,
     version: Optional[str] = None,
     set_current: bool = True,
     chunksize: int = 200,
+    description: Optional[str] = None,
 ) -> str:
     """Insert a snapshot of ``df`` under a new ``feature_set_version`` tag.
 
     Returns the version string used. If ``set_current`` is true (default),
     updates the singleton pointer row so subsequent ``load_features`` calls
-    see the new snapshot.
+    see the new snapshot. ``description`` (recommended!) records WHAT changed
+    in this snapshot — e.g. "E9 on, dropped L5 fatigue cols" — in the
+    ``feature_set_versions`` metadata table.
 
     The DataFrame must have a ``GAME_ID`` column and must not already carry a
     ``feature_set_version`` column (that's set by this function).
@@ -178,6 +202,18 @@ def write_features(
             conn.execute(sql.text(
                 f"REPLACE INTO {CURRENT_POINTER_TABLE} (id, version) VALUES (1, :v)"
             ), {'v': version})
+
+    # Metadata row: description + shape. Written even without a description so
+    # every version at least has created_at and counts on record.
+    _ensure_versions_table(engine)
+    with engine.begin() as conn:
+        conn.execute(sql.text(
+            f"REPLACE INTO {VERSIONS_TABLE} "
+            "(feature_set_version, description, n_games, n_columns) "
+            "VALUES (:v, :d, :n, :c)"
+        ), {'v': version, 'd': description,
+            'n': int(df_to_write['GAME_ID'].nunique()),
+            'c': int(len(df.columns))})
 
     return version
 

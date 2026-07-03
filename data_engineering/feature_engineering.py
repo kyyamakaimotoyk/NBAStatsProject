@@ -1845,6 +1845,10 @@ if __name__ == '__main__':
                             'Use for ablation CSVs that should not promote to current.')
     parser.add_argument('--db-version', type=str, default=None,
                        help='Override the feature_set_version tag (default: UTC timestamp).')
+    parser.add_argument('--db-description', type=str, default=None,
+                       help='What changed in this snapshot, recorded in feature_set_versions '
+                            '(e.g. "E9 on, added shot-quality cols"). Strongly recommended '
+                            'for any run that is not a routine refresh.')
     parser.add_argument('--no-set-current', action='store_true',
                        help='Write to DB but do not promote the new version to feature_set_current. '
                             'Useful for ablation snapshots that should not displace production.')
@@ -1919,6 +1923,7 @@ if __name__ == '__main__':
                 ml_df, engine,
                 version=args.db_version,
                 set_current=not args.no_set_current,
+                description=args.db_description,
             )
             promoted = "promoted to current" if not args.no_set_current else "NOT promoted"
             print(f"Dataset also written to features table: version={version} ({promoted})")

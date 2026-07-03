@@ -22,6 +22,7 @@ const WINDOWS = [
   { label: "90 days", days: 90 },
   { label: "180 days", days: 180 },
   { label: "Full season", days: 365 },
+  { label: "3 seasons", days: 1100 },
 ];
 
 export default function PerformancePage() {

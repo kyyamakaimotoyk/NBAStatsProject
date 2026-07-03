@@ -20,6 +20,7 @@ const WINDOWS = [
   { days: 30, label: "Last 30 days" },
   { days: 90, label: "Last 90 days" },
   { days: 365, label: "Last 12 months" },
+  { days: 1100, label: "Three seasons" },
 ];
 
 export default function AccuracyPage() {

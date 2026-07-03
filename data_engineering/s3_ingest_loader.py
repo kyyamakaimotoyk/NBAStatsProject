@@ -67,6 +67,15 @@ def _load_table(engine, table: str, df: pd.DataFrame, meta: dict) -> None:
                 conn.execute(sa.text(
                     f"DELETE FROM `{table}` WHERE `{meta['date_col']}` >= :c"),
                     {"c": meta["cutoff"]})
+            elif mode == "version_window":
+                # Walk-forward research rows (Phase B/C): replace only rows whose
+                # version matches the prefix (e.g. model_version LIKE 'wf_%').
+                # Live rows never match, so re-ships are idempotent and the live
+                # record is untouchable by construction.
+                vcol = meta["version_col"]
+                conn.execute(sa.text(
+                    f"DELETE FROM `{table}` WHERE `{vcol}` LIKE :p"),
+                    {"p": meta["version_prefix"] + "%"})
             elif mode == "replace":
                 conn.execute(sa.text(f"DELETE FROM `{table}`"))
             else:

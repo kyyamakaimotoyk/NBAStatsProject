@@ -99,7 +99,7 @@ def predictions_by_date(
 
 @app.get("/api/performance/results", response_model=PerformanceResultsResponse, tags=["performance"])
 def performance_results(
-    days: int = Query(default=90, ge=1, le=365),
+    days: int = Query(default=90, ge=1, le=1100),  # 1100 = three seasons (wf_ backfill)
     model: Optional[str] = Query(default=None),
 ):
     """Predicted-vs-actual rows over the last N days of completed games. The public
@@ -157,7 +157,7 @@ def explore_margin_corr(
 
 @app.get("/api/accuracy/summary", response_model=AccuracySummaryResponse, tags=["accuracy"])
 def accuracy_summary(
-    days: int = Query(default=30, ge=1, le=365),
+    days: int = Query(default=30, ge=1, le=1100),
     model: Optional[str] = Query(default=None),
 ):
     """Aggregate accuracy over the last N days of completed games, per model."""
@@ -168,7 +168,7 @@ def accuracy_summary(
 
 @app.get("/api/accuracy/rolling", response_model=RollingResponse, tags=["accuracy"])
 def accuracy_rolling(
-    days: int = Query(default=90, ge=1, le=365),
+    days: int = Query(default=90, ge=1, le=1100),
     model: Optional[str] = Query(default=None),
 ):
     """Per-day accuracy + MAE timeseries for the historical-accuracy chart."""

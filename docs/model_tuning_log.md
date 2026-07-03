@@ -34,6 +34,8 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **E17** | **Playoff series-context features (Track A)** | E16 showed a non-significant ~3-4pp gap to Vegas on playoffs. Series state (game-in-series, score, elimination, HCA, in-series h2h) is the playoff structure Vegas prices and our model is blind to — the one principled shot at the gap. | `data_engineering/series_context.py` builds 8 features from prior games in each series (no leakage) → `playoff_series_context` table → joined at build. `experiments/e17_series_eval.py`: train on ALL games incl prior playoffs before each test season's playoffs (series features need playoffs in train to be learnable), paired with-vs-without on 316 playoff games (2023-26), 5 seeds + McNemar/paired-t/bootstrap-AUC. | **No significant gain.** RF ΔAUC −0.014 (CI cross 0), McNemar p=0.33; XGB ΔAUC +0.007, McNemar p=0.89 (26/26 net), MAE flat-to-worse. Vegas still 0.647 on same games — gap didn't close. Confirms E16: playoffs near-irreducible. | **DROPPED from production 2026-05-19** (`ENABLE_SERIES_DEFAULT=False`); build code/table retained for re-eval as playoff data grows. |
 | **E16** | **Playoff ceiling check (model vs Vegas)** | E15 showed model playoff AUC ~0.64. Is that near the irreducible ceiling, or missing signal? Compare to Vegas closing line on the same games. | `experiments/e16_playoff_ceiling.py`: per-season temporal train (as E15), predict on playoff games, restrict to the 337/403 with a Vegas line, head-to-head model vs Vegas (favorite=home if spread<0; AUC score=−home_spread; margin=−home_spread). Bootstrap model−Vegas deltas. | **Vegas itself only gets AUC 0.648 / acc 0.647 / MAE 11.78 on playoffs** → ceiling is ~0.65, not 0.79; playoffs are irreducibly hard. Model (RF 0.614/0.620/12.01, XGB 0.607/0.611/12.15) trails Vegas by ~3-4pp AUC but **every delta CI crosses zero** — within noise of the market. | **Diagnostic 2026-05-19** — revised playoff plan: cap investment; Track A (series features) optional one-shot at the residual gap; Tracks B-E shelved. docs/playoff_improvement_plan.md. |
 | **E15** | **Cross-context generalization** — Phase 1 | (a) How much data is needed (learning curve)? (b) Can a regular-season model be trusted in the playoffs? Uses E13/E14 coverage+ECE as the cross-context lens. | `experiments/e15_cross_context.py` two modes. **Learning curve**: fix test=W5, vary train-start (0.5-4 seasons), 5 seeds. **Regime**: per-season temporal train on regular games before each season's playoffs, pool ~400 playoff test games; compare regular(control)/playin/playoffs on acc/AUC/MAE/ECE/coverage + KS feature-shift. Write-up: docs/e15_cross_context_report.md. | **Learning curve flat past ~1 season** (1k→4.5k games buys ~0 acc/MAE) → don't chase more history. **Playoffs**: winner-prediction degrades hard (RF acc 0.713→0.635, AUC 0.790→**0.637**; XGB similar) — playoffs are a harder, ELO-compressed, slower-pace subset (KS DIFF_ELO p=0.029). **But intervals/calibration transfer**: playoff cov90≈0.88-0.90, ECE stays low. Coverage-as-diagnostic worked: spread is similar (bands hold) but winner is less predictable (AUC craters). Play-in n=30 too small to trust. | **Diagnostic, no model change 2026-05-19** — recommendations: set playoff expectations ~63% not ~71%; trust intervals in playoffs; future playoff-specific features. |
+| **E19** | **Season-end audit + lineage-tracked retrain** | User-surfaced (2026-07-03): RF picks home ~97% of the time; a 64.6-pt margin showed on the public site; XGB has no season predictions. Full current-state audit before further development. | Read-only audit of `model_predictions` (2025-26 season, local + RDS via API), registry, feature snapshots. Then: feature rebuild through the Finals (first `--db-description`-tagged snapshot), retrain all 3 models (first registry rows carrying `feature_set_version` lineage), validate. See §E19 below. | **Audit**: (1) RF live acc 0.583 vs test 0.742 — the E13 isotonic layer maps ~97% of games above 0.5 (reliability bin 0.7 → only 40% real home wins) and FLIPS correct raw picks (2026-06-13: raw 0.449→cal 0.604); when RF does pick away it's 79.4% correct. (2) The 64.6-pt margin exists only on RDS — cloud NN fed degenerate rolling stats (no June boxscores on RDS pre-handoff); local NN on same game: −3.1, correct. (3) XGB: zero season rows — backfills used `--model both` (pre-dates xgb) + `backfill_actuals` hardcoded rf/nn (fixed 2026-07-02). (4) Prod models trained through 2026-03-05 only, on a 1043-game Nov→Apr snapshot. **Retrain**: new snapshot `20260703T022649Z` (1,234 games through the Finals) + first lineage-carrying registry rows (`*_20260703`). New playoff-heavy holdout (Mar 24–Jun 13): RF 0.729/0.785 AUC — expected E15 regime shift, not regression. NOT promoted to prod — E20 (calibration) retrains again first. Validate-stage gap found: it ignores `data_through_date` (in-sample windows accepted). | **Baseline established 2026-07-03** |
+| **E20** | **Calibration protocol A/B + pick-policy decision + degeneracy guard** | E19 found the E13 calibrator collapsing RF into 97% home picks live and flipping correct raw picks. Hypothesis: K-fold OOF isotonic (more calibration data, production-config fit) fixes it. | `experiments/e20_calibration.py`: raw vs eval-slice isotonic (faithful production mirror incl. the fit-on-eval/apply-to-full subtlety) vs 5-fold OOF isotonic; W5 test window; RF/XGB 10 seeds, NN 5; ECE/Brier/AUC/acc/home-pick-share + disagreement-game win rates. | **Hypothesis partly REJECTED**: OOF best for RF display-ECE (10/10 seeds beat raw) but not significantly better than eval-slice (5/10) and WORSE than raw for XGB (0/10) → not shipped. Live pathology did NOT reproduce with a fresh calibrator (home share ~0.60, not 0.97) → root cause = STALE calibrator + no guard, not the protocol. Pick policy: fresh-cal picks ≈ raw (RF −1pp, XGB +0.6pp, NN +0.9pp). **Shipped**: keep eval-slice isotonic; pick stays calibrated-derived BUT bundles now carry a train-time **degeneracy guard** (eval-slice home-pick shift > 10pp → `calibrator_trusted=False` → picks auto-fall back to RAW + "ERROR: CALIBRATOR_DEGENERATE" line that the pipeline alarm emails on). | **Implemented 2026-07-03** |
 | **E18** | **Calibration audit + logging fix + leakage guard** | User-surfaced bug: Game Predictions tab showed NYK winner for CLE@NYK 2026-05-25 while Model Evaluation tab showed CLE pick logged — same model, same game, different pick. Root cause: dashboard reads E13 isotonic-calibrated classifier; the logging path in `predict_games.py` still derived `predicted_winner` from the **regressor margin sign** (`result['win_prob']` = `np.mean(margin_samples > 0)`), an older signal that pre-dates E13. Two-headed model → two different picks near the boundary. Also surfaced: bundle metadata stored no `data_through_date`, so the backfill loop happily predicted for dates within the training window with no warning. | (1) Logging now uses calibrated classifier: `p_cal = result['win_prob_classifier']`; `predicted_winner = home if p_cal > 0.5 else away`. (2) New `home_win_probability_raw` column added via idempotent migration in `prediction_tracker.ensure_table_exists`; the pre-isotonic prob is logged alongside the calibrated one. NN/NN-embed have no isotonic wrapper → raw == calibrated. (3) Bundle metadata gains `train_start_date / train_end_date / eval_start_date / eval_end_date / data_through_date` (the latest GAME_DATE the production model saw). (4) Backfill loop in `predict_games.py` gates on `data_through_date`: dates ≤ that are skipped with a loud message; `--allow-leakage` overrides. (5) Model Evaluation per-game table now shows **Win% raw** + **Win% cal** side-by-side; for legacy rows raw is NULL. | Data fix only (no model retrain). Game Predictions and Model Evaluation now read the same field. Backfill predictions on training-window dates are refused by default — past metrics on those rows were optimistic by an unmeasured amount. **A/B comparison columns ready**: re-run `predict_games.py --start-date X --end-date Y --no-shap --no-plot` for `X > data_through_date` to populate `home_win_probability_raw` and start the raw-vs-calibrated comparison. | **Implemented 2026-05-26** — see "Calibration audit & leakage guard" section below. |
 
 ---
@@ -548,6 +550,219 @@ For each `_L5`/`_L10` team stat, add a variant: `team_stat - rolling_avg(opponen
 
 ### NEW: E11 — Add LeagueDashLineups for 5-man synergy features
 After E8/E9 baseline is established. Agent 3 #1.
+
+---
+
+## 2026-07-03 — Experiment 19: Season-end audit + lineage-tracked retrain
+
+### Why this experiment exists
+Three user-surfaced symptoms after the 2025-26 season wrapped: (1) RF almost never picks
+the away team; (2) the public site showed a 64.6-point predicted margin for the 2026-06-13
+Finals game; (3) XGBoost has almost no predictions despite being wired up since E3/E8.
+Before any further development, audit the current state end-to-end, then establish a clean
+season-end baseline: features through the Finals, retrain, validate — the first retrain to
+record `feature_set_version` lineage in the registry (shipped 2026-07-03).
+
+### Audit findings (2025-26 season, graded predictions)
+
+| | RF | NN | XGB |
+|---|---|---|---|
+| Season predictions (local) | 1,131 graded | 1,117 graded | **0** |
+| Live accuracy | **0.583** | 0.657 | — |
+| Registry test accuracy (Mar-Apr holdout) | 0.742 / AUC 0.804 | 0.708 | 0.727 |
+| Home-pick share | **97%** (1103 vs 35) | 70.5% (793 vs 331) | — |
+| Accuracy when picking away | **0.794** | 0.653 | — |
+| Season max \|predicted margin\| | 21.1 | 24.2 | — |
+
+Actual home-win base rate: **0.554** (832 games).
+
+**Finding 1 — RF's home-pick collapse is the E13 calibration layer, not the trees.**
+The isotonic map (fit on a ~209-game Mar-Apr eval holdout, applied to the full-data
+production model — the step-7 subtlety flagged in E18) now pushes ~97% of calibrated
+probabilities above 0.5. Live reliability is badly off: calibrated bin 0.7 → only **40%**
+observed home wins; bin 0.8 → 55%. It actively flips correct picks: on 2026-06-13, RF raw
+p(home)=0.449 (pick NYK — the eventual winner) was calibrated to 0.604 → picked SAS,
+wrong. The 21pp gap between "when RF picks away" (79.4% right) and "when it picks home"
+(57.6%) says the underlying signal is fine and the decision threshold is what's broken.
+NN (no calibrator) shows the opposite pathology: overconfident tails (349 rows at p≥0.9+
+that win only ~76%; 114 rows at p<0.1 that still win 18%).
+
+**Finding 2 — the 64.6-pt margin is a cloud-data artifact, not a modeling failure.**
+RDS's row for 2026-06-13 (served by the public API): NN margin −64.6, p(home)=0.996,
+margin_uncertainty 153.7 — classifier and regressor contradicting each other by ~130
+points. Cause: the cloud predictions ran when RDS was missing weeks of boxscores
+(stats.nba.com blocks AWS; the ingest handoff didn't exist yet), so
+`get_team_rolling_stats` fed the NN degenerate inputs and an unbounded MLP extrapolated.
+Bounded tree models on the SAME inputs stayed sane (RF 0.9, XGB −1.2). The local NN, on
+complete data, predicted the same game at −3.1 — correct pick. Structural fix already
+shipped (2026-07-02): home ingest → S3 → nightly load + freshness alarm. Residual gap:
+nothing *at the model layer* refuses to emit a physically absurd margin — see E21 (next).
+
+**Finding 3 — XGB never ran.** Season backfills used `--model both` (a choice that
+pre-dates xgb), and `backfill_actuals` hardcoded `['rf','nn']` so even the few cloud xgb
+rows were never graded (fixed 2026-07-02, now derived from MODEL_TYPES). E12 measured XGB
+as the best-or-tied model (W5 0.774 acc, best MAE 11.57). The strongest model sat out the
+season. Nightly now predicts and grades all three.
+
+**Finding 4 — prod models were stale and narrow.** Current registry rows (20260527_2):
+trained on 834 games, 2025-11-01 → 2026-03-05, holdout through ~Apr 1. Nothing after
+March 5 was ever trained on; the feature snapshot (both `20260529T*` versions — near-dup
+twins from migration day) ends 2026-04-01.
+
+**Also confirmed in the audit:** injury/availability and player-impact features ARE in
+production (64 SLOT_* columns incl. `*_AVAILABLE` (E7) and `*_IMPACT` (player projection
+slots)); ELO is in (E9, 5 columns); OPP_ADJ/LINEUP correctly absent (E10/E11 dropped).
+Historical pregame injury data ends 2026-05-13 — May-June feature rows fall back to
+non-pregame availability (refresh scraper pre-season).
+
+### Retrain methodology
+`feature_engineering.py --start-date 2025-11-01 --end-date 2026-06-30` (full season incl.
+playoffs/Finals, ~1,250 games; first snapshot with a `--db-description`), then force-
+retrain RF/XGB/NN (first registry rows with `feature_set_version` in hyperparameters
+JSON), then `validate_models.py --days 60`. Temporal 80/20 eval split means the
+calibrator/conformal holdout is now the season's final ~20% (Apr-Jun, playoff-heavy) —
+fresher than before but see E15's playoff-shift caveat.
+
+### Results
+
+**Lineage works.** All six `*_20260703` registry rows carry
+`feature_set_version = 20260703T022649Z` in the hyperparameters JSON, joining to a
+described row in `feature_set_versions`. First fully-traceable models.
+
+**New snapshot**: `20260703T022649Z`, 1,234 games (2025-11-01 → 2026-06-13, the full
+season incl. playoffs/Finals), promoted to current.
+
+**Holdout metrics — read with care, the exam changed.** Temporal 80/20 puts the new
+test window at **2026-03-24 → 2026-06-13 (247 games: late regular season + play-in +
+playoffs + Finals)** vs the old holdout's regular-season Mar 5–Apr 1:
+
+| model | old holdout (regular) | new holdout (playoff-heavy) | Δ |
+|---|---|---|---|
+| RF  | 0.742 acc / 0.804 AUC / 11.38 MAE | 0.729 / 0.785 / 12.60 | −1.3pp acc |
+| XGB | 0.727 / 0.780 / 11.83 | **0.660** / 0.747 / 13.05 | **−6.7pp acc** |
+| NN  | 0.708 / 0.770 / 12.04 | 0.692 / 0.770 / 13.14 | −1.6pp acc |
+
+Per E15/E16 this is the expected regime shift, not a training failure — playoffs are
+near-irreducible (Vegas itself: 0.647 acc there), so a playoff-heavy holdout *should*
+score lower. RF holding 0.729 on that window is consistent-to-good. XGB's
+disproportionate drop echoes E15's finding that playoff shift hits it hardest — worth a
+look during E20, but not alarming on n=247.
+
+**Validate-stage caveat discovered**: `validate_models.py --days 60` ran over
+2026-04-14 → 2026-06-13 — which now lies INSIDE the new models' training window, so its
+numbers (RF 76.9%/0.824 AUC/10.98 MAE, n=91) are in-sample-inflated. The stage predates
+the E18 `data_through_date` metadata and doesn't check it. **Follow-up: teach
+`validate_models.py` to refuse (or at least loudly flag) windows overlapping
+`data_through_date`** — same guard the backfill loop got in E18. Even in-sample, NN's
+validation calibration_error of 0.439 (RF 0.338) restates the E20 case.
+
+**Promotion decision: NOT promoted to prod.** These bundles live in the local registry/
+`models/bundles` only; prod (S3) still serves `20260527_2`. Rationale: E20 (calibration
+overhaul) retrains again anyway; it's the offseason so prod predictions are idle; one
+promotion after E20 beats two. The public site keeps its current behavior until then.
+
+### Decision / Next
+- **E20 (next): calibration overhaul.** The isotonic-on-tiny-eval-slice protocol is the
+  biggest live-accuracy leak (RF −16pp vs holdout). Plan: K-fold out-of-fold calibration
+  on the full training set (fit isotonic on pooled OOF probabilities of the production
+  config), measure ECE + pick-flip-rate + McNemar raw-vs-cal picks on held-out games;
+  also decide whether the *pick* should use raw p with calibrated p for display only.
+- **E21: margin sanity guard.** Log-time guard in the predict path: if
+  \|predicted_margin\| > ~35 or classifier/regressor disagree by an absurd delta, log a
+  WARNING (CloudWatch ERROR-filter picks it up), clamp the public-facing margin, and mark
+  the row. Also extend E14 conformal wrapping to the NN regressor (currently RF/XGB only —
+  the NN is exactly the model that needed it).
+- **Cadence** (proposed, see session notes): nightly predict/grade (shipped); weekly
+  in-season retrain+validate as a scheduled Fargate run (all stages are DB-only post-
+  egress-fix, so cloud-safe); full rebuild at season boundaries; freshness alarm already
+  guards the data side.
+
+---
+
+## 2026-07-03 — Experiment 20: Calibration protocol A/B, pick policy, degeneracy guard
+
+### Why
+E19 indicted the E13 calibration layer: live, it pushed ~97% of RF picks to home and
+flipped correct raw picks. Two suspects: (a) the tiny (~200-game) eval-slice fit set +
+the fit-on-eval-model/apply-to-production subtlety; (b) staleness — one calibrator fit
+in May, drifting unguarded. Hypothesis: 5-fold out-of-fold isotonic (≈5× the fit data,
+production-config fold models) beats the eval-slice protocol.
+
+### Method
+`experiments/e20_calibration.py` — three protocols per (model, seed), all trained
+strictly before the frozen W5 window (train n=917, test n=230, home rate 0.591):
+`raw`; `eval_slice` (mirrors production EXACTLY, including applying the eval-fit map to
+the full-data model's probs); `oof` (pooled 5-fold OOF probs → isotonic → applied to the
+full-data model). RF/XGB × 10 seeds, NN × 5 (first time NN was calibration-tested).
+Metrics: ECE, Brier, AUC, acc@0.5, home-pick share, and raw-vs-calibrated pick
+disagreements with per-seed consistency (E12 discipline).
+
+### Results (mean over seeds)
+
+| protocol | RF acc/ECE | XGB acc/ECE | NN acc/ECE |
+|---|---|---|---|
+| raw | **0.767** / 0.128 | 0.730 / 0.099 | 0.719 / 0.109 |
+| eval_slice | 0.757 / 0.098 | **0.736** / **0.071** | 0.728 / 0.109 |
+| oof | 0.753 / **0.091** | 0.720 / 0.110 | 0.729 / 0.114 |
+
+Disagreement games (pick flips vs raw, pooled): RF — raw wins 81–57 (eval) and 85–52
+(oof); XGB — cal wins 88–74; NN — cal wins 53–43.
+
+**OOF: rejected.** Best RF display-calibration (beats raw ECE 10/10 seeds) but the edge
+over eval_slice is noise (5/10), and for XGB it's *worse than raw* (0/10 seeds beat
+eval_slice; ECE 0.110 vs raw 0.099) — likely because fold models (80% data, subsampled
+XGB) produce a systematically different probability distribution than the full-data
+model the map is applied to. A clean negative result; keeping the eval-slice protocol.
+
+**The live pathology did not reproduce** with a freshly-fit eval-slice calibrator
+(home-pick share ~0.60, not 0.97). Verdict on root cause: **staleness without a guard**,
+not the protocol itself. The May calibrator was fit once on a weird window and nothing
+ever checked it again.
+
+**Pick policy**: with a fresh calibrator the choice is ~a wash (RF −1pp from calibrated
+picks, XGB +0.6pp, NN +0.9pp; net ≈ 0). Calibrated-derived picks keep the site coherent
+(pick always agrees with the displayed probability — the E18 incident showed users
+correctly read pick/prob mismatch as a bug), so picks stay calibrated-derived.
+
+### Shipped
+1. **Train-time degeneracy guard** (`_calibrator_pick_shift`, threshold ±10pp on the
+   eval slice): a calibrator that moves the home-pick share too far is stored with
+   `calibrator_trusted=False` and logs `ERROR: CALIBRATOR_DEGENERATE ...` — which the
+   pipeline log alarm emails. Old bundles default to trusted (unchanged behavior).
+2. **Guard-aware picks everywhere**: `_derive_pick_probability(result)` — calibrated
+   normally, RAW when the bundle is flagged — used by all three `predict_games.py` log
+   sites and `batch_predict_today._predict_and_log_one`.
+3. Retrained on the E19 snapshot so production bundles carry the guard verdict (and a
+   calibrator fit on the fresher Apr–Jun holdout). **The guard fired on its first real
+   run**: XGB's fresh calibrator shifted home-pick share by **+0.142** on the playoff-
+   heavy eval slice → flagged degenerate → XGB picks derive from raw until a future
+   retrain produces a sane map. RF passed (+0.049, trusted). Exactly the E19 pathology,
+   caught at train time instead of discovered in production weeks later.
+
+### Live confirmation (added same day, user-prompted)
+The E18 raw-probability log (186 graded rows/model, games 2026-04-02 → 2026-06-13 —
+everything predicted after the column landed) allows the raw-vs-calibrated A/B on REAL
+games: RF raw picks **0.699** vs calibrated picks **0.645** (−5.4pp live cost), 42/186
+picks flipped by the stale calibrator, raw winning the flips **26–16**; home-pick share
+raw 0.72 → calibrated **0.94**. That +22pp live shift is >2× the guard threshold — the
+tripwire would have caught the actual incident. These same 186 pairs are enough to
+PILOT online recalibration (refit weekly on trailing live raw probs — the most
+distribution-matched fit data possible); certification needs next season's volume.
+
+### Residuals / honest caveats
+- The guard is a tripwire, not a cure: a calibrator can be subtly bad without crossing
+  ±10pp. The real protection is the **weekly retrain cadence** keeping the map fresh —
+  the guard exists for the week something goes wrong. The ±10pp value itself is a
+  heuristic (healthy fits observed ≤5pp, degenerate ones ≥14pp); E21's multi-season
+  backtest should replace it with an empirically-derived tail threshold.
+- NN still has no calibrator (E20 showed no ECE benefit on this window from either
+  protocol; its overconfident tails were an E19 *live* observation — revisit with
+  next season's data).
+- Per-model pick policies (raw for RF) would squeeze ~1pp more but were declined for
+  operational simplicity; the harness is rerunnable if that call should be revisited.
+- Promotion to prod (S3 bundles) + the weekly retrain schedule are the next
+  infrastructure step — note the cloud's `features` table is still the April snapshot;
+  the weekly job must run the features stage cloud-side (all inputs are in RDS now).
 
 ---
 

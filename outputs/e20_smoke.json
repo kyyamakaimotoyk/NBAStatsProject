@@ -1,0 +1,136 @@
+{
+  "csv": "nba_ml_features.csv",
+  "test_start": "2026-03-15",
+  "test_end": "2026-04-15",
+  "n_train": 917,
+  "n_test": 230,
+  "home_rate_test": 0.591304347826087,
+  "run_at": "2026-07-03T11:59:52",
+  "models": {
+    "RF": {
+      "per_seed": [
+        {
+          "seed": 42,
+          "raw": {
+            "ece": 0.12300108858350983,
+            "brier": 0.1748762360544333,
+            "auc": 0.8320556946182729,
+            "acc": 0.7739130434782608,
+            "home_pick_share": 0.5826086956521739
+          },
+          "eval_slice": {
+            "ece": 0.09216935366889792,
+            "brier": 0.1688158467348127,
+            "auc": 0.8207525031289111,
+            "acc": 0.7652173913043478,
+            "home_pick_share": 0.6434782608695652
+          },
+          "oof": {
+            "ece": 0.0973739142696978,
+            "brier": 0.16909879031424813,
+            "auc": 0.8312343554443054,
+            "acc": 0.7739130434782608,
+            "home_pick_share": 0.5826086956521739
+          },
+          "flips_eval": {
+            "n_flips": 14,
+            "raw_wins": 8,
+            "cal_wins": 6
+          },
+          "flips_oof": {
+            "n_flips": 0,
+            "raw_wins": 0,
+            "cal_wins": 0
+          }
+        }
+      ],
+      "aggregate": {
+        "raw": {
+          "ece": {
+            "mean": 0.12300108858350983,
+            "std": 0.0
+          },
+          "brier": {
+            "mean": 0.1748762360544333,
+            "std": 0.0
+          },
+          "auc": {
+            "mean": 0.8320556946182729,
+            "std": 0.0
+          },
+          "acc": {
+            "mean": 0.7739130434782608,
+            "std": 0.0
+          },
+          "home_pick_share": {
+            "mean": 0.5826086956521739,
+            "std": 0.0
+          }
+        },
+        "eval_slice": {
+          "ece": {
+            "mean": 0.09216935366889792,
+            "std": 0.0
+          },
+          "brier": {
+            "mean": 0.1688158467348127,
+            "std": 0.0
+          },
+          "auc": {
+            "mean": 0.8207525031289111,
+            "std": 0.0
+          },
+          "acc": {
+            "mean": 0.7652173913043478,
+            "std": 0.0
+          },
+          "home_pick_share": {
+            "mean": 0.6434782608695652,
+            "std": 0.0
+          }
+        },
+        "oof": {
+          "ece": {
+            "mean": 0.0973739142696978,
+            "std": 0.0
+          },
+          "brier": {
+            "mean": 0.16909879031424813,
+            "std": 0.0
+          },
+          "auc": {
+            "mean": 0.8312343554443054,
+            "std": 0.0
+          },
+          "acc": {
+            "mean": 0.7739130434782608,
+            "std": 0.0
+          },
+          "home_pick_share": {
+            "mean": 0.5826086956521739,
+            "std": 0.0
+          }
+        }
+      },
+      "consistency": {
+        "oof_beats_raw_ece": 1,
+        "oof_beats_eval_ece": 0,
+        "oof_acc_ge_raw": 1,
+        "eval_acc_ge_raw": 0
+      },
+      "flips": {
+        "flips_eval": {
+          "n": 14,
+          "raw_wins": 8,
+          "cal_wins": 6
+        },
+        "flips_oof": {
+          "n": 0,
+          "raw_wins": 0,
+          "cal_wins": 0
+        }
+      },
+      "n_seeds": 1
+    }
+  }
+}

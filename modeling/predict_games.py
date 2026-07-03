@@ -198,9 +198,14 @@ class IsotonicCalibratedClassifier:
     probability at 0.5.
     """
 
-    def __init__(self, base_estimator, calibrator: IsotonicRegression):
+    def __init__(self, base_estimator, calibrator: IsotonicRegression, trusted: bool = True):
         self._base = base_estimator
         self._calibrator = calibrator
+        # E20 degeneracy guard verdict: False = calibration moved the pick
+        # threshold too far on the eval slice; picks fall back to the RAW
+        # probability (display stays calibrated). Old bundles lack this attr;
+        # callers use getattr(..., True) so they behave as before.
+        self.calibrator_trusted = bool(trusted)
         # Surface classes_ so sklearn-style consumers keep working
         self.classes_ = getattr(base_estimator, 'classes_', np.array([0, 1]))
 
@@ -233,6 +238,36 @@ def _fit_isotonic_calibrator(eval_probs, y_eval):
     iso = IsotonicRegression(out_of_bounds='clip')
     iso.fit(np.asarray(eval_probs, dtype=float), np.asarray(y_eval, dtype=float))
     return iso
+
+
+# E20 degeneracy guard: a healthy calibrator barely moves the pick threshold.
+# The 2025-26 live incident (RF picking home 97% of games, flipping correct raw
+# picks) came from a stale calibrator that mapped nearly every prob above 0.5.
+# We can't stop that at fit time with certainty, but we CAN measure how much the
+# calibrator moves the home-pick share on the eval slice and refuse to let a
+# degenerate map drive picks.
+_CALIBRATOR_MAX_PICK_SHIFT = 0.10
+
+
+def _calibrator_pick_shift(iso, eval_probs) -> float:
+    """How much does calibration move the home-pick share on the eval slice?"""
+    p = np.asarray(eval_probs, dtype=float)
+    return float(np.mean(iso.predict(p) > 0.5) - np.mean(p > 0.5))
+
+
+def _derive_pick_probability(result: dict) -> float:
+    """E20 pick policy: the probability that decides `predicted_winner`.
+
+    Calibrated by default (site UX stays coherent: pick always agrees with the
+    displayed probability). Falls back to the RAW classifier probability when
+    the bundle's train-time guard flagged the calibrator as degenerate.
+    """
+    p_cal = float(result.get('win_prob_classifier', result['win_prob']))
+    if not result.get('calibrator_trusted', True):
+        p_raw = result.get('win_prob_classifier_raw')
+        if p_raw is not None:
+            return float(p_raw)
+    return p_cal
 
 
 # ============================================================================
@@ -1462,8 +1497,16 @@ def load_or_train_rf_models(engine, force_retrain=False):
     # returns calibrated probabilities. AUC is unchanged (isotonic is monotonic);
     # ECE/Brier improve. See docs/e13_calibration_report.md.
     rf_calibrator = _fit_isotonic_calibrator(clf_prob, y_clf_test)
-    clf = IsotonicCalibratedClassifier(clf, rf_calibrator)
-    print("  RF classifier wrapped with isotonic calibrator (E13).")
+    _shift = _calibrator_pick_shift(rf_calibrator, clf_prob)
+    _trusted = abs(_shift) <= _CALIBRATOR_MAX_PICK_SHIFT
+    if not _trusted:
+        # "ERROR" is load-bearing: the pipeline log alarm emails on it.
+        # ASCII only: this can print to a cp932 Windows console.
+        print(f"ERROR: CALIBRATOR_DEGENERATE rf - calibration shifts home-pick "
+              f"share by {_shift:+.2f} on the eval slice; picks fall back to RAW.")
+    clf = IsotonicCalibratedClassifier(clf, rf_calibrator, trusted=_trusted)
+    print(f"  RF classifier wrapped with isotonic calibrator (E13; pick shift "
+          f"{_shift:+.3f}, trusted={_trusted}).")
 
     # E14 split-conformal: half-widths from the eval regressor's holdout residuals
     rf_halfwidths = _compute_conformal_halfwidths(reg_pred, y_reg_test)
@@ -1956,8 +1999,15 @@ def load_or_train_xgb_models(engine, force_retrain=False):
     # E13 isotonic calibration (same scheme as RF): fit on the eval clf's 20%
     # holdout predictions, wrap the production clf. See docs/e13_calibration_report.md.
     xgb_calibrator = _fit_isotonic_calibrator(clf_prob, y_clf_test)
-    clf = IsotonicCalibratedClassifier(clf, xgb_calibrator)
-    print("  XGB classifier wrapped with isotonic calibrator (E13).")
+    _shift = _calibrator_pick_shift(xgb_calibrator, clf_prob)
+    _trusted = abs(_shift) <= _CALIBRATOR_MAX_PICK_SHIFT
+    if not _trusted:
+        # ASCII only: this can print to a cp932 Windows console.
+        print(f"ERROR: CALIBRATOR_DEGENERATE xgb - calibration shifts home-pick "
+              f"share by {_shift:+.2f} on the eval slice; picks fall back to RAW.")
+    clf = IsotonicCalibratedClassifier(clf, xgb_calibrator, trusted=_trusted)
+    print(f"  XGB classifier wrapped with isotonic calibrator (E13; pick shift "
+          f"{_shift:+.3f}, trusted={_trusted}).")
 
     # E14 split-conformal intervals (same scheme as RF)
     xgb_halfwidths = _compute_conformal_halfwidths(reg_pred, y_reg_test)
@@ -2096,6 +2146,7 @@ def predict_with_xgb(clf, reg, scaler_tuple, feature_names, matchup_features: di
         'win_prob': win_prob,
         'win_prob_classifier': win_prob_classifier,
         'win_prob_classifier_raw': win_prob_classifier_raw,  # pre-isotonic
+        'calibrator_trusted': bool(getattr(clf, 'calibrator_trusted', True)),  # E20 guard
         'margin_mean': margin_mean,
         'margin_std': margin_std,
         'margin_samples': margin_samples,
@@ -2783,6 +2834,7 @@ def predict_with_rf(clf, reg, scaler_tuple, feature_names, matchup_features: dic
         'win_prob': win_prob,                        # PRIMARY: derived from margin samples
         'win_prob_classifier': win_prob_classifier,  # REFERENCE: from classifier (isotonic-calibrated)
         'win_prob_classifier_raw': win_prob_classifier_raw,  # E13 audit: pre-isotonic
+        'calibrator_trusted': bool(getattr(clf, 'calibrator_trusted', True)),  # E20 guard
         'margin_mean': margin_mean,
         'margin_std': margin_std,
         'margin_samples': tree_predictions,
@@ -4086,7 +4138,12 @@ def main():
                         # alongside for the dashboard's raw-vs-calibrated A/B view.
                         p_cal = float(result.get('win_prob_classifier', result['win_prob']))
                         p_raw = result.get('win_prob_classifier_raw')
-                        predicted_winner = home_team if p_cal > 0.5 else away_team
+                        # E20: pick derives from the guard-aware probability
+                        # (calibrated normally; raw if the calibrator was
+                        # flagged degenerate at train time).
+                        predicted_winner = (home_team
+                                            if _derive_pick_probability(result) > 0.5
+                                            else away_team)
                         log_prediction(
                             engine=engine,
                             game_id=game_id,
@@ -4122,7 +4179,12 @@ def main():
                     try:
                         p_cal = float(result.get('win_prob_classifier', result['win_prob']))
                         p_raw = result.get('win_prob_classifier_raw')
-                        predicted_winner = home_team if p_cal > 0.5 else away_team
+                        # E20: pick derives from the guard-aware probability
+                        # (calibrated normally; raw if the calibrator was
+                        # flagged degenerate at train time).
+                        predicted_winner = (home_team
+                                            if _derive_pick_probability(result) > 0.5
+                                            else away_team)
                         log_prediction(
                             engine=engine,
                             game_id=game_id,
@@ -4160,7 +4222,12 @@ def main():
                     try:
                         p_cal = float(result.get('win_prob_classifier', result['win_prob']))
                         p_raw = result.get('win_prob_classifier_raw')
-                        predicted_winner = home_team if p_cal > 0.5 else away_team
+                        # E20: pick derives from the guard-aware probability
+                        # (calibrated normally; raw if the calibrator was
+                        # flagged degenerate at train time).
+                        predicted_winner = (home_team
+                                            if _derive_pick_probability(result) > 0.5
+                                            else away_team)
                         log_prediction(
                             engine=engine,
                             game_id=game_id,

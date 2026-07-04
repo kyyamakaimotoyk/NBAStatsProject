@@ -29,6 +29,9 @@ class Prediction(BaseModel):
     # The betting market's closing-line implied home margin — a public benchmark,
     # not model output. Populated by /api/performance/results; null elsewhere.
     market_margin: Optional[float] = None
+    # Final score from game_list (null until the game is final).
+    home_score: Optional[int] = None
+    away_score: Optional[int] = None
 
 
 class PredictionsResponse(BaseModel):

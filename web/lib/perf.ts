@@ -11,6 +11,15 @@ export const MODEL_LABELS: Record<string, string> = {
 
 const homeWon = (p: Prediction) => p.actual_winner === p.home_team;
 
+/** "NYK 125–119" once the game is final; null before that. */
+export function finalScoreLabel(p: Prediction): string | null {
+  if (p.home_score == null || p.away_score == null) return null;
+  const winner = p.home_score > p.away_score ? p.home_team : p.away_team;
+  const hi = Math.max(p.home_score, p.away_score);
+  const lo = Math.min(p.home_score, p.away_score);
+  return `${winner} ${hi}–${lo}`;
+}
+
 export type ModelSummary = {
   model: string;
   n: number;

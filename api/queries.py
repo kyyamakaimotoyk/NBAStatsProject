@@ -54,6 +54,33 @@ def latest_prediction_date(model_type: Optional[str] = None) -> Optional[str]:
     return d.isoformat() if d is not None else None
 
 
+def _attach_scores(rows: list[dict]) -> list[dict]:
+    """Attach the final score (home_score/away_score) to prediction rows, from
+    game_list. Only final games (WL set) get scores; upcoming/in-progress rows
+    keep None. MATCHUP 'vs.' marks the home row, '@' the away row."""
+    gids = {int(r['game_id']) for r in rows if r.get('game_id') is not None}
+    scores: dict[int, dict] = {}
+    if gids:
+        id_list = ",".join(str(g) for g in sorted(gids))  # ints, safe to inline
+        q = f"""
+            SELECT GAME_ID, PTS, MATCHUP
+            FROM game_list
+            WHERE GAME_ID IN ({id_list}) AND WL IS NOT NULL
+        """
+        try:
+            with get_engine().connect() as conn:
+                for gid, pts, matchup in conn.execute(sa.text(q)):
+                    side = 'home' if ' vs. ' in (matchup or '') else 'away'
+                    scores.setdefault(int(gid), {})[side] = int(pts)
+        except Exception as e:
+            print(f"[scores] attach failed: {e}")
+    for r in rows:
+        s = scores.get(int(r['game_id']) if r.get('game_id') is not None else -1, {})
+        r['home_score'] = s.get('home')
+        r['away_score'] = s.get('away')
+    return rows
+
+
 def predictions_for_date(game_date: str, model_type: Optional[str] = None) -> list[dict]:
     """Predictions for a date — ONE row per (game, model): the most recent.
 
@@ -81,7 +108,7 @@ def predictions_for_date(game_date: str, model_type: Optional[str] = None) -> li
         params['mt'] = model_type
     q += " ORDER BY game_id, model_type"
     with get_engine().connect() as conn:
-        return _rows(conn.execute(sa.text(q), params))
+        return _attach_scores(_rows(conn.execute(sa.text(q), params)))
 
 
 # Preferred vegas_lines source order (mirrors the internal Dash app):
@@ -161,7 +188,7 @@ def performance_results(days: int = 90, model_type: Optional[str] = None) -> lis
         key = (gd.isoformat() if hasattr(gd, 'isoformat') else str(gd),
                r['home_team'], r['away_team'])
         r['market_margin'] = market.get(key)
-    return rows
+    return _attach_scores(rows)
 
 
 def accuracy_summary(days: int = 30, model_type: Optional[str] = None) -> list[dict]:

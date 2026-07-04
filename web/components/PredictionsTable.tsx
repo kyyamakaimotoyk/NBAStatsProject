@@ -1,4 +1,5 @@
 import type { Prediction } from "@/lib/api";
+import { finalScoreLabel } from "@/lib/perf";
 
 const MODEL_LABELS: Record<string, string> = {
   rf: "Random Forest",
@@ -20,6 +21,7 @@ export default function PredictionsTable({
           <th>Pick</th>
           <th>Win prob.</th>
           <th>Margin</th>
+          <th>Final</th>
           <th>Result</th>
         </tr>
       </thead>
@@ -46,6 +48,7 @@ export default function PredictionsTable({
               </td>
               <td>{pickPct}%</td>
               <td>by {Math.abs(p.predicted_margin).toFixed(1)}</td>
+              <td>{finalScoreLabel(p) ?? "—"}</td>
               <td className={resultClass}>{result}</td>
             </tr>
           );

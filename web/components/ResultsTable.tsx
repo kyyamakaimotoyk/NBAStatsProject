@@ -1,5 +1,5 @@
 import type { Prediction } from "@/lib/api";
-import { MODEL_LABELS } from "@/lib/perf";
+import { MODEL_LABELS, finalScoreLabel } from "@/lib/perf";
 
 export default function ResultsTable({ rows }: { rows: Prediction[] }) {
   // Most recent first; cap for readability.
@@ -15,7 +15,7 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
           <th>Pick</th>
           <th>Win prob.</th>
           <th>Proj. margin</th>
-          <th>Actual</th>
+          <th>Final</th>
           <th>Result</th>
         </tr>
       </thead>
@@ -40,7 +40,7 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
               </td>
               <td>{pickPct}%</td>
               <td>by {Math.abs(p.predicted_margin).toFixed(1)}</td>
-              <td>{p.actual_winner ?? "—"}</td>
+              <td>{finalScoreLabel(p) ?? p.actual_winner ?? "—"}</td>
               <td className={resultClass}>
                 {p.is_correct === null ? "—" : p.is_correct ? "✓" : "✗"}
               </td>

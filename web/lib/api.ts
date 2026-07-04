@@ -20,6 +20,9 @@ export type Prediction = {
   // Market closing line's implied home margin (benchmark, not model output).
   // Only /api/performance/results populates it; null elsewhere.
   market_margin?: number | null;
+  // Final score from game_list (null until the game is final).
+  home_score?: number | null;
+  away_score?: number | null;
 };
 
 export type PredictionsResponse = {

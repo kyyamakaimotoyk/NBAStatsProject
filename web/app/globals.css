@@ -48,6 +48,36 @@ a {
   color: var(--text);
 }
 
+/* Phones: brand on its own line, nav becomes a swipeable strip. Without this
+   the 7 links squish into ~370px. overflow-x keeps every link reachable;
+   nowrap stops mid-label line breaks; the scrollbar is hidden (swipe is the
+   affordance, standard for content-site navs). */
+@media (max-width: 640px) {
+  .site-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+  }
+  .site-header nav {
+    display: flex;
+    gap: 1.1rem;
+    width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; /* Firefox */
+  }
+  .site-header nav::-webkit-scrollbar {
+    display: none; /* Chrome/Safari */
+  }
+  .site-header nav a {
+    margin-left: 0; /* spacing comes from gap now */
+    flex: 0 0 auto;
+    font-size: 0.92rem;
+  }
+}
+
 .container {
   max-width: 960px;
   margin: 0 auto;

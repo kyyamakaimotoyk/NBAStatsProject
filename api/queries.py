@@ -198,6 +198,10 @@ def accuracy_summary(days: int = 30, model_type: Optional[str] = None) -> list[d
     numbers match the internal dashboard. Only games with actual_winner set
     (i.e. already played and backfilled) count.
     """
+    # Dedup to the LATEST prediction per (game, model) — the table can hold
+    # several model_versions for the same game (re-logs, walk-forward rows,
+    # superseded predictions). Without this the aggregates counted every stale
+    # row (found 2026-07-04: 432 "games" in a 159-game window).
     q = """
     SELECT
         model_type,
@@ -208,9 +212,17 @@ def accuracy_summary(days: int = 30, model_type: Optional[str] = None) -> list[d
         SQRT(AVG(margin_error * margin_error))              AS rmse,
         AVG(ABS(home_win_probability
             - (CASE WHEN actual_winner = home_team THEN 1 ELSE 0 END))) AS calibration_error
-    FROM model_predictions
-    WHERE actual_winner IS NOT NULL
-      AND game_date >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+    FROM (
+        SELECT *,
+               ROW_NUMBER() OVER (
+                   PARTITION BY game_id, model_type
+                   ORDER BY prediction_timestamp DESC
+               ) AS _rn
+        FROM model_predictions
+        WHERE actual_winner IS NOT NULL
+          AND game_date >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+    ) ranked
+    WHERE _rn = 1
     """
     params: dict = {'days': days}
     if model_type:
@@ -227,6 +239,7 @@ def accuracy_rolling(days: int = 90, model_type: Optional[str] = None) -> list[d
     One row per (game_date, model_type) with that day's hit rate and mean margin
     error. The frontend can plot these directly or compute a rolling average.
     """
+    # Same latest-per-(game, model) dedup as accuracy_summary (2026-07-04).
     q = """
     SELECT
         game_date,
@@ -234,9 +247,17 @@ def accuracy_rolling(days: int = 90, model_type: Optional[str] = None) -> list[d
         COUNT(*)                                        AS n_games,
         AVG(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END) AS accuracy,
         AVG(margin_error)                               AS mae
-    FROM model_predictions
-    WHERE actual_winner IS NOT NULL
-      AND game_date >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+    FROM (
+        SELECT *,
+               ROW_NUMBER() OVER (
+                   PARTITION BY game_id, model_type
+                   ORDER BY prediction_timestamp DESC
+               ) AS _rn
+        FROM model_predictions
+        WHERE actual_winner IS NOT NULL
+          AND game_date >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+    ) ranked
+    WHERE _rn = 1
     """
     params: dict = {'days': days}
     if model_type:

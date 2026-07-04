@@ -128,8 +128,9 @@ export default function AccuracyPage() {
                 <div className="card-title">Market closing line</div>
                 <div className="card-metric">±{market.marketMae.toFixed(1)} pts</div>
                 <div className="card-sub">
-                  on the same {market.n} games we missed by ±{market.modelMae.toFixed(1)} · we
-                  were closer on {market.closerPct}%
+                  vs our ±{market.modelMae.toFixed(1)} — paired on the{" "}
+                  {market.n.toLocaleString()} of {featuredSummary.n.toLocaleString()} graded
+                  games with a line · we were closer on {market.closerPct}%
                 </div>
               </div>
             )}

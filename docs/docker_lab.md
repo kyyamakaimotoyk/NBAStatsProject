@@ -11,7 +11,7 @@ project's** images (`nba-pipeline:local`, `nba-api:local`). Companion to the
 
 ## The lab series
 
-Five hands-on companions to the "Kai Learning" parts in `aws_deployment_plan.md`,
+Six hands-on companions to the "Kai Learning" parts in `aws_deployment_plan.md`,
 each grounded in this repo's real code. Read in any order:
 
 | Lab | Covers | Pairs with |
@@ -21,6 +21,7 @@ each grounded in this repo's real code. Read in any order:
 | [Frontend / TypeScript](frontend_lab.md) | Next.js, types-as-contract, client fetch, static export | Part H |
 | [CI/CD](cicd_lab.md) | GitHub Actions, OIDC, path filters, push-to-deploy | Part I |
 | [Ops](ops_lab.md) | scheduling, alarms, budgets, logs, the egress probe | Part J |
+| [Traffic analytics](traffic_lab.md) | CloudFront logs → Athena SQL → Plotly, schema-on-read, DIY-vs-BI | Part J (extends) |
 
 ---
 

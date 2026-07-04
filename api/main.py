@@ -29,6 +29,7 @@ from api.schemas import (
     PerformanceResultsResponse,
     FeatureTimeseriesResponse,
     ScatterResponse,
+    InjuryReportResponse,
     MarginCorrResponse,
     AccuracySummaryResponse,
     RollingResponse,
@@ -139,6 +140,19 @@ def explore_scatter(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return ScatterResponse(x=x, y=y, days=days, count=len(pts), points=pts)
+
+
+@app.get("/api/explore/injuries", response_model=InjuryReportResponse, tags=["explore"])
+def explore_injuries(
+    date: str = Query(..., description="Game date YYYY-MM-DD"),
+):
+    """Pre-game injury report for one date (NBA-published, public info). Lives
+    under /api/explore/* so it rides the 5-min CloudFront edge cache."""
+    try:
+        rows = queries.injury_report(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    return InjuryReportResponse(game_date=date, count=len(rows), injuries=rows)
 
 
 @app.get("/api/explore/margin-corr", response_model=MarginCorrResponse, tags=["explore"])

@@ -390,6 +390,40 @@ def scatter_data(x: str, y: str, days: int = 365) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Injury report for a game date (public info — NBA publishes these pre-game)
+# ---------------------------------------------------------------------------
+
+def injury_report(game_date: str) -> list[dict]:
+    """Pre-game injury report rows for one date, from historical_injury_report
+    (NBA official PDFs; refreshed by the home-side scraper). Player names arrive
+    as "Last, First" from the PDFs — flipped here so the site shows "First Last".
+    """
+    # Strict date validation — the only user input, never interpolated.
+    from datetime import date as _date
+    _date.fromisoformat(game_date)  # raises ValueError on junk -> 400 upstream
+
+    q = """
+        SELECT team_name, player_name, status, reason
+        FROM historical_injury_report
+        WHERE game_date = :d
+        ORDER BY team_name, FIELD(status, 'Out', 'Doubtful', 'Questionable',
+                                   'Probable', 'Available'), player_name
+    """
+    try:
+        with get_engine().connect() as conn:
+            rows = _rows(conn.execute(sa.text(q), {'d': game_date}))
+    except Exception as e:
+        print(f"[explore] injury_report failed for {game_date}: {e}")
+        return []
+    for r in rows:
+        name = r.get('player_name') or ''
+        if ',' in name:
+            last, first = name.split(',', 1)
+            r['player_name'] = f"{first.strip()} {last.strip()}"
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Data exploration: feature correlations with winning margin (Dash Tab 5 port)
 # ---------------------------------------------------------------------------
 

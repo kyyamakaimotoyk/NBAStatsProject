@@ -131,6 +131,23 @@ export const getScatter = (x: string, y: string, days = 365) =>
     `/api/explore/scatter?x=${encodeURIComponent(x)}&y=${encodeURIComponent(y)}&days=${days}`,
   );
 
+// Pre-game injury report for one date (NBA-published, public info).
+export type InjuryItem = {
+  team_name: string;
+  player_name: string;
+  status: string;
+  reason: string | null;
+};
+
+export type InjuryReportResponse = {
+  game_date: string;
+  count: number;
+  injuries: InjuryItem[];
+};
+
+export const getInjuryReport = (date: string) =>
+  getJSON<InjuryReportResponse>(`/api/explore/injuries?date=${encodeURIComponent(date)}`);
+
 // Features ranked by correlation with winning margin.
 export type MarginCorrItem = { feature: string; column: string; correlation: number };
 

@@ -218,6 +218,44 @@ resource "aws_cloudwatch_log_metric_filter" "pipeline_heartbeat" {
   }
 }
 
+# -----------------------------------------------------------------------------
+# Alarm 7: model drift — displayed probabilities went dishonest on live games
+# -----------------------------------------------------------------------------
+# The E19/E21 lesson: the 2025-26 calibrator incident was visible in live data
+# for weeks (+0.28 gap between mean displayed home-prob and the actual home-win
+# rate) but nothing was watching. The nightly job now prints MODEL_DRIFT_ALERT
+# when a model's trailing-21-day gap exceeds 0.12 (>=60 graded games, so this
+# is naturally silent in the offseason).
+resource "aws_cloudwatch_log_metric_filter" "pipeline_drift" {
+  name           = "${var.project}-pipeline-drift"
+  log_group_name = aws_cloudwatch_log_group.pipeline.name
+  pattern        = "MODEL_DRIFT_ALERT"
+
+  metric_transformation {
+    name          = "PipelineModelDrift"
+    namespace     = "${var.project}/pipeline"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "pipeline_drift" {
+  alarm_name          = "${var.project}-pipeline-model-drift"
+  namespace           = "${var.project}/pipeline"
+  metric_name         = "PipelineModelDrift"
+  statistic           = "Sum"
+  period              = 86400
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_description = "A model's displayed win probabilities have drifted from reality on recent graded games (the 2025-26 calibrator-incident signature)."
+  alarm_actions     = [aws_sns_topic.alerts.arn]
+  ok_actions        = [aws_sns_topic.alerts.arn]
+}
+
+
 resource "aws_cloudwatch_metric_alarm" "pipeline_heartbeat" {
   alarm_name          = "${var.project}-pipeline-missed-run"
   namespace           = "${var.project}/pipeline"

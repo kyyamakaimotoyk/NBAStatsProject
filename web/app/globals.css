@@ -154,6 +154,78 @@ h2 {
   margin-top: 0.35rem;
 }
 
+/* Injury report (landing page, per-slate) */
+.injury-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+.injury-team {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+.injury-team h3 {
+  font-size: 0.95rem;
+  margin-bottom: 0.4rem;
+}
+.injury-team ul {
+  list-style: none;
+  font-size: 0.85rem;
+}
+.injury-team li {
+  padding: 0.15rem 0;
+}
+.inj-status {
+  display: inline-block;
+  min-width: 82px;
+  text-align: center;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.inj-out {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+}
+.inj-doubtful {
+  background: rgba(249, 115, 22, 0.15);
+  color: #f97316;
+  border-color: rgba(249, 115, 22, 0.4);
+}
+.inj-questionable {
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+  border-color: rgba(234, 179, 8, 0.4);
+}
+.inj-probable {
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+  border-color: rgba(34, 197, 94, 0.4);
+}
+.inj-reason {
+  color: var(--muted);
+}
+
+/* Coin-flip badge: near-50% picks where model heads may mildly disagree */
+.coin-flip {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  border-radius: 4px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+
 /* Result rows: same colorway as the picks strip, softened for full rows */
 .pred-table tr.row-win {
   background: rgba(34, 197, 94, 0.1);

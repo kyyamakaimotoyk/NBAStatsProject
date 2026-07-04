@@ -84,6 +84,20 @@ class ScatterResponse(BaseModel):
     points: list[ScatterPoint]
 
 
+class InjuryItem(BaseModel):
+    team_name: str
+    player_name: str
+    status: str
+    reason: Optional[str] = None
+
+
+class InjuryReportResponse(BaseModel):
+    """Pre-game injury report for one date (NBA-published, public info)."""
+    game_date: date
+    count: int
+    injuries: list[InjuryItem]
+
+
 class MarginCorrItem(BaseModel):
     feature: str
     column: str

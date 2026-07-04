@@ -114,6 +114,66 @@ resource "aws_scheduler_schedule" "nightly_predict" {
 
 
 # =============================================================================
+# Weekly retrain (added 2026-07-04) — features -> train -> validate, cloud-side
+# =============================================================================
+# Monday 13:00 ET, after the weekend slates are graded. All stages are DB-only
+# (post-egress-fix): compute_elo refreshes team_elo_pregame from game_list,
+# player_impact + features + train + validate run through the pipeline runner.
+# Train records feature_set_version lineage (E19+) and pushes fresh bundles to
+# the S3 artifact store, so prod models and calibrators are never more than a
+# week stale — the E21-identified root cause of the calibration incident.
+# The `input` block overrides the container command (the task def's default CMD
+# is the nightly predictor).
+#
+# Offseason note: retraining on unchanged data reproduces near-identical models
+# (fixed seeds) — harmless. Review the first few runs' [E20] calibrator-shift
+# NOTE lines and validate output in the logs.
+resource "aws_scheduler_schedule" "weekly_retrain" {
+  name  = "${var.project}-weekly-retrain"
+  state = "ENABLED"
+
+  schedule_expression          = "cron(0 13 ? * MON *)"
+  schedule_expression_timezone = "America/New_York"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_ecs_cluster.main.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    ecs_parameters {
+      task_definition_arn = aws_ecs_task_definition.pipeline.arn
+      launch_type         = "FARGATE"
+      task_count          = 1
+
+      network_configuration {
+        subnets          = aws_subnet.public[*].id
+        security_groups  = [aws_security_group.app.id]
+        assign_public_ip = true
+      }
+    }
+
+    input = jsonencode({
+      containerOverrides = [
+        {
+          name = "pipeline"
+          command = ["sh", "-c",
+            "python data_engineering/compute_elo.py && python orchestration/pipeline.py run --stages player_impact,features,train,validate"]
+        }
+      ]
+    })
+
+    retry_policy {
+      maximum_event_age_in_seconds = 3600
+      maximum_retry_attempts       = 3
+    }
+  }
+}
+
+
+# =============================================================================
 # Daily API restart — keeps the injected DB password fresh (added 2026-06-29)
 # =============================================================================
 # WHY: the RDS master password auto-rotates (~weekly via Secrets Manager). The

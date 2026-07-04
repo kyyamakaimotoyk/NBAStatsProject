@@ -151,6 +151,47 @@ def _run_freshness_checks(engine, bucket) -> None:
         print('freshness: OK')
 
 
+def _run_drift_check(engine) -> None:
+    """E21 live drift monitor: are the DISPLAYED probabilities still honest on
+    recent graded games?
+
+    The 2025-26 calibrator incident showed a +0.28 gap between the mean
+    displayed home probability and the actual home-win rate, sustained for
+    weeks (healthy: a few pp) — visible in live data long before anyone
+    looked. This check runs nightly after grading, per model, over the
+    trailing 21 days (min 60 graded games, so it is naturally silent in the
+    offseason). MODEL_DRIFT_ALERT is alarm-monitored (infra/alarms.tf).
+    Threshold 0.12 is calibrated against the incident (+0.28) vs healthy live
+    operation (~0.02-0.05).
+    """
+    try:
+        import sqlalchemy as sa
+        with engine.connect() as conn:
+            rows = conn.execute(sa.text("""
+                SELECT model_type, COUNT(*) AS n,
+                       AVG(home_win_probability) AS mean_p,
+                       AVG(actual_winner = home_team) AS home_rate
+                FROM model_predictions
+                WHERE actual_winner IS NOT NULL
+                  AND game_date >= DATE_SUB(CURDATE(), INTERVAL 21 DAY)
+                GROUP BY model_type
+            """)).mappings().all()
+        for r in rows:
+            if r['n'] < 60:
+                continue
+            gap = float(r['mean_p']) - float(r['home_rate'])
+            if abs(gap) > 0.12:
+                print(f"MODEL_DRIFT_ALERT: {r['model_type']} displayed-prob gap "
+                      f"{gap:+.2f} over last {r['n']} graded games "
+                      f"(mean p={float(r['mean_p']):.2f} vs actual "
+                      f"{float(r['home_rate']):.2f})")
+            else:
+                print(f"drift check {r['model_type']}: gap {gap:+.2f} "
+                      f"over {r['n']} games (OK)")
+    except Exception as exc:
+        print(f"WARN: drift check failed - {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Injury fetch — live for today, point-in-time for backfill
 # ---------------------------------------------------------------------------
@@ -491,6 +532,11 @@ def main(argv=None) -> int:
         # After loading, check the data is actually fresh — prints
         # DATA_FRESHNESS_ALERT lines that the CloudWatch alarm emails on.
         _run_freshness_checks(engine, _os.environ.get('INGEST_S3_BUCKET'))
+
+        # After grading, check the models' displayed probabilities are still
+        # honest on recent games — the live-drift lesson from E19/E21.
+        if not args.skip_backfill:
+            _run_drift_check(engine)
 
         model_bundles = load_model_bundles(engine, model_keys)
         game_dates = resolve_game_dates(args)

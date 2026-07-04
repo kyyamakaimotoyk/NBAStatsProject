@@ -10,6 +10,7 @@ import {
 } from "@/lib/api";
 import { MODEL_LABELS } from "@/lib/perf";
 import PredictionsTable from "@/components/PredictionsTable";
+import InjuryReport from "@/components/InjuryReport";
 
 // Best-performing model with a meaningful sample — the headline the proof bar quotes.
 function headlineModel(models: AccuracySummary[]): AccuracySummary | null {
@@ -101,6 +102,7 @@ function GamesSection({ data, error }: { data: PredictionsResponse | null; error
         </p>
       )}
       <PredictionsTable predictions={data.predictions} />
+      {data.game_date && <InjuryReport date={data.game_date} />}
     </>
   );
 }
@@ -131,7 +133,7 @@ export default function HomePage() {
       <div className="hero">
         <h1>Nightly NBA predictions — with receipts.</h1>
         <p className="hero-sub">
-          Two machine-learning models pick every NBA game. Every prediction is logged,
+          Three machine-learning models pick every NBA game. Every prediction is logged,
           scored against the real result, and published — hits and misses alike.
         </p>
         <div className="hero-ctas">
@@ -161,8 +163,8 @@ export default function HomePage() {
         </div>
         <div className="how-step">
           <div className="step-num">3</div>
-          <h3>Two models</h3>
-          <p>A random forest and a neural net each pick a winner and a margin.</p>
+          <h3>Three models</h3>
+          <p>A random forest, gradient boosting and a neural net each pick a winner and a margin.</p>
         </div>
         <div className="how-step">
           <div className="step-num">4</div>

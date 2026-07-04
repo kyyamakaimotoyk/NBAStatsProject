@@ -40,7 +40,10 @@ export default function PredictionsTable({
                 {p.away_team} @ {p.home_team}
               </td>
               <td>{MODEL_LABELS[p.model_type] ?? p.model_type}</td>
-              <td className="pick">{p.predicted_winner}</td>
+              <td className="pick">
+                {p.predicted_winner}
+                {pickPct <= 55 && <span className="coin-flip">coin flip</span>}
+              </td>
               <td>{pickPct}%</td>
               <td>by {Math.abs(p.predicted_margin).toFixed(1)}</td>
               <td className={resultClass}>{result}</td>

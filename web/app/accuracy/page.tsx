@@ -7,11 +7,13 @@ import {
   trendSeries,
   homeAwaySplit,
   marketCompare,
+  classificationRates,
 } from "@/lib/perf";
 import { useLang } from "@/lib/i18n";
 import TrendChart, { type TrendSeries } from "@/components/TrendChart";
 import MarginScatter from "@/components/MarginScatter";
 import PicksStrip from "@/components/PicksStrip";
+import AccuracyBars from "@/components/AccuracyBars";
 
 const COLORS: Record<string, string> = { rf: "#3b82f6", nn: "#22c55e", xgb: "#f59e0b" };
 const MARKET_COLOR = "#cbd5e1";
@@ -50,12 +52,23 @@ export default function AccuracyPage() {
   const market = useMemo(() => marketCompare(featuredRows), [featuredRows]);
   const split = useMemo(() => homeAwaySplit(featuredRows), [featuredRows]);
   const trend = useMemo(() => (rows ? trendSeries(rows) : { data: [], models: [] }), [rows]);
-
-  const accSeries: TrendSeries[] = trend.models.map((m) => ({
-    key: `${m}_acc`,
-    name: t.models[m] ?? m,
-    color: COLORS[m] ?? "#888",
+  const cls = useMemo(() => (rows ? classificationRates(rows) : []), [rows]);
+  const clsBars = cls.map((c) => ({
+    name: c.key === "market" ? t.accuracy.marketFavorite : (t.models[c.key] ?? c.key),
+    pct: c.pct,
+    n: c.n,
+    color: c.key === "market" ? MARKET_COLOR : (COLORS[c.key] ?? "#888"),
   }));
+
+  const accSeries: TrendSeries[] = [
+    ...trend.models.map((m) => ({
+      key: `${m}_acc`,
+      name: t.models[m] ?? m,
+      color: COLORS[m] ?? "#888",
+    })),
+    // The benchmark rides along: the market favorite's hit rate on the same games.
+    { key: "market_acc", name: t.accuracy.marketFavorite, color: MARKET_COLOR, dashed: true },
+  ];
   const maeSeries: TrendSeries[] = [
     ...trend.models.map((m) => ({
       key: `${m}_mae`,
@@ -133,6 +146,14 @@ export default function AccuracyPage() {
               <div className="card-sub">{t.accuracy.cardGradedSub}</div>
             </div>
           </div>
+
+          {clsBars.length > 1 && (
+            <>
+              <h2>{t.accuracy.clsTitle}</h2>
+              <AccuracyBars data={clsBars} yLabel={t.charts.winnerAccuracyY} />
+              <p className="caption">{t.accuracy.clsCaption}</p>
+            </>
+          )}
 
           <h2>{t.accuracy.recentPicks(t.models[featuredSummary.model] ?? featuredSummary.model)}</h2>
           <PicksStrip rows={featuredRows} />

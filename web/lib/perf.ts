@@ -114,20 +114,75 @@ export function trendSeries(
           ) / 10;
       }
     }
-    // Market MAE over the window's distinct games that have a line + a result.
+    // Market MAE + winner-classification accuracy over the window's distinct
+    // games that have a line + a result. The market's "pick" is the favorite
+    // (positive implied home margin = home); pick'em lines (0) carry no pick.
     const seen = new Set<string>();
     let mErr = 0;
     let mN = 0;
+    let mAccN = 0;
+    let mAccC = 0;
     for (const r of win) {
       if (r.market_margin == null || r.actual_margin === null || seen.has(r.game_id)) continue;
       seen.add(r.game_id);
       mErr += Math.abs(r.market_margin - r.actual_margin);
       mN++;
+      if (r.market_margin !== 0) {
+        mAccN++;
+        if (r.market_margin > 0 === homeWon(r)) mAccC++;
+      }
     }
     if (mN > 0) row.market_mae = Math.round((mErr / mN) * 10) / 10;
+    if (mAccN > 0) row.market_acc = Math.round((mAccC / mAccN) * 1000) / 10;
     return row;
   });
   return { data, models };
+}
+
+export type ClassificationRate = { key: string; n: number; pct: number };
+
+/**
+ * Winner-classification accuracy for the market and each model, PAIRED on
+ * graded games that have a closing line (so all four bars answer the same
+ * question on comparable games). The market's pick is the favorite; pick'em
+ * lines (implied margin 0) are excluded — the market makes no call there.
+ * Returned with the market first (it's the benchmark), then models in fixed
+ * order.
+ */
+export function classificationRates(rows: Prediction[]): ClassificationRate[] {
+  const out: ClassificationRate[] = [];
+
+  // Market: distinct games with a non-zero line and a result.
+  const seen = new Set<string>();
+  let n = 0;
+  let c = 0;
+  for (const r of rows) {
+    if (
+      r.market_margin == null || r.market_margin === 0 ||
+      r.actual_winner === null || seen.has(r.game_id)
+    )
+      continue;
+    seen.add(r.game_id);
+    n++;
+    if (r.market_margin > 0 === homeWon(r)) c++;
+  }
+  if (n > 0) out.push({ key: "market", n, pct: (c / n) * 100 });
+
+  // Models: each judged on its own graded rows within the with-line subset.
+  for (const m of [...new Set(rows.map((r) => r.model_type))].sort()) {
+    const rs = rows.filter(
+      (r) =>
+        r.model_type === m && r.is_correct !== null &&
+        r.market_margin != null && r.market_margin !== 0,
+    );
+    if (rs.length > 0)
+      out.push({
+        key: m,
+        n: rs.length,
+        pct: (rs.filter((r) => r.is_correct === true).length / rs.length) * 100,
+      });
+  }
+  return out;
 }
 
 export type HomeAwaySplit = {

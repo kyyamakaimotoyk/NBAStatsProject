@@ -139,12 +139,16 @@ const en = {
     cardGraded: "Games graded",
     cardGradedSub: "in this window",
     marketSeries: "Market closing line",
+    clsTitle: "Winner classification — market vs the models",
+    clsCaption:
+      "Everyone judged on the same footing: graded games that have a closing line. The market's pick is its favorite (pick'em lines make no call and are excluded). The dashed line is 50% — coin-flip territory. Hover or tap a bar for the game count.",
+    marketFavorite: "Market favorite",
     recentPicks: (model: string) => `Recent picks — ${model}`,
     picksCaption: (n: number) =>
       `The last ${n} graded picks, oldest to newest. Tap a square for the game.`,
     accOverTime: "Winner accuracy over time",
     accCaption:
-      "Each point is the trailing 7 days of games. The dashed line is 50% — coin-flip territory.",
+      "Each point is the trailing 7 days of games. The light dashed line is the market favorite's hit rate on the same games; the 50% line is coin-flip territory.",
     maeOverTime: "Margin error over time",
     maeCaption:
       "Average points missed by, trailing 7 days — lower is better. The dashed line is the betting market's closing spread on the same games: the strongest public benchmark for a game's margin. We show it to keep ourselves honest, not to sell picks.",
@@ -425,12 +429,16 @@ const ja: Dict = {
     cardGraded: "採点済みの試合",
     cardGradedSub: "この期間の合計",
     marketSeries: "市場クロージングライン",
+    clsTitle: "勝敗的中率 — 市場とモデルの比較",
+    clsCaption:
+      "公平な比較のため、クロージングラインが存在する採点済みの試合だけで集計しています。市場の「予想」はフェイバリット(ライン上有利とされた側)です。イーブン(ピックエム)の試合は予想なしとして除外しています。破線の50%はコイン投げと同じ水準です。バーをタップすると試合数が表示されます。",
+    marketFavorite: "市場フェイバリット",
     recentPicks: (model: string) => `直近の予想 — ${model}`,
     picksCaption: (n: number) =>
       `直近${n}件の採点済み予想です(左から古い順)。マスをタップすると試合の詳細が表示されます。`,
     accOverTime: "勝敗的中率の推移",
     accCaption:
-      "各点は、その日までの7日間の成績を示します。破線の50%はコイン投げと同じ水準です。",
+      "各点は、その日までの7日間の成績を示します。薄い破線は同じ試合における市場フェイバリットの的中率、50%の線はコイン投げと同じ水準です。",
     maeOverTime: "点差誤差の推移",
     maeCaption:
       "その日までの7日間で、予想が実際の点差から平均何点ずれていたかを示します(小さいほど優秀です)。破線は同じ試合に対するブックメーカーのクロージングスプレッドで、点差予想の基準としては最も厳しい公開ベンチマークです。自己評価のために掲載しているもので、予想の宣伝が目的ではありません。",

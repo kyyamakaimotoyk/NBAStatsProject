@@ -65,8 +65,8 @@ export default function AboutPage() {
 
       <h2>What this is not</h2>
       <p>
-        Betting advice. The predictions are models developed, and its outputs published for curiosity,
-        learning, and record-keeping only. It is purely for educational purposes.
+        Betting advice. The published models and their respective outputs are published for curiosity,
+        learning, and record-keeping only. It is purely for an educational purpose.
       </p>
 
       <h2>Under the hood</h2>

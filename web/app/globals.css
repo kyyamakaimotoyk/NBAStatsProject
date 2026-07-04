@@ -256,6 +256,35 @@ h2 {
   background: var(--bg);
 }
 
+/* Model-lab results grid: all window games, scrolling in place */
+.results-scroll {
+  max-height: 600px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+.results-scroll .pred-table {
+  margin-bottom: 0;
+}
+.results-scroll thead th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+.model-cell {
+  white-space: nowrap;
+}
+.pred-table td.cell-win {
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+}
+.pred-table td.cell-loss {
+  background: rgba(239, 68, 68, 0.11);
+  color: #f87171;
+}
+
 /* Result rows: same colorway as the picks strip, softened for full rows */
 .pred-table tr.row-win {
   background: rgba(34, 197, 94, 0.1);

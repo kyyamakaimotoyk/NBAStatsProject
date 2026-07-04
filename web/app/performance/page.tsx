@@ -142,8 +142,14 @@ export default function PerformancePage() {
             FN shows whether a model leans too hard on home court.
           </p>
 
-          <h2>Recent results</h2>
+          <h2>Game-by-game results</h2>
           <ResultsTable rows={rows} />
+          <p className="caption">
+            Every game in the selected window, newest first — scroll within the table.
+            Each model&apos;s cell shows its pick and projected margin, tinted by whether
+            the pick was right; hover a cell for the win probability. &quot;—&quot; means
+            that model logged no prediction for the game.
+          </p>
         </>
       )}
     </section>

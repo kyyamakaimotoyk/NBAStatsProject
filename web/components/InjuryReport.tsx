@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getInjuryReport, type InjuryItem } from "@/lib/api";
+import { useLang } from "@/lib/i18n";
 
 const STATUS_CLASS: Record<string, string> = {
   Out: "inj-out",
@@ -14,6 +15,7 @@ const STATUS_CLASS: Record<string, string> = {
 /** Pre-game injury report for one date, grouped by team. Renders nothing when
  * the date has no report (offseason, or data not yet ingested) — best-effort. */
 export default function InjuryReport({ date }: { date: string }) {
+  const { t } = useLang();
   const [injuries, setInjuries] = useState<InjuryItem[] | null>(null);
 
   useEffect(() => {
@@ -32,11 +34,8 @@ export default function InjuryReport({ date }: { date: string }) {
 
   return (
     <>
-      <h2>Injury report — {date}</h2>
-      <p className="subtle">
-        The NBA&apos;s official pre-game injury report for this slate. The models see
-        this too — player availability feeds the prediction features.
-      </p>
+      <h2>{t.injury.title(date)}</h2>
+      <p className="subtle">{t.injury.subtitle}</p>
       <div className="injury-grid">
         {[...byTeam.entries()].map(([team, list]) => (
           <div className="injury-team" key={team}>
@@ -45,7 +44,7 @@ export default function InjuryReport({ date }: { date: string }) {
               {list.map((i, idx) => (
                 <li key={idx}>
                   <span className={`inj-status ${STATUS_CLASS[i.status] ?? ""}`}>
-                    {i.status}
+                    {t.injury.statuses[i.status] ?? i.status}
                   </span>{" "}
                   {i.player_name}
                   {i.reason && <span className="inj-reason"> — {i.reason}</span>}

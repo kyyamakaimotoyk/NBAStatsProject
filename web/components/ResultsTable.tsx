@@ -1,12 +1,10 @@
+"use client";
+
 import type { Prediction } from "@/lib/api";
 import { finalScoreLabel } from "@/lib/perf";
+import { useLang } from "@/lib/i18n";
 
 const MODEL_ORDER = ["rf", "nn", "xgb"] as const;
-const MODEL_HEADERS: Record<string, string> = {
-  rf: "Random Forest",
-  nn: "Neural Net",
-  xgb: "XGBoost",
-};
 
 type GameRow = {
   game_id: string;
@@ -20,6 +18,7 @@ type GameRow = {
 /** Every game in the window, one row per game, one column per model. The whole
  * table scrolls in place (sticky header) rather than being capped. */
 export default function ResultsTable({ rows }: { rows: Prediction[] }) {
+  const { t } = useLang();
   const games = new Map<string, GameRow>();
   for (const p of rows) {
     const g =
@@ -52,11 +51,9 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
       <td
         key={m}
         className={`model-cell ${cls}`}
-        title={`${p.predicted_winner} at ${pickPct}% win probability${
-          pickPct <= 55 ? " (coin flip)" : ""
-        }`}
+        title={t.resultsTable.cellTitle(p.predicted_winner, pickPct, pickPct <= 55)}
       >
-        {p.predicted_winner} by {Math.abs(p.predicted_margin).toFixed(1)}
+        {t.resultsTable.cellPick(p.predicted_winner, Math.abs(p.predicted_margin).toFixed(1))}
       </td>
     );
   };
@@ -66,11 +63,11 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
       <table className="pred-table results-grid">
         <thead>
           <tr>
-            <th>Date</th>
-            <th>Matchup</th>
-            <th>Final</th>
+            <th>{t.resultsTable.date}</th>
+            <th>{t.resultsTable.matchup}</th>
+            <th>{t.resultsTable.final}</th>
             {MODEL_ORDER.map((m) => (
-              <th key={m}>{MODEL_HEADERS[m]}</th>
+              <th key={m}>{t.models[m] ?? m}</th>
             ))}
           </tr>
         </thead>

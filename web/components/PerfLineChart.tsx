@@ -11,7 +11,7 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from "recharts";
-import { MODEL_LABELS } from "@/lib/perf";
+import { useLang } from "@/lib/i18n";
 
 const COLORS: Record<string, string> = { rf: "#3b82f6", nn: "#22c55e", xgb: "#f59e0b" };
 
@@ -32,7 +32,8 @@ export default function PerfLineChart({
   numericX?: boolean; // numeric x-axis (calibration) vs category (dates)
   diagonal?: boolean; // draw the y=x perfect-calibration reference
 }) {
-  if (data.length === 0) return <p className="status">Not enough data in this window yet.</p>;
+  const { t } = useLang();
+  if (data.length === 0) return <p className="status">{t.charts.notEnoughData}</p>;
 
   return (
     <ResponsiveContainer width="100%" height={320}>
@@ -78,7 +79,7 @@ export default function PerfLineChart({
             key={m}
             type="linear"
             dataKey={m}
-            name={MODEL_LABELS[m] ?? m}
+            name={t.models[m] ?? m}
             stroke={COLORS[m] ?? "#888"}
             dot={{ r: 2.5 }}
             connectNulls

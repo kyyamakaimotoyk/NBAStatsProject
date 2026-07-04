@@ -12,6 +12,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import type { TrendRow } from "@/lib/perf";
+import { useLang } from "@/lib/i18n";
 
 export type TrendSeries = {
   key: string;
@@ -39,7 +40,8 @@ export default function TrendChart({
   yLabel?: string;
   yTickStep?: number; // fixed y demarcation interval (e.g. 5 pts)
 }) {
-  if (data.length === 0) return <p className="status">Not enough data in this window yet.</p>;
+  const { t } = useLang();
+  if (data.length === 0) return <p className="status">{t.charts.notEnoughData}</p>;
 
   // Explicit ticks when a step is requested: 0, step, 2*step ... up to the max.
   let yTicks: number[] | undefined;

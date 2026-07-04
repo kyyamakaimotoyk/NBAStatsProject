@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { getFeatureTimeseries, type FeatureTimeseriesRow } from "@/lib/api";
 import { FEATURE_CATALOG, allTeams, teamSeries } from "@/lib/explore";
+import { useLang } from "@/lib/i18n";
 import FeatureChart from "@/components/FeatureChart";
 
 export default function ExplorePage() {
+  const { t } = useLang();
   const [feature, setFeature] = useState("PTS");
   const [rollWindow, setRollWindow] = useState<"L5" | "L10">("L5");
   const [rows, setRows] = useState<FeatureTimeseriesRow[] | null>(null);
@@ -33,20 +35,19 @@ export default function ExplorePage() {
     [rows, teams],
   );
 
+  const windowLabel = rollWindow === "L5" ? t.explore.last5 : t.explore.last10;
+
   return (
     <section>
-      <h1>Explore the data</h1>
-      <p className="subtle">
-        Track any team&apos;s rolling form (last 5 or 10 games) for a chosen stat across
-        the season.
-      </p>
+      <h1>{t.explore.title}</h1>
+      <p className="subtle">{t.explore.subtitle}</p>
 
       <div className="controls explore-controls">
         <label>
-          Stat:{" "}
+          {t.explore.statLabel}{" "}
           <select value={feature} onChange={(e) => setFeature(e.target.value)}>
             {FEATURE_CATALOG.map((c) => (
-              <optgroup key={c.category} label={c.category}>
+              <optgroup key={c.category} label={t.explore.categories[c.category] ?? c.category}>
                 {c.features.map((f) => (
                   <option key={f} value={f}>
                     {f}
@@ -57,46 +58,44 @@ export default function ExplorePage() {
           </select>
         </label>
         <label>
-          Window:{" "}
+          {t.explore.windowLabel}{" "}
           <select
             value={rollWindow}
             onChange={(e) => setRollWindow(e.target.value as "L5" | "L10")}
           >
-            <option value="L5">Last 5</option>
-            <option value="L10">Last 10</option>
+            <option value="L5">{t.explore.last5}</option>
+            <option value="L10">{t.explore.last10}</option>
           </select>
         </label>
         <label className="team-select">
-          Teams (ctrl/cmd-click for multiple):
+          {t.explore.teamsMulti}
           <select
             multiple
             size={5}
             value={teams}
             onChange={(e) => setTeams([...e.target.selectedOptions].map((o) => o.value))}
           >
-            {available.map((t) => (
-              <option key={t} value={t}>
-                {t}
+            {available.map((tm) => (
+              <option key={tm} value={tm}>
+                {tm}
               </option>
             ))}
           </select>
         </label>
       </div>
 
-      {error && <p className="status error">Couldn&apos;t load: {error}</p>}
-      {!error && !rows && <p className="status">Loading…</p>}
+      {error && <p className="status error">{t.explore.errLoad(error)}</p>}
+      {!error && !rows && <p className="status">{t.explore.loading}</p>}
       {!error && rows && rows.length === 0 && (
-        <p className="status">No data for this stat yet.</p>
+        <p className="status">{t.explore.noStatData}</p>
       )}
       {!error && rows && rows.length > 0 && (
         <>
-          <h2>
-            {feature} ({rollWindow}) — rolling average
-          </h2>
+          <h2>{t.explore.rollingHeading(feature, windowLabel)}</h2>
           <FeatureChart
             data={series.data}
             teams={teams}
-            yLabel={`${feature} (${rollWindow} rolling avg)`}
+            yLabel={t.explore.chartYLabel(feature, rollWindow)}
           />
         </>
       )}

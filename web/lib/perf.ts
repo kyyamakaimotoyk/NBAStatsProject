@@ -3,11 +3,7 @@
 
 import type { Prediction } from "./api";
 
-export const MODEL_LABELS: Record<string, string> = {
-  rf: "Random Forest",
-  nn: "Neural Net",
-  xgb: "XGBoost",
-};
+// Model display names live in lib/translations.ts (t.models) so they localize.
 
 const homeWon = (p: Prediction) => p.actual_winner === p.home_team;
 

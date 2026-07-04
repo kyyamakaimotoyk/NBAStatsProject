@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getScatter, type ScatterPoint } from "@/lib/api";
 import { SCATTER_CATALOG, linreg } from "@/lib/explore";
+import { useLang } from "@/lib/i18n";
 import ScatterPlot from "@/components/ScatterPlot";
 
 function StatSelect({
@@ -14,12 +15,13 @@ function StatSelect({
   onChange: (v: string) => void;
   label: string;
 }) {
+  const { t } = useLang();
   return (
     <label>
       {label}:{" "}
       <select value={value} onChange={(e) => onChange(e.target.value)}>
         {SCATTER_CATALOG.map((c) => (
-          <optgroup key={c.category} label={c.category}>
+          <optgroup key={c.category} label={t.explore.categories[c.category] ?? c.category}>
             {c.stats.map((s) => (
               <option key={s} value={s}>
                 {s}
@@ -33,6 +35,7 @@ function StatSelect({
 }
 
 export default function ScatterPage() {
+  const { t } = useLang();
   const [x, setX] = useState("PTS");
   const [y, setY] = useState("AST");
   const [points, setPoints] = useState<ScatterPoint[] | null>(null);
@@ -90,26 +93,23 @@ export default function ScatterPage() {
 
   return (
     <section>
-      <h1>Stat scatter</h1>
-      <p className="subtle">
-        Every team-game as a point — pick two stats, color by win/loss, fit a trendline,
-        and optionally filter to specific teams.
-      </p>
+      <h1>{t.scatter.title}</h1>
+      <p className="subtle">{t.scatter.subtitle}</p>
 
       <div className="controls explore-controls">
         <StatSelect label="X" value={x} onChange={setX} />
         <StatSelect label="Y" value={y} onChange={setY} />
         <label className="team-select">
-          Teams (optional):
+          {t.scatter.teamsOptional}
           <select
             multiple
             size={5}
             value={teams}
             onChange={(e) => setTeams([...e.target.selectedOptions].map((o) => o.value))}
           >
-            {availableTeams.map((t) => (
-              <option key={t} value={t}>
-                {t}
+            {availableTeams.map((tm) => (
+              <option key={tm} value={tm}>
+                {tm}
               </option>
             ))}
           </select>
@@ -120,21 +120,18 @@ export default function ScatterPage() {
             checked={showTrend}
             onChange={(e) => setShowTrend(e.target.checked)}
           />{" "}
-          Trendline
+          {t.scatter.trendline}
         </label>
       </div>
 
-      {error && <p className="status error">Couldn&apos;t load: {error}</p>}
-      {!error && !points && <p className="status">Loading…</p>}
+      {error && <p className="status error">{t.scatter.errLoad(error)}</p>}
+      {!error && !points && <p className="status">{t.scatter.loading}</p>}
       {!error && points && visible.length === 0 && (
-        <p className="status">No points for this selection.</p>
+        <p className="status">{t.scatter.noSelection}</p>
       )}
       {!error && points && visible.length > 0 && (
         <>
-          <h2>
-            {y} vs {x} — {visible.length} games
-            {teams.length > 0 ? `, ${teams.length} team${teams.length > 1 ? "s" : ""}` : ""}
-          </h2>
+          <h2>{t.scatter.heading(y, x, visible.length, teams.length)}</h2>
           <ScatterPlot wins={wins} losses={losses} xLabel={x} yLabel={y} trend={trend} />
         </>
       )}

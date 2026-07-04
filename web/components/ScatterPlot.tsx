@@ -11,6 +11,8 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from "recharts";
+import { useLang } from "@/lib/i18n";
+import type { Dict } from "@/lib/translations";
 
 type Pt = {
   x: number;
@@ -27,11 +29,13 @@ function PointTooltip({
   payload,
   xLabel,
   yLabel,
+  t,
 }: {
   active?: boolean;
   payload?: Array<{ payload: Pt }>;
   xLabel: string;
   yLabel: string;
+  t: Dict;
 }) {
   if (!active || !payload || payload.length === 0) return null;
   const p = payload[0].payload;
@@ -51,7 +55,7 @@ function PointTooltip({
         <strong>{p.away ?? "?"}</strong> @ <strong>{p.home ?? "?"}</strong>
       </div>
       <div>
-        Winner: <strong>{p.winner ?? "—"}</strong>
+        {t.scatter.winnerLabel} <strong>{p.winner ?? "—"}</strong>
       </div>
       <div style={{ marginTop: 4, color: "#9aa6c0" }}>
         {p.team ? `${p.team} · ` : ""}
@@ -74,7 +78,8 @@ export default function ScatterPlot({
   yLabel: string;
   trend: { x1: number; y1: number; x2: number; y2: number } | null;
 }) {
-  if (wins.length + losses.length === 0) return <p className="status">No points.</p>;
+  const { t } = useLang();
+  if (wins.length + losses.length === 0) return <p className="status">{t.scatter.noPoints}</p>;
 
   return (
     <ResponsiveContainer width="100%" height={460}>
@@ -108,6 +113,7 @@ export default function ScatterPlot({
                 payload={payload}
                 xLabel={xLabel}
                 yLabel={yLabel}
+                t={t}
               />
             );
           }}
@@ -125,8 +131,8 @@ export default function ScatterPlot({
             ifOverflow="extendDomain"
           />
         )}
-        <Scatter name="Win" data={wins} fill="#22c55e" fillOpacity={0.55} />
-        <Scatter name="Loss" data={losses} fill="#ef4444" fillOpacity={0.55} />
+        <Scatter name={t.scatter.win} data={wins} fill="#22c55e" fillOpacity={0.55} />
+        <Scatter name={t.scatter.loss} data={losses} fill="#ef4444" fillOpacity={0.55} />
       </ScatterChart>
     </ResponsiveContainer>
   );

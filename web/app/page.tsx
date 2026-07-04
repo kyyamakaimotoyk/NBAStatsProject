@@ -8,7 +8,7 @@ import {
   type PredictionsResponse,
   type AccuracySummary,
 } from "@/lib/api";
-import { MODEL_LABELS } from "@/lib/perf";
+import { useLang } from "@/lib/i18n";
 import PredictionsTable from "@/components/PredictionsTable";
 import InjuryReport from "@/components/InjuryReport";
 
@@ -26,12 +26,13 @@ function ProofBar({
   recent: AccuracySummary[] | null;
   season: AccuracySummary[] | null;
 }) {
+  const { t } = useLang();
   // Prefer the last-30-days window; in the offseason it's empty, so fall back
   // to the trailing year and label it honestly.
   const recentBest = recent ? headlineModel(recent) : null;
   const best = recentBest ?? (season ? headlineModel(season) : null);
   if (!best) return null;
-  const windowLabel = recentBest ? "last 30 days" : "last season";
+  const windowLabel = recentBest ? t.home.windowLast30 : t.home.windowLastSeason;
   const totalLogged = (season ?? []).reduce((s, m) => s + m.total_predictions, 0);
 
   return (
@@ -39,15 +40,15 @@ function ProofBar({
       <div className="proof-chip">
         <div className="proof-value">{Math.round((best.accuracy as number) * 100)}%</div>
         <div className="proof-label">
-          winners called, {windowLabel}
-          <br />({MODEL_LABELS[best.model_type] ?? best.model_type})
+          {t.home.proofWinners(windowLabel)}
+          <br />({t.models[best.model_type] ?? best.model_type})
         </div>
       </div>
       {best.mae !== null && (
         <div className="proof-chip">
-          <div className="proof-value">±{best.mae.toFixed(1)} pts</div>
+          <div className="proof-value">{t.common.plusMinusPts(best.mae.toFixed(1))}</div>
           <div className="proof-label">
-            average margin miss,
+            {t.home.proofMarginLine1}
             <br />
             {windowLabel}
           </div>
@@ -57,9 +58,9 @@ function ProofBar({
         <div className="proof-chip">
           <div className="proof-value">{totalLogged.toLocaleString()}</div>
           <div className="proof-label">
-            predictions logged
+            {t.home.proofLoggedLine1}
             <br />
-            and publicly scored
+            {t.home.proofLoggedLine2}
           </div>
         </div>
       )}
@@ -68,8 +69,9 @@ function ProofBar({
 }
 
 function GamesSection({ data, error }: { data: PredictionsResponse | null; error: string | null }) {
-  if (error) return <p className="status error">Couldn&apos;t load predictions: {error}</p>;
-  if (!data) return <p className="status">Loading predictions…</p>;
+  const { t } = useLang();
+  if (error) return <p className="status error">{t.home.errLoad(error)}</p>;
+  if (!data) return <p className="status">{t.home.loading}</p>;
 
   const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD, local
   const stale = data.game_date !== null && data.game_date < today;
@@ -77,15 +79,11 @@ function GamesSection({ data, error }: { data: PredictionsResponse | null; error
   if (data.count === 0 || (stale && data.predictions.length === 0)) {
     return (
       <div className="offseason">
-        <h2>It&apos;s the offseason</h2>
-        <p>
-          Nightly picks return when the season tips off in October. Until then, the whole
-          track record stays up — every prediction we&apos;ve made, scored against what
-          actually happened.
-        </p>
+        <h2>{t.home.offseasonTitle}</h2>
+        <p>{t.home.offseasonBody}</p>
         <div className="links">
-          <Link href="/accuracy">Last season&apos;s report card →</Link>
-          <Link href="/explore">Explore the data →</Link>
+          <Link href="/accuracy">{t.home.offseasonLinkRecord}</Link>
+          <Link href="/explore">{t.home.offseasonLinkExplore}</Link>
         </div>
       </div>
     );
@@ -94,13 +92,11 @@ function GamesSection({ data, error }: { data: PredictionsResponse | null; error
   return (
     <>
       <h2 id="tonight">
-        {stale ? `Latest slate — ${data.game_date}` : `Predictions for ${data.game_date}`}
+        {stale
+          ? t.home.latestSlate(data.game_date ?? "")
+          : t.home.predictionsFor(data.game_date ?? "")}
       </h2>
-      {stale && (
-        <p className="subtle">
-          No games tonight — this is the most recent slate the models predicted.
-        </p>
-      )}
+      {stale && <p className="subtle">{t.home.staleNote}</p>}
       <PredictionsTable predictions={data.predictions} />
       {data.game_date && <InjuryReport date={data.game_date} />}
     </>
@@ -108,6 +104,7 @@ function GamesSection({ data, error }: { data: PredictionsResponse | null; error
 }
 
 export default function HomePage() {
+  const { t } = useLang();
   const [data, setData] = useState<PredictionsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<AccuracySummary[] | null>(null);
@@ -131,17 +128,14 @@ export default function HomePage() {
   return (
     <section>
       <div className="hero">
-        <h1>Nightly NBA predictions — with receipts.</h1>
-        <p className="hero-sub">
-          Three machine-learning models pick every NBA game. Every prediction is logged,
-          scored against the real result, and published — hits and misses alike.
-        </p>
+        <h1>{t.home.heroTitle}</h1>
+        <p className="hero-sub">{t.home.heroSub}</p>
         <div className="hero-ctas">
           <a className="btn primary" href="#tonight">
-            Tonight&apos;s picks
+            {t.home.ctaTonight}
           </a>
           <Link className="btn ghost" href="/accuracy">
-            See the track record
+            {t.home.ctaRecord}
           </Link>
         </div>
         <ProofBar recent={recent} season={season} />
@@ -149,35 +143,33 @@ export default function HomePage() {
 
       <GamesSection data={data} error={error} />
 
-      <h2>How it works</h2>
+      <h2>{t.home.howTitle}</h2>
       <div className="how-strip">
         <div className="how-step">
           <div className="step-num">1</div>
-          <h3>Box scores in</h3>
-          <p>Every game&apos;s team stats — shooting, rebounding, hustle, tracking.</p>
+          <h3>{t.home.step1Title}</h3>
+          <p>{t.home.step1Body}</p>
         </div>
         <div className="how-step">
           <div className="step-num">2</div>
-          <h3>Rolling form</h3>
-          <p>Each team&apos;s recent play, distilled into rolling features.</p>
+          <h3>{t.home.step2Title}</h3>
+          <p>{t.home.step2Body}</p>
         </div>
         <div className="how-step">
           <div className="step-num">3</div>
-          <h3>Three models</h3>
-          <p>A random forest, gradient boosting and a neural net each pick a winner and a margin.</p>
+          <h3>{t.home.step3Title}</h3>
+          <p>{t.home.step3Body}</p>
         </div>
         <div className="how-step">
           <div className="step-num">4</div>
-          <h3>Scored in public</h3>
+          <h3>{t.home.step4Title}</h3>
           <p>
-            Picks post nightly, then get graded against the final score.{" "}
-            <Link href="/accuracy">The full record →</Link>
+            {t.home.step4Body} <Link href="/accuracy">{t.home.step4Link}</Link>
           </p>
         </div>
       </div>
       <p className="caption">
-        Want the longer version — data, models, the nightly cycle?{" "}
-        <Link href="/about">How HoopModel works →</Link>
+        {t.home.longerVersion} <Link href="/about">{t.home.howLink}</Link>
       </p>
     </section>
   );

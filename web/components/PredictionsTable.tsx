@@ -1,28 +1,26 @@
+"use client";
+
 import type { Prediction } from "@/lib/api";
 import { finalScoreLabel } from "@/lib/perf";
-
-const MODEL_LABELS: Record<string, string> = {
-  rf: "Random Forest",
-  nn: "Neural Net",
-  xgb: "XGBoost",
-};
+import { useLang } from "@/lib/i18n";
 
 export default function PredictionsTable({
   predictions,
 }: {
   predictions: Prediction[];
 }) {
+  const { t } = useLang();
   return (
     <table className="pred-table">
       <thead>
         <tr>
-          <th>Matchup</th>
-          <th>Model</th>
-          <th>Pick</th>
-          <th>Win prob.</th>
-          <th>Margin</th>
-          <th>Final</th>
-          <th>Result</th>
+          <th>{t.predTable.matchup}</th>
+          <th>{t.predTable.model}</th>
+          <th>{t.predTable.pick}</th>
+          <th>{t.predTable.winProb}</th>
+          <th>{t.predTable.margin}</th>
+          <th>{t.predTable.final}</th>
+          <th>{t.predTable.result}</th>
         </tr>
       </thead>
       <tbody>
@@ -41,13 +39,13 @@ export default function PredictionsTable({
               <td>
                 {p.away_team} @ {p.home_team}
               </td>
-              <td>{MODEL_LABELS[p.model_type] ?? p.model_type}</td>
+              <td>{t.models[p.model_type] ?? p.model_type}</td>
               <td className="pick">
                 {p.predicted_winner}
-                {pickPct <= 55 && <span className="coin-flip">coin flip</span>}
+                {pickPct <= 55 && <span className="coin-flip">{t.predTable.coinFlip}</span>}
               </td>
               <td>{pickPct}%</td>
-              <td>by {Math.abs(p.predicted_margin).toFixed(1)}</td>
+              <td>{t.predTable.byMargin(Math.abs(p.predicted_margin).toFixed(1))}</td>
               <td>{finalScoreLabel(p) ?? "—"}</td>
               <td className={resultClass}>{result}</td>
             </tr>

@@ -2,9 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getMarginCorrelations, type MarginCorrItem } from "@/lib/api";
+import { useLang } from "@/lib/i18n";
 import MarginCorrChart from "@/components/MarginCorrChart";
 
 export default function DriversPage() {
+  const { t } = useLang();
   const [kind, setKind] = useState<"DIFF" | "HOME" | "AWAY">("DIFF");
   const [win, setWin] = useState<"L5" | "L10">("L5");
   const [topN, setTopN] = useState(20);
@@ -36,30 +38,27 @@ export default function DriversPage() {
 
   return (
     <section>
-      <h1>What wins games</h1>
-      <p className="subtle">
-        How strongly each rolling team stat correlates with a game&apos;s final margin.
-        Positive = more of it tends to go with winning.
-      </p>
+      <h1>{t.drivers.title}</h1>
+      <p className="subtle">{t.drivers.subtitle}</p>
 
       <div className="controls explore-controls">
         <label>
-          Side:{" "}
+          {t.drivers.sideLabel}{" "}
           <select value={kind} onChange={(e) => setKind(e.target.value as "DIFF" | "HOME" | "AWAY")}>
-            <option value="DIFF">Differential (home − away)</option>
-            <option value="HOME">Home team</option>
-            <option value="AWAY">Away team</option>
+            <option value="DIFF">{t.drivers.sideDiff}</option>
+            <option value="HOME">{t.drivers.sideHome}</option>
+            <option value="AWAY">{t.drivers.sideAway}</option>
           </select>
         </label>
         <label>
-          Window:{" "}
+          {t.drivers.windowLabel}{" "}
           <select value={win} onChange={(e) => setWin(e.target.value as "L5" | "L10")}>
-            <option value="L5">Last 5</option>
-            <option value="L10">Last 10</option>
+            <option value="L5">{t.drivers.last5}</option>
+            <option value="L10">{t.drivers.last10}</option>
           </select>
         </label>
         <label>
-          Top:{" "}
+          {t.drivers.topLabel}{" "}
           <select value={topN} onChange={(e) => setTopN(Number(e.target.value))}>
             {[10, 15, 20, 30, 50].map((n) => (
               <option key={n} value={n}>
@@ -70,23 +69,22 @@ export default function DriversPage() {
         </label>
       </div>
 
-      {error && <p className="status error">Couldn&apos;t load: {error}</p>}
-      {!error && !all && <p className="status">Loading…</p>}
+      {error && <p className="status error">{t.drivers.errLoad(error)}</p>}
+      {!error && !all && <p className="status">{t.drivers.loading}</p>}
       {!error && all && all.length === 0 && (
-        <p className="status">No correlation data available.</p>
+        <p className="status">{t.drivers.noData}</p>
       )}
       {!error && all && all.length > 0 && (
         <>
           {summary && (
             <p className="subtle">
-              Strongest positive: <strong>{summary.pos.feature}</strong> (
-              {summary.pos.correlation.toFixed(3)}) · strongest negative:{" "}
+              {t.drivers.strongestPos} <strong>{summary.pos.feature}</strong> (
+              {summary.pos.correlation.toFixed(3)}) · {t.drivers.strongestNeg}{" "}
               <strong>{summary.neg.feature}</strong> ({summary.neg.correlation.toFixed(3)}) ·{" "}
-              {summary.n1} features with |r| &gt; 0.1, {summary.n2} with |r| &gt; 0.2 (of{" "}
-              {summary.total}).
+              {t.drivers.featureCounts(summary.n1, summary.n2, summary.total)}
             </p>
           )}
-          <h2>Top {top.length} by |correlation| with margin</h2>
+          <h2>{t.drivers.topHeading(top.length)}</h2>
           <MarginCorrChart items={top} />
         </>
       )}

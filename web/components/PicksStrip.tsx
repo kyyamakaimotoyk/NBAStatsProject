@@ -3,11 +3,13 @@
 import { useState } from "react";
 import type { Prediction } from "@/lib/api";
 import { finalScoreLabel } from "@/lib/perf";
+import { useLang } from "@/lib/i18n";
 
 /** The last N graded picks as a green/red strip — the "at a glance" record.
  * Tap/click a square to see the game below (hover-only tooltips are dead on
  * touch screens, so the detail line is the mobile-first affordance). */
 export default function PicksStrip({ rows, count = 30 }: { rows: Prediction[]; count?: number }) {
+  const { t } = useLang();
   const [selected, setSelected] = useState<Prediction | null>(null);
   const recent = rows
     .filter((r) => r.is_correct !== null)
@@ -16,7 +18,7 @@ export default function PicksStrip({ rows, count = 30 }: { rows: Prediction[]; c
 
   return (
     <>
-      <div className="picks-strip" aria-label={`Last ${recent.length} graded picks`}>
+      <div className="picks-strip" aria-label={t.picksStrip.aria(recent.length)}>
         {recent.map((r) => {
           const key = `${r.game_id}-${r.model_type}`;
           const isSel =
@@ -30,7 +32,7 @@ export default function PicksStrip({ rows, count = 30 }: { rows: Prediction[]; c
               className={`pick-chip ${r.is_correct ? "win" : "loss"}${isSel ? " selected" : ""}`}
               aria-pressed={isSel}
               onClick={() => setSelected(isSel ? null : r)}
-              title={`${r.game_date} — ${r.away_team} @ ${r.home_team}: picked ${r.predicted_winner}`}
+              title={t.picksStrip.chipTitle(r.game_date, r.away_team, r.home_team, r.predicted_winner)}
             >
               {r.is_correct ? "✓" : "✗"}
             </button>
@@ -39,14 +41,14 @@ export default function PicksStrip({ rows, count = 30 }: { rows: Prediction[]; c
       </div>
       {selected && (
         <p className="caption pick-detail">
-          {selected.game_date} — {selected.away_team} @ {selected.home_team}: picked{" "}
-          <strong>{selected.predicted_winner}</strong>
+          {selected.game_date} — {selected.away_team} @ {selected.home_team}:{" "}
+          {t.picksStrip.detailPicked} <strong>{selected.predicted_winner}</strong>
           {finalScoreLabel(selected)
-            ? ` · final ${finalScoreLabel(selected)}`
+            ? t.picksStrip.detailFinal(finalScoreLabel(selected) as string)
             : selected.actual_winner
-              ? ` · ${selected.actual_winner} won`
+              ? t.picksStrip.detailWon(selected.actual_winner)
               : ""}{" "}
-          — {selected.is_correct ? "hit" : "miss"}
+          — {selected.is_correct ? t.picksStrip.hit : t.picksStrip.miss}
         </p>
       )}
     </>

@@ -12,9 +12,11 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import type { MarginCorrItem } from "@/lib/api";
+import { useLang } from "@/lib/i18n";
 
 export default function MarginCorrChart({ items }: { items: MarginCorrItem[] }) {
-  if (items.length === 0) return <p className="status">No correlations available.</p>;
+  const { t } = useLang();
+  if (items.length === 0) return <p className="status">{t.drivers.noCorrelations}</p>;
 
   const maxAbs = Math.max(...items.map((i) => Math.abs(i.correlation)), 0.05);
   const dom = Math.ceil(maxAbs * 110) / 100; // pad ~10%
@@ -28,7 +30,7 @@ export default function MarginCorrChart({ items }: { items: MarginCorrItem[] }) 
           domain={[-dom, dom]}
           tick={{ fontSize: 11, fill: "#9aa6c0" }}
           label={{
-            value: "Correlation with final margin",
+            value: t.charts.corrXLabel,
             position: "insideBottom",
             offset: -12,
             fill: "#9aa6c0",

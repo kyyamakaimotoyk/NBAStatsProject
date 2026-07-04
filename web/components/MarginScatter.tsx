@@ -12,6 +12,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import type { Prediction } from "@/lib/api";
+import { useLang } from "@/lib/i18n";
+import type { Dict } from "@/lib/translations";
 
 type Pt = {
   x: number; // predicted home-perspective margin
@@ -23,7 +25,15 @@ type Pt = {
   correct: boolean;
 };
 
-function PointTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: Pt }> }) {
+function PointTooltip({
+  active,
+  payload,
+  t,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: Pt }>;
+  t: Dict;
+}) {
   if (!active || !payload || payload.length === 0) return null;
   const p = payload[0].payload;
   return (
@@ -39,18 +49,20 @@ function PointTooltip({ active, payload }: { active?: boolean; payload?: Array<{
     >
       <div style={{ color: "#9aa6c0", marginBottom: 2 }}>{p.date}</div>
       <div>
-        <strong>{p.away}</strong> @ <strong>{p.home}</strong> · picked {p.pick}
+        <strong>{p.away}</strong> @ <strong>{p.home}</strong> · {t.marginScatter.picked(p.pick)}
       </div>
       <div style={{ marginTop: 4, color: "#9aa6c0" }}>
-        predicted {p.x > 0 ? "+" : ""}
-        {p.x.toFixed(1)} · actual {p.y > 0 ? "+" : ""}
-        {p.y}
+        {t.marginScatter.predActual(
+          `${p.x > 0 ? "+" : ""}${p.x.toFixed(1)}`,
+          `${p.y > 0 ? "+" : ""}${p.y}`,
+        )}
       </div>
     </div>
   );
 }
 
 export default function MarginScatter({ rows }: { rows: Prediction[] }) {
+  const { t } = useLang();
   const pts: Pt[] = rows
     .filter((r) => r.actual_margin !== null && r.is_correct !== null)
     .map((r) => ({
@@ -62,7 +74,7 @@ export default function MarginScatter({ rows }: { rows: Prediction[] }) {
       pick: r.predicted_winner,
       correct: r.is_correct === true,
     }));
-  if (pts.length === 0) return <p className="status">No graded games in this window yet.</p>;
+  if (pts.length === 0) return <p className="status">{t.marginScatter.noGraded}</p>;
 
   const hits = pts.filter((p) => p.correct);
   const misses = pts.filter((p) => !p.correct);
@@ -88,7 +100,7 @@ export default function MarginScatter({ rows }: { rows: Prediction[] }) {
           ticks={majors}
           tick={{ fontSize: 11, fill: "#9aa6c0" }}
           label={{
-            value: "Predicted home margin (pts)",
+            value: t.marginScatter.xLabel,
             position: "insideBottom",
             offset: -12,
             fill: "#9aa6c0",
@@ -103,7 +115,7 @@ export default function MarginScatter({ rows }: { rows: Prediction[] }) {
           width={56}
           tick={{ fontSize: 11, fill: "#9aa6c0" }}
           label={{
-            value: "Actual home margin (pts)",
+            value: t.marginScatter.yLabel,
             angle: -90,
             position: "insideLeft",
             fill: "#9aa6c0",
@@ -124,7 +136,7 @@ export default function MarginScatter({ rows }: { rows: Prediction[] }) {
               active?: boolean;
               payload?: Array<{ payload: Pt }>;
             };
-            return <PointTooltip active={active} payload={payload} />;
+            return <PointTooltip active={active} payload={payload} t={t} />;
           }}
         />
         {/* Legend on top — at the bottom it collided with the x-axis title. */}
@@ -139,8 +151,8 @@ export default function MarginScatter({ rows }: { rows: Prediction[] }) {
         />
         <ReferenceLine x={0} stroke="#555" />
         <ReferenceLine y={0} stroke="#555" />
-        <Scatter name="Winner called" data={hits} fill="#22c55e" fillOpacity={0.55} />
-        <Scatter name="Missed" data={misses} fill="#ef4444" fillOpacity={0.55} />
+        <Scatter name={t.marginScatter.winnerCalled} data={hits} fill="#22c55e" fillOpacity={0.55} />
+        <Scatter name={t.marginScatter.missed} data={misses} fill="#ef4444" fillOpacity={0.55} />
       </ScatterChart>
     </ResponsiveContainer>
   );

@@ -47,6 +47,36 @@ a {
 .site-header nav a:hover {
   color: var(--text);
 }
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+/* EN / 日本語 switch, next to the brand */
+.lang-toggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.lang-toggle button {
+  background: var(--panel);
+  color: var(--muted);
+  border: none;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.lang-toggle button:hover {
+  color: var(--text);
+}
+.lang-toggle button.active {
+  background: var(--accent);
+  color: #0b1020;
+}
 
 /* Phones: brand on its own line, nav becomes a swipeable strip. Without this
    the 7 links squish into ~370px. overflow-x keeps every link reachable;
@@ -75,6 +105,11 @@ a {
     margin-left: 0; /* spacing comes from gap now */
     flex: 0 0 auto;
     font-size: 0.92rem;
+  }
+  /* Brand left, language toggle right, on the same row */
+  .brand-row {
+    width: 100%;
+    justify-content: space-between;
   }
 }
 

@@ -10,6 +10,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
+import { useLang } from "@/lib/i18n";
 
 const PALETTE = [
   "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#14b8a6", "#eab308", "#ec4899",
@@ -24,8 +25,9 @@ export default function FeatureChart({
   teams: string[];
   yLabel?: string;
 }) {
-  if (teams.length === 0) return <p className="status">Pick at least one team.</p>;
-  if (data.length === 0) return <p className="status">No games for these teams in range.</p>;
+  const { t } = useLang();
+  if (teams.length === 0) return <p className="status">{t.explore.pickTeam}</p>;
+  if (data.length === 0) return <p className="status">{t.explore.noGamesInRange}</p>;
 
   return (
     <ResponsiveContainer width="100%" height={420}>
@@ -35,7 +37,7 @@ export default function FeatureChart({
           dataKey="date"
           tick={{ fontSize: 11, fill: "#9aa6c0" }}
           minTickGap={40}
-          label={{ value: "Game date", position: "insideBottom", offset: -12, fill: "#9aa6c0", fontSize: 12 }}
+          label={{ value: t.charts.gameDate, position: "insideBottom", offset: -12, fill: "#9aa6c0", fontSize: 12 }}
         />
         <YAxis
           tick={{ fontSize: 11, fill: "#9aa6c0" }}

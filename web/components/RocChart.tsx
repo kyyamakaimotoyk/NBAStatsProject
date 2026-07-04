@@ -12,6 +12,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import type { RocPoint } from "@/lib/perf";
+import { useLang } from "@/lib/i18n";
 
 export type RocCurveData = {
   model: string;
@@ -22,8 +23,9 @@ export type RocCurveData = {
 };
 
 export default function RocChart({ curves }: { curves: RocCurveData[] }) {
+  const { t } = useLang();
   if (curves.length === 0)
-    return <p className="status">Not enough graded games for a ROC curve yet.</p>;
+    return <p className="status">{t.charts.rocNotEnough}</p>;
 
   return (
     <ResponsiveContainer width="100%" height={380}>
@@ -37,7 +39,7 @@ export default function RocChart({ curves }: { curves: RocCurveData[] }) {
           unit="%"
           tick={{ fontSize: 12, fill: "#9aa6c0" }}
           label={{
-            value: "False positive rate (called home win, away won)",
+            value: t.charts.rocXLabel,
             position: "insideBottom",
             offset: -8,
             fill: "#9aa6c0",
@@ -51,7 +53,7 @@ export default function RocChart({ curves }: { curves: RocCurveData[] }) {
           unit="%"
           tick={{ fontSize: 12, fill: "#9aa6c0" }}
           label={{
-            value: "True positive rate",
+            value: t.charts.rocYLabel,
             angle: -90,
             position: "insideLeft",
             fill: "#9aa6c0",

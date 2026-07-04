@@ -3,12 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { getPerformanceResults, type Prediction } from "@/lib/api";
 import {
-  MODEL_LABELS,
   summaryByModel,
   trendSeries,
   homeAwaySplit,
   marketCompare,
 } from "@/lib/perf";
+import { useLang } from "@/lib/i18n";
 import TrendChart, { type TrendSeries } from "@/components/TrendChart";
 import MarginScatter from "@/components/MarginScatter";
 import PicksStrip from "@/components/PicksStrip";
@@ -16,14 +16,8 @@ import PicksStrip from "@/components/PicksStrip";
 const COLORS: Record<string, string> = { rf: "#3b82f6", nn: "#22c55e", xgb: "#f59e0b" };
 const MARKET_COLOR = "#cbd5e1";
 
-const WINDOWS = [
-  { days: 30, label: "Last 30 days" },
-  { days: 90, label: "Last 90 days" },
-  { days: 365, label: "Last 12 months" },
-  { days: 1100, label: "Three seasons" },
-];
-
 export default function AccuracyPage() {
+  const { t } = useLang();
   const [days, setDays] = useState(365);
   const [rows, setRows] = useState<Prediction[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,34 +53,31 @@ export default function AccuracyPage() {
 
   const accSeries: TrendSeries[] = trend.models.map((m) => ({
     key: `${m}_acc`,
-    name: MODEL_LABELS[m] ?? m,
+    name: t.models[m] ?? m,
     color: COLORS[m] ?? "#888",
   }));
   const maeSeries: TrendSeries[] = [
     ...trend.models.map((m) => ({
       key: `${m}_mae`,
-      name: MODEL_LABELS[m] ?? m,
+      name: t.models[m] ?? m,
       color: COLORS[m] ?? "#888",
     })),
-    { key: "market_mae", name: "Market closing line", color: MARKET_COLOR, dashed: true },
+    { key: "market_mae", name: t.accuracy.marketSeries, color: MARKET_COLOR, dashed: true },
   ];
 
-  if (error) return <p className="status error">Couldn&apos;t load the track record: {error}</p>;
-  if (!rows) return <p className="status">Loading the track record…</p>;
+  if (error) return <p className="status error">{t.accuracy.errLoad(error)}</p>;
+  if (!rows) return <p className="status">{t.accuracy.loading}</p>;
 
   return (
     <section>
-      <h1>Track record</h1>
-      <p className="subtle">
-        Every prediction is logged before tip-off and graded after the final buzzer.
-        This page is the full scoreboard — nothing is edited after the fact.
-      </p>
+      <h1>{t.accuracy.title}</h1>
+      <p className="subtle">{t.accuracy.subtitle}</p>
 
       <div className="controls explore-controls">
         <label>
-          Window:{" "}
+          {t.accuracy.windowLabel}{" "}
           <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
-            {WINDOWS.map((w) => (
+            {t.accuracy.windows.map((w) => (
               <option key={w.days} value={w.days}>
                 {w.label}
               </option>
@@ -94,116 +85,103 @@ export default function AccuracyPage() {
           </select>
         </label>
         <label>
-          Model:{" "}
+          {t.accuracy.modelLabel}{" "}
           <select value={featured ?? ""} onChange={(e) => setModel(e.target.value)}>
             {summaries.map((s) => (
               <option key={s.model} value={s.model}>
-                {MODEL_LABELS[s.model] ?? s.model}
+                {t.models[s.model] ?? s.model}
               </option>
             ))}
           </select>
         </label>
       </div>
 
-      {!featuredSummary && <p className="status">No graded games in this window yet.</p>}
+      {!featuredSummary && <p className="status">{t.accuracy.noGraded}</p>}
 
       {featuredSummary && (
         <>
           <div className="cards">
             <div className="card">
-              <div className="card-title">Winner accuracy</div>
+              <div className="card-title">{t.accuracy.cardWinnerAcc}</div>
               <div className="card-metric">{featuredSummary.accuracyPct.toFixed(1)}%</div>
               <div className="card-sub">
-                {MODEL_LABELS[featuredSummary.model] ?? featuredSummary.model} · a coin flip is
-                50%
+                {t.accuracy.cardWinnerSub(t.models[featuredSummary.model] ?? featuredSummary.model)}
               </div>
             </div>
             <div className="card">
-              <div className="card-title">Average margin miss</div>
-              <div className="card-metric">±{featuredSummary.mae.toFixed(1)} pts</div>
-              <div className="card-sub">how far the predicted margin lands from the real one</div>
+              <div className="card-title">{t.accuracy.cardMarginMiss}</div>
+              <div className="card-metric">{t.common.plusMinusPts(featuredSummary.mae.toFixed(1))}</div>
+              <div className="card-sub">{t.accuracy.cardMarginSub}</div>
             </div>
             {market && (
               <div className="card">
-                <div className="card-title">Market closing line</div>
-                <div className="card-metric">±{market.marketMae.toFixed(1)} pts</div>
+                <div className="card-title">{t.accuracy.cardMarket}</div>
+                <div className="card-metric">{t.common.plusMinusPts(market.marketMae.toFixed(1))}</div>
                 <div className="card-sub">
-                  vs our ±{market.modelMae.toFixed(1)} — paired on the{" "}
-                  {market.n.toLocaleString()} of {featuredSummary.n.toLocaleString()} graded
-                  games with a line · we were closer on {market.closerPct}%
+                  {t.accuracy.cardMarketSub(
+                    market.modelMae.toFixed(1),
+                    market.n.toLocaleString(),
+                    featuredSummary.n.toLocaleString(),
+                    market.closerPct,
+                  )}
                 </div>
               </div>
             )}
             <div className="card">
-              <div className="card-title">Games graded</div>
+              <div className="card-title">{t.accuracy.cardGraded}</div>
               <div className="card-metric">{featuredSummary.n.toLocaleString()}</div>
-              <div className="card-sub">in this window</div>
+              <div className="card-sub">{t.accuracy.cardGradedSub}</div>
             </div>
           </div>
 
-          <h2>Recent picks — {MODEL_LABELS[featuredSummary.model] ?? featuredSummary.model}</h2>
+          <h2>{t.accuracy.recentPicks(t.models[featuredSummary.model] ?? featuredSummary.model)}</h2>
           <PicksStrip rows={featuredRows} />
           <p className="caption">
-            The last {Math.min(30, featuredRows.length)} graded picks, oldest to newest. Hover a
-            square for the game.
+            {t.accuracy.picksCaption(Math.min(30, featuredRows.length))}
           </p>
 
-          <h2>Winner accuracy over time</h2>
+          <h2>{t.accuracy.accOverTime}</h2>
           <TrendChart
             data={trend.data}
             series={accSeries}
             yUnit="%"
             yDomain={[0, 100]}
             refY={50}
-            xLabel="Game date"
-            yLabel="Winner accuracy"
+            xLabel={t.charts.gameDate}
+            yLabel={t.charts.winnerAccuracyY}
           />
-          <p className="caption">
-            Each point is the trailing 7 days of games. The dashed line is 50% — coin-flip
-            territory.
-          </p>
+          <p className="caption">{t.accuracy.accCaption}</p>
 
-          <h2>Margin error over time</h2>
+          <h2>{t.accuracy.maeOverTime}</h2>
           <TrendChart
             data={trend.data}
             series={maeSeries}
-            xLabel="Game date"
-            yLabel="Average margin miss (pts)"
+            xLabel={t.charts.gameDate}
+            yLabel={t.charts.marginMissY}
             yTickStep={5}
           />
-          <p className="caption">
-            Average points missed by, trailing 7 days — lower is better. The dashed line is the
-            betting market&apos;s closing spread on the same games: the strongest public
-            benchmark for a game&apos;s margin. We show it to keep ourselves honest, not to sell
-            picks.
-          </p>
+          <p className="caption">{t.accuracy.maeCaption}</p>
 
-          <h2>Predicted vs actual margin</h2>
+          <h2>{t.accuracy.predVsActual}</h2>
           <MarginScatter rows={featuredRows} />
-          <p className="caption">
-            One point per game (home-team perspective). On the dashed diagonal, the prediction
-            was exact; green points are games where the winner was still called correctly.
-          </p>
+          <p className="caption">{t.accuracy.scatterCaption}</p>
 
           {split && (
             <>
-              <h2>Home picks vs away picks</h2>
+              <h2>{t.accuracy.homeAway}</h2>
               <div className="cards">
                 <div className="card">
-                  <div className="card-title">When we pick the home team</div>
+                  <div className="card-title">{t.accuracy.pickHome}</div>
                   <div className="card-metric">{split.home.pct}%</div>
-                  <div className="card-sub">correct, across {split.home.n} picks</div>
+                  <div className="card-sub">{t.accuracy.correctAcross(split.home.n)}</div>
                 </div>
                 <div className="card">
-                  <div className="card-title">When we pick the away team</div>
+                  <div className="card-title">{t.accuracy.pickAway}</div>
                   <div className="card-metric">{split.away.pct}%</div>
-                  <div className="card-sub">correct, across {split.away.n} picks</div>
+                  <div className="card-sub">{t.accuracy.correctAcross(split.away.n)}</div>
                 </div>
               </div>
-              <p className="caption">
-                A sanity check on home-court bias: if the model only ever trusted home teams,
-                the away column would collapse.
-              </p>
+              <p className="caption">{t.accuracy.homeAwayCaption}</p>
             </>
           )}
         </>

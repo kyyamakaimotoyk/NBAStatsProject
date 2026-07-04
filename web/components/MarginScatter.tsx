@@ -67,21 +67,28 @@ export default function MarginScatter({ rows }: { rows: Prediction[] }) {
   const hits = pts.filter((p) => p.correct);
   const misses = pts.filter((p) => !p.correct);
 
+  // Domain snapped outward to 20s; major demarcations every 20, minor lines
+  // every 10 (drawn as recessive reference lines — fainter than the major grid).
   const all = pts.flatMap((p) => [p.x, p.y]);
-  const lo = Math.floor(Math.min(...all)) - 2;
-  const hi = Math.ceil(Math.max(...all)) + 2;
+  const lo = Math.floor(Math.min(...all) / 20) * 20;
+  const hi = Math.ceil(Math.max(...all) / 20) * 20;
+  const majors: number[] = [];
+  for (let v = lo; v <= hi; v += 20) majors.push(v);
+  const minors: number[] = [];
+  for (let v = lo + 10; v < hi; v += 20) minors.push(v);
 
   return (
-    <ResponsiveContainer width="100%" height={420}>
+    <ResponsiveContainer width="100%" height={440}>
       <ScatterChart margin={{ top: 8, right: 20, bottom: 24, left: 8 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#243049" />
         <XAxis
           type="number"
           dataKey="x"
           domain={[lo, hi]}
+          ticks={majors}
           tick={{ fontSize: 11, fill: "#9aa6c0" }}
           label={{
-            value: "Predicted home margin",
+            value: "Predicted home margin (pts)",
             position: "insideBottom",
             offset: -12,
             fill: "#9aa6c0",
@@ -92,16 +99,24 @@ export default function MarginScatter({ rows }: { rows: Prediction[] }) {
           type="number"
           dataKey="y"
           domain={[lo, hi]}
+          ticks={majors}
           width={56}
           tick={{ fontSize: 11, fill: "#9aa6c0" }}
           label={{
-            value: "Actual home margin",
+            value: "Actual home margin (pts)",
             angle: -90,
             position: "insideLeft",
             fill: "#9aa6c0",
             fontSize: 12,
+            style: { textAnchor: "middle" },
           }}
         />
+        {minors.map((v) => (
+          <ReferenceLine key={`mx${v}`} x={v} stroke="#1a2338" />
+        ))}
+        {minors.map((v) => (
+          <ReferenceLine key={`my${v}`} y={v} stroke="#1a2338" />
+        ))}
         <Tooltip
           cursor={{ strokeDasharray: "3 3" }}
           content={(props: unknown) => {
@@ -112,7 +127,8 @@ export default function MarginScatter({ rows }: { rows: Prediction[] }) {
             return <PointTooltip active={active} payload={payload} />;
           }}
         />
-        <Legend />
+        {/* Legend on top — at the bottom it collided with the x-axis title. */}
+        <Legend verticalAlign="top" height={30} />
         <ReferenceLine
           segment={[
             { x: lo, y: lo },

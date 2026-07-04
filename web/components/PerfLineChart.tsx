@@ -20,6 +20,7 @@ export default function PerfLineChart({
   models,
   xKey,
   xLabel,
+  yLabel,
   numericX = false,
   diagonal = false,
 }: {
@@ -27,6 +28,7 @@ export default function PerfLineChart({
   models: string[];
   xKey: string;
   xLabel?: string;
+  yLabel?: string;
   numericX?: boolean; // numeric x-axis (calibration) vs category (dates)
   diagonal?: boolean; // draw the y=x perfect-calibration reference
 }) {
@@ -47,9 +49,19 @@ export default function PerfLineChart({
               : undefined
           }
         />
-        <YAxis domain={[0, 100]} unit="%" tick={{ fontSize: 12, fill: "#9aa6c0" }} />
+        <YAxis
+          domain={[0, 100]}
+          unit="%"
+          tick={{ fontSize: 12, fill: "#9aa6c0" }}
+          label={
+            yLabel
+              ? { value: yLabel, angle: -90, position: "insideLeft", fill: "#9aa6c0", fontSize: 12, style: { textAnchor: "middle" } }
+              : undefined
+          }
+        />
         <Tooltip contentStyle={{ background: "#141a2e", border: "1px solid #243049" }} />
-        <Legend />
+        {/* Legend on top so it can't collide with the x-axis title. */}
+        <Legend verticalAlign="top" height={30} />
         {diagonal && (
           <ReferenceLine
             segment={[

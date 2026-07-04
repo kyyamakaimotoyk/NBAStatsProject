@@ -377,7 +377,15 @@ h2 {
   justify-content: center;
   font-size: 0.75rem;
   font-weight: 700;
-  cursor: default;
+  cursor: pointer;
+  padding: 0;
+}
+.pick-chip.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.pick-detail {
+  margin-top: -0.5rem;
 }
 .pick-chip.win {
   background: rgba(34, 197, 94, 0.18);

@@ -93,7 +93,11 @@ export default function ExplorePage() {
           <h2>
             {feature} ({rollWindow}) — rolling average
           </h2>
-          <FeatureChart data={series.data} teams={teams} />
+          <FeatureChart
+            data={series.data}
+            teams={teams}
+            yLabel={`${feature} (${rollWindow} rolling avg)`}
+          />
         </>
       )}
     </section>

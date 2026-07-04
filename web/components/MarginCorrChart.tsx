@@ -21,12 +21,19 @@ export default function MarginCorrChart({ items }: { items: MarginCorrItem[] }) 
 
   return (
     <ResponsiveContainer width="100%" height={Math.max(360, items.length * 26)}>
-      <BarChart data={items} layout="vertical" margin={{ top: 8, right: 28, bottom: 8, left: 8 }}>
+      <BarChart data={items} layout="vertical" margin={{ top: 8, right: 28, bottom: 22, left: 8 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#243049" />
         <XAxis
           type="number"
           domain={[-dom, dom]}
           tick={{ fontSize: 11, fill: "#9aa6c0" }}
+          label={{
+            value: "Correlation with final margin",
+            position: "insideBottom",
+            offset: -12,
+            fill: "#9aa6c0",
+            fontSize: 12,
+          }}
         />
         <YAxis
           type="category"

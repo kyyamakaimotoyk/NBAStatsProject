@@ -112,7 +112,8 @@ export default function ScatterPlot({
             );
           }}
         />
-        <Legend />
+        {/* Legend on top so it can't collide with the x-axis title. */}
+        <Legend verticalAlign="top" height={30} />
         {trend && (
           <ReferenceLine
             segment={[

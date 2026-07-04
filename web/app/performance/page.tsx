@@ -83,7 +83,15 @@ export default function PerformancePage() {
           <h2>Daily win-prediction accuracy</h2>
           {(() => {
             const d = dailyAccuracy(rows);
-            return <PerfLineChart data={d.data} models={d.models} xKey="date" />;
+            return (
+              <PerfLineChart
+                data={d.data}
+                models={d.models}
+                xKey="date"
+                xLabel="Game date"
+                yLabel="Daily winner accuracy"
+              />
+            );
           })()}
 
           <h2>Calibration — predicted win prob vs. actual home-win rate</h2>
@@ -97,6 +105,7 @@ export default function PerformancePage() {
                 numericX
                 diagonal
                 xLabel="Predicted home win %"
+                yLabel="Actual home-win rate"
               />
             );
           })()}

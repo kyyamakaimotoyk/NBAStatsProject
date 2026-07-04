@@ -50,9 +50,18 @@ export default function RocChart({ curves }: { curves: RocCurveData[] }) {
           domain={[0, 100]}
           unit="%"
           tick={{ fontSize: 12, fill: "#9aa6c0" }}
+          label={{
+            value: "True positive rate",
+            angle: -90,
+            position: "insideLeft",
+            fill: "#9aa6c0",
+            fontSize: 12,
+            style: { textAnchor: "middle" },
+          }}
         />
         <Tooltip contentStyle={{ background: "#141a2e", border: "1px solid #243049" }} />
-        <Legend />
+        {/* Legend on top so it can't collide with the x-axis title. */}
+        <Legend verticalAlign="top" height={30} />
         <ReferenceLine
           segment={[
             { x: 0, y: 0 },

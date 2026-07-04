@@ -155,6 +155,8 @@ export default function AccuracyPage() {
             yUnit="%"
             yDomain={[0, 100]}
             refY={50}
+            xLabel="Game date"
+            yLabel="Winner accuracy"
           />
           <p className="caption">
             Each point is the trailing 7 days of games. The dashed line is 50% — coin-flip
@@ -162,7 +164,13 @@ export default function AccuracyPage() {
           </p>
 
           <h2>Margin error over time</h2>
-          <TrendChart data={trend.data} series={maeSeries} />
+          <TrendChart
+            data={trend.data}
+            series={maeSeries}
+            xLabel="Game date"
+            yLabel="Average margin miss (pts)"
+            yTickStep={5}
+          />
           <p className="caption">
             Average points missed by, trailing 7 days — lower is better. The dashed line is the
             betting market&apos;s closing spread on the same games: the strongest public

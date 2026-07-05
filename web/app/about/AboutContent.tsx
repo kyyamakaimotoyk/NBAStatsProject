@@ -7,12 +7,18 @@ import { useLang } from "@/lib/i18n";
 // than as a dictionary shredded into sentence fragments. The Japanese is a
 // transcreation, not a sentence-by-sentence translation — keep it that way.
 
+const LINKEDIN_URL = "https://www.linkedin.com/in/kaiyamamoto1/";
+
 function AboutEnglish() {
   return (
     <section>
       <h1>About HoopModel</h1>
       <p className="subtle">
-        A machine-learning side project built by Kai Yamamoto that predicts NBA game winners (and their winning margins),
+        A side project built by{" "}
+        <a href={LINKEDIN_URL} target="_blank" rel="noopener noreferrer">
+          Kai Yamamoto
+        </a>{" "}
+        that predicts NBA game winners (and their winning margins),
         and keeps score on itself, in public.
       </p>
 
@@ -86,7 +92,8 @@ function AboutJapanese() {
     <section>
       <h1>HoopModelについて</h1>
       <p className="subtle">
-        HoopModelは、Kai Yamamotoが趣味で運営している機械学習プロジェクトです。NBAの試合の勝敗と点差を
+        HoopModelは、<a href={LINKEDIN_URL} target="_blank" rel="noopener noreferrer">私</a>
+        が趣味で運営している機械学習プロジェクトです。NBAの試合の勝敗と点差を
         毎晩予想し、その結果をすべて公開しています。
       </p>
 

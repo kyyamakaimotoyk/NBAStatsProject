@@ -6,6 +6,7 @@
   --accent: #f97316;
   --line: #243049;
   --bad: #ef4444;
+  --link: #8ab4f8;
 }
 
 * {
@@ -25,6 +26,18 @@ body {
 a {
   color: inherit;
   text-decoration: none;
+}
+
+/* Links inside prose read as links; nav, cards, and buttons keep the
+   inherit default above. */
+p a {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-color: rgba(138, 180, 248, 0.4);
+  text-underline-offset: 2px;
+}
+p a:hover {
+  text-decoration-color: var(--link);
 }
 
 .site-header {

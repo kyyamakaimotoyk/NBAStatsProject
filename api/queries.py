@@ -295,12 +295,20 @@ _EXPLORE_FEATURES: frozenset[str] = frozenset({
 })
 
 
+# Frozen 3-season walk-forward feature build (E21), shipped to RDS via
+# scripts/ship_features_version.py. The weekly retrain keeps repointing
+# feature_set_current at fresh current-season builds, so Explore unions the
+# live pointer with this archive to serve history that survives repointing.
+_EXPLORE_HISTORY_FSV = "20260703T072718Z"
+
+
 def feature_timeseries(feature: str, window: str = "L5", days: int = 365) -> list[dict]:
-    """Rolling-feature time series from the CURRENT feature_set_version.
+    """Rolling-feature time series: current feature_set_version + frozen history.
 
     Returns one row per game in the window with each side's rolling value
     (``HOME_<feature>_<window>`` / ``AWAY_<feature>_<window>``). The frontend picks
     home_value or away_value per selected team to build per-team series.
+    Games present in both versions take the current pointer's row.
 
     ``feature`` is validated against ``_EXPLORE_FEATURES`` and ``window`` against
     {L5, L10}, so the interpolated column names are safe. Returns [] (not an error)
@@ -314,24 +322,36 @@ def feature_timeseries(feature: str, window: str = "L5", days: int = 365) -> lis
     home_col = f"HOME_{feature}_{window}"
     away_col = f"AWAY_{feature}_{window}"
     q = f"""
-        SELECT DATE(GAME_DATE)              AS game_date,
-               HOME_TEAM_NAME               AS home_team,
-               AWAY_TEAM_NAME               AS away_team,
-               `{home_col}`                 AS home_value,
-               `{away_col}`                 AS away_value
-        FROM features
-        WHERE feature_set_version = (SELECT version FROM feature_set_current WHERE id = 1)
-          AND GAME_DATE >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
-          -- Real franchises only: All-Star/exhibition squads carry non-franchise
-          -- team ids. Filter on id, not name (features says "LA Clippers",
-          -- nba_teams says "Los Angeles Clippers").
-          AND HOME_TEAM_ID IN (SELECT id FROM nba_teams)
-          AND AWAY_TEAM_ID IN (SELECT id FROM nba_teams)
-        ORDER BY GAME_DATE ASC
+        SELECT game_date, home_team, away_team, home_value, away_value
+        FROM (
+            SELECT DATE(GAME_DATE)              AS game_date,
+                   HOME_TEAM_NAME               AS home_team,
+                   AWAY_TEAM_NAME               AS away_team,
+                   `{home_col}`                 AS home_value,
+                   `{away_col}`                 AS away_value,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY GAME_ID
+                       ORDER BY (feature_set_version = :cur) DESC
+                   ) AS rn
+            FROM features
+            WHERE feature_set_version IN (:cur, :hist)
+              AND GAME_DATE >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+              -- Real franchises only: All-Star/exhibition squads carry
+              -- non-franchise team ids. Filter on id, not name (features says
+              -- "LA Clippers", nba_teams says "Los Angeles Clippers").
+              AND HOME_TEAM_ID IN (SELECT id FROM nba_teams)
+              AND AWAY_TEAM_ID IN (SELECT id FROM nba_teams)
+        ) t
+        WHERE rn = 1
+        ORDER BY game_date ASC
     """
     try:
         with get_engine().connect() as conn:
-            return _rows(conn.execute(sa.text(q), {"days": days}))
+            cur = conn.execute(sa.text(
+                "SELECT version FROM feature_set_current WHERE id = 1")).scalar()
+            params = {"cur": cur or _EXPLORE_HISTORY_FSV,
+                      "hist": _EXPLORE_HISTORY_FSV, "days": days}
+            return _rows(conn.execute(sa.text(q), params))
     except Exception as e:  # unknown column / empty feature set → degrade gracefully
         print(f"[explore] feature_timeseries failed for {home_col}: {e}")
         return []

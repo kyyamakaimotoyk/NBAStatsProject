@@ -590,6 +590,22 @@ def run_stage_blocking(stage_name: str, run_id: str, stage_kwargs: Dict[str, Any
     return return_code
 
 
+def _print_failure(run_id: str, stage_name: str, log_path: str, tail_lines: int = 80) -> None:
+    """Surface a stage failure on stdout. The word ERROR is load-bearing (the
+    CloudWatch metric filter alarms on it), and the log tail carries the
+    traceback that would otherwise die with the container's filesystem
+    (stages stream to the log file, not stdout)."""
+    print(f"ERROR: PIPELINE_STAGE_FAILED stage={stage_name} run_id={run_id}", flush=True)
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='replace') as fp:
+            tail = fp.readlines()[-tail_lines:]
+        print(f"--- last {len(tail)} lines of {log_path} ---", flush=True)
+        sys.stdout.writelines(tail)
+        sys.stdout.flush()
+    except OSError as e:
+        print(f"(could not read stage log: {e})", flush=True)
+
+
 def run_pipeline_blocking(stages: List[str], per_stage_kwargs: Dict[str, Dict[str, Any]],
                           run_id: Optional[str] = None) -> Dict[str, Any]:
     """Run a sequence of stages, halting on first non-zero return code.
@@ -627,6 +643,7 @@ def run_pipeline_blocking(stages: List[str], per_stage_kwargs: Dict[str, Dict[st
             state['finished_at'] = datetime.now().isoformat()
             state['current_stage'] = None
             _write_state(state)
+            _print_failure(run_id, stage_name, log_path)
             return state
 
         state['stage_results'].append({'stage': stage_name, 'exit_code': rc,
@@ -636,6 +653,7 @@ def run_pipeline_blocking(stages: List[str], per_stage_kwargs: Dict[str, Dict[st
             state['finished_at'] = datetime.now().isoformat()
             state['current_stage'] = None
             _write_state(state)
+            _print_failure(run_id, stage_name, log_path)
             return state
 
     state['status'] = 'completed'

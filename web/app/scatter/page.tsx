@@ -2,9 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getScatter, type ScatterPoint } from "@/lib/api";
-import { SCATTER_CATALOG, linreg } from "@/lib/explore";
+import { SCATTER_CATALOG, linreg, fiveNum, niceDomain } from "@/lib/explore";
 import { useLang } from "@/lib/i18n";
-import ScatterPlot from "@/components/ScatterPlot";
+import ScatterWithMarginals, { type TeamBox } from "@/components/ScatterWithMarginals";
+import TeamPicker from "@/components/TeamPicker";
+
+// Marginal box plots stay readable up to about this many teams.
+const MAX_BOX_TEAMS = 6;
 
 function StatSelect({
   value,
@@ -58,6 +62,18 @@ export default function ScatterPage() {
     return [...s].sort();
   }, [points]);
 
+  // Nickname -> tricode, derived from each team's own points: the winner field
+  // is this team's tricode on a win, the other side's on a loss.
+  const tricodes = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of points ?? []) {
+      if (!p.team || m.has(p.team) || !p.home_team || !p.away_team || !p.winner) continue;
+      const own = p.wl === "W" ? p.winner : p.home_team === p.winner ? p.away_team : p.home_team;
+      m.set(p.team, own);
+    }
+    return m;
+  }, [points]);
+
   const visible = useMemo(() => {
     if (!points) return [];
     const tset = new Set(teams);
@@ -91,6 +107,34 @@ export default function ScatterPage() {
     return { x1, y1: fit.slope * x1 + fit.intercept, x2, y2: fit.slope * x2 + fit.intercept };
   }, [visible, showTrend]);
 
+  // Shared axis domains so the scatter and its marginal strips line up exactly.
+  const domains = useMemo(() => {
+    if (visible.length === 0) return null;
+    const xs = visible.map((p) => p.x as number);
+    const ys = visible.map((p) => p.y as number);
+    return {
+      x: niceDomain(Math.min(...xs), Math.max(...xs)),
+      y: niceDomain(Math.min(...ys), Math.max(...ys)),
+    };
+  }, [visible]);
+
+  // One W/L box-plot pair per selected team, per axis.
+  const boxes = useMemo<TeamBox[]>(() => {
+    return teams.slice(0, MAX_BOX_TEAMS).map((team) => {
+      const pts = visible.filter((p) => p.team === team);
+      const w = pts.filter((p) => p.wl === "W");
+      const l = pts.filter((p) => p.wl !== "W");
+      return {
+        team,
+        tricode: tricodes.get(team) ?? team.slice(0, 3).toUpperCase(),
+        xW: fiveNum(w.map((p) => p.x as number)),
+        xL: fiveNum(l.map((p) => p.x as number)),
+        yW: fiveNum(w.map((p) => p.y as number)),
+        yL: fiveNum(l.map((p) => p.y as number)),
+      };
+    });
+  }, [teams, visible, tricodes]);
+
   return (
     <section>
       <h1>{t.scatter.title}</h1>
@@ -99,21 +143,6 @@ export default function ScatterPage() {
       <div className="controls explore-controls">
         <StatSelect label="X" value={x} onChange={setX} />
         <StatSelect label="Y" value={y} onChange={setY} />
-        <label className="team-select">
-          {t.scatter.teamsOptional}
-          <select
-            multiple
-            size={5}
-            value={teams}
-            onChange={(e) => setTeams([...e.target.selectedOptions].map((o) => o.value))}
-          >
-            {availableTeams.map((tm) => (
-              <option key={tm} value={tm}>
-                {tm}
-              </option>
-            ))}
-          </select>
-        </label>
         <label className="inline">
           <input
             type="checkbox"
@@ -123,16 +152,38 @@ export default function ScatterPage() {
           {t.scatter.trendline}
         </label>
       </div>
+      <TeamPicker
+        options={availableTeams}
+        selected={teams}
+        onChange={setTeams}
+        legend={t.scatter.teamsOptional}
+        clearLabel={t.explore.clearTeams(teams.length)}
+      />
 
       {error && <p className="status error">{t.scatter.errLoad(error)}</p>}
       {!error && !points && <p className="status">{t.scatter.loading}</p>}
       {!error && points && visible.length === 0 && (
         <p className="status">{t.scatter.noSelection}</p>
       )}
-      {!error && points && visible.length > 0 && (
+      {!error && points && visible.length > 0 && domains && (
         <>
           <h2>{t.scatter.heading(y, x, visible.length, teams.length)}</h2>
-          <ScatterPlot wins={wins} losses={losses} xLabel={x} yLabel={y} trend={trend} />
+          <ScatterWithMarginals
+            wins={wins}
+            losses={losses}
+            xLabel={x}
+            yLabel={y}
+            trend={trend}
+            xDomain={domains.x}
+            yDomain={domains.y}
+            boxes={boxes}
+          />
+          {boxes.length > 0 && (
+            <p className="caption">
+              {t.scatter.margCaption}
+              {teams.length > MAX_BOX_TEAMS ? ` ${t.scatter.margCapNote(MAX_BOX_TEAMS)}` : ""}
+            </p>
+          )}
         </>
       )}
     </section>

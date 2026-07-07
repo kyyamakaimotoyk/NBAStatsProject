@@ -65,30 +65,54 @@ function PointTooltip({
   );
 }
 
+/**
+ * Fixed plot-area geometry, exported so the marginal box strips can align
+ * with the plot area without measuring Recharts internals. plotTop/plotBottom
+ * are the y-pixels of the plot area inside the 460px-tall chart:
+ * top margin + legend, and height - bottom margin - x-axis.
+ */
+export const SCATTER_GEOM = {
+  height: 460,
+  margin: { top: 8, right: 20, bottom: 24, left: 8 },
+  yAxisWidth: 56,
+  xAxisHeight: 30,
+  legendHeight: 30,
+  plotLeft: 8 + 56,
+  plotRight: 20,
+  plotTop: 8 + 30,
+  plotBottom: 460 - 24 - 30,
+};
+
 export default function ScatterPlot({
   wins,
   losses,
   xLabel,
   yLabel,
   trend,
+  xDomain,
+  yDomain,
 }: {
   wins: Pt[];
   losses: Pt[];
   xLabel: string;
   yLabel: string;
   trend: { x1: number; y1: number; x2: number; y2: number } | null;
+  xDomain?: [number, number];
+  yDomain?: [number, number];
 }) {
   const { t } = useLang();
   if (wins.length + losses.length === 0) return <p className="status">{t.scatter.noPoints}</p>;
 
   return (
-    <ResponsiveContainer width="100%" height={460}>
-      <ScatterChart margin={{ top: 8, right: 20, bottom: 24, left: 8 }}>
+    <ResponsiveContainer width="100%" height={SCATTER_GEOM.height}>
+      <ScatterChart margin={SCATTER_GEOM.margin}>
         <CartesianGrid strokeDasharray="3 3" stroke="#243049" />
         <XAxis
           type="number"
           dataKey="x"
           name={xLabel}
+          height={SCATTER_GEOM.xAxisHeight}
+          domain={xDomain ?? ["auto", "auto"]}
           tick={{ fontSize: 11, fill: "#9aa6c0" }}
           label={{ value: xLabel, position: "insideBottom", offset: -12, fill: "#9aa6c0", fontSize: 12 }}
         />
@@ -96,7 +120,8 @@ export default function ScatterPlot({
           type="number"
           dataKey="y"
           name={yLabel}
-          width={56}
+          width={SCATTER_GEOM.yAxisWidth}
+          domain={yDomain ?? ["auto", "auto"]}
           tick={{ fontSize: 11, fill: "#9aa6c0" }}
           label={{ value: yLabel, angle: -90, position: "insideLeft", fill: "#9aa6c0", fontSize: 12 }}
         />
@@ -119,7 +144,7 @@ export default function ScatterPlot({
           }}
         />
         {/* Legend on top so it can't collide with the x-axis title. */}
-        <Legend verticalAlign="top" height={30} />
+        <Legend verticalAlign="top" height={SCATTER_GEOM.legendHeight} />
         {trend && (
           <ReferenceLine
             segment={[

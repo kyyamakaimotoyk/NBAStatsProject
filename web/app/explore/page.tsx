@@ -5,11 +5,13 @@ import { getFeatureTimeseries, type FeatureTimeseriesRow } from "@/lib/api";
 import { FEATURE_CATALOG, allTeams, teamSeries } from "@/lib/explore";
 import { useLang } from "@/lib/i18n";
 import FeatureChart from "@/components/FeatureChart";
+import TeamPicker from "@/components/TeamPicker";
 
 export default function ExplorePage() {
   const { t } = useLang();
   const [feature, setFeature] = useState("PTS");
   const [rollWindow, setRollWindow] = useState<"L5" | "L10">("L5");
+  const [days, setDays] = useState(365);
   const [rows, setRows] = useState<FeatureTimeseriesRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [teams, setTeams] = useState<string[]>([]);
@@ -17,10 +19,10 @@ export default function ExplorePage() {
   useEffect(() => {
     setRows(null);
     setError(null);
-    getFeatureTimeseries(feature, rollWindow, 365)
+    getFeatureTimeseries(feature, rollWindow, days)
       .then((r) => setRows(r.rows))
       .catch((e) => setError(String(e)));
-  }, [feature, rollWindow]);
+  }, [feature, rollWindow, days]);
 
   const available = useMemo(() => (rows ? allTeams(rows) : []), [rows]);
 
@@ -67,22 +69,24 @@ export default function ExplorePage() {
             <option value="L10">{t.explore.last10}</option>
           </select>
         </label>
-        <label className="team-select">
-          {t.explore.teamsMulti}
-          <select
-            multiple
-            size={5}
-            value={teams}
-            onChange={(e) => setTeams([...e.target.selectedOptions].map((o) => o.value))}
-          >
-            {available.map((tm) => (
-              <option key={tm} value={tm}>
-                {tm}
+        <label>
+          {t.explore.horizonLabel}{" "}
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
+            {t.explore.horizons.map((h) => (
+              <option key={h.days} value={h.days}>
+                {h.label}
               </option>
             ))}
           </select>
         </label>
       </div>
+      <TeamPicker
+        options={available}
+        selected={teams}
+        onChange={setTeams}
+        legend={t.explore.teamsMulti}
+        clearLabel={t.explore.clearTeams(teams.length)}
+      />
 
       {error && <p className="status error">{t.explore.errLoad(error)}</p>}
       {!error && !rows && <p className="status">{t.explore.loading}</p>}

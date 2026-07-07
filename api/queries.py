@@ -322,6 +322,11 @@ def feature_timeseries(feature: str, window: str = "L5", days: int = 365) -> lis
         FROM features
         WHERE feature_set_version = (SELECT version FROM feature_set_current WHERE id = 1)
           AND GAME_DATE >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+          -- Real franchises only: All-Star/exhibition squads carry non-franchise
+          -- team ids. Filter on id, not name (features says "LA Clippers",
+          -- nba_teams says "Los Angeles Clippers").
+          AND HOME_TEAM_ID IN (SELECT id FROM nba_teams)
+          AND AWAY_TEAM_ID IN (SELECT id FROM nba_teams)
         ORDER BY GAME_DATE ASC
     """
     try:
@@ -421,6 +426,9 @@ def scatter_data(x: str, y: str, days: int = 365) -> list[dict]:
         {joins}
         WHERE gl.GAME_DATE >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
           AND {xq} IS NOT NULL AND {yq} IS NOT NULL
+          -- Real franchises only (drops preseason internationals, All-Star and
+          -- celebrity-game squads, which all carry non-franchise team ids).
+          AND gl.TEAM_ID IN (SELECT id FROM nba_teams)
         ORDER BY gl.GAME_DATE ASC
     """
     try:

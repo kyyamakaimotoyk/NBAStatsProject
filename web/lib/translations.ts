@@ -252,7 +252,15 @@ const en = {
     windowLabel: "Window:",
     last5: "Last 5",
     last10: "Last 10",
-    teamsMulti: "Teams (ctrl/cmd-click for multiple):",
+    horizonLabel: "Range:",
+    horizons: [
+      { days: 90, label: "Last 90 days" },
+      { days: 365, label: "1 season" },
+      { days: 730, label: "2 seasons" },
+      { days: 1100, label: "3 seasons" },
+    ],
+    teamsMulti: "Teams (check any number):",
+    clearTeams: (n: number) => `Clear ${n} selected`,
     errLoad: (e: string) => `Couldn't load: ${e}`,
     loading: "Loading…",
     noStatData: "No data for this stat yet.",
@@ -287,6 +295,17 @@ const en = {
     loss: "Loss",
     winnerLabel: "Winner:",
     noPoints: "No points.",
+    margCaption:
+      "Box plots along each axis show the spread of that stat in each selected team's wins (green) and losses (red) — hover a box for min, quartiles, and median.",
+    margCapNote: (n: number) => `Distributions are shown for the first ${n} selected teams.`,
+    box: {
+      max: "max",
+      q3: "upper quartile",
+      median: "median",
+      q1: "lower quartile",
+      min: "min",
+      gamesLabel: (n: number) => `${n} games`,
+    },
   },
 
   marginScatter: {
@@ -539,10 +558,18 @@ const ja: Dict = {
     subtitle:
       "統計値をひとつ選ぶと、各チームの調子（直近5試合または10試合の移動平均）がシーズンを通してどう推移したかを確認できます。",
     statLabel: "統計値:",
-    windowLabel: "期間:",
+    windowLabel: "移動平均の幅:",
     last5: "直近5試合",
     last10: "直近10試合",
-    teamsMulti: "チーム（Ctrl／⌘＋クリックで複数選択）:",
+    horizonLabel: "期間:",
+    horizons: [
+      { days: 90, label: "直近90日" },
+      { days: 365, label: "1シーズン" },
+      { days: 730, label: "2シーズン" },
+      { days: 1100, label: "3シーズン" },
+    ],
+    teamsMulti: "チーム（複数選択できます）:",
+    clearTeams: (n: number) => `選択を解除（${n}チーム）`,
     errLoad: (e: string) => `読み込めませんでした: ${e}`,
     loading: "読み込んでいます…",
     noStatData: "この統計値のデータはまだありません。",
@@ -578,6 +605,17 @@ const ja: Dict = {
     loss: "負け",
     winnerLabel: "勝者:",
     noPoints: "表示できる点がございません。",
+    margCaption:
+      "チームを選ぶと、縦軸・横軸それぞれに沿って、そのチームの勝ち試合（緑）と負け試合（赤）の統計値の分布を箱ひげ図で表示します。箱にカーソルを合わせると最小値・四分位数・中央値を確認できます。",
+    margCapNote: (n: number) => `箱ひげ図は先に選んだ${n}チームまでの表示です。`,
+    box: {
+      max: "最大値",
+      q3: "第3四分位数",
+      median: "中央値",
+      q1: "第1四分位数",
+      min: "最小値",
+      gamesLabel: (n: number) => `${n}試合`,
+    },
   },
 
   marginScatter: {

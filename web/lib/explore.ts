@@ -77,6 +77,32 @@ export function linreg(
   return { slope, intercept };
 }
 
+/** Five-number summary (min, quartiles, median, max) for a box plot. */
+export type FiveNum = { min: number; q1: number; med: number; q3: number; max: number; n: number };
+
+export function fiveNum(values: number[]): FiveNum | null {
+  const v = values.filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+  const n = v.length;
+  if (n < 2) return null;
+  const q = (p: number) => {
+    const idx = p * (n - 1);
+    const lo = Math.floor(idx);
+    const frac = idx - lo;
+    return frac === 0 ? v[lo] : v[lo] + frac * (v[lo + 1] - v[lo]);
+  };
+  return { min: v[0], q1: q(0.25), med: q(0.5), q3: q(0.75), max: v[n - 1], n };
+}
+
+/**
+ * Round a data extent outward to a clean step so the scatter axes and the
+ * marginal box strips can share the exact same numeric domain.
+ */
+export function niceDomain(min: number, max: number): [number, number] {
+  if (min === max) return [min - 1, max + 1];
+  const step = Math.pow(10, Math.floor(Math.log10((max - min) / 4)));
+  return [Math.floor(min / step) * step, Math.ceil(max / step) * step];
+}
+
 /** Distinct team names present in the response (home or away). */
 export function allTeams(rows: FeatureTimeseriesRow[]): string[] {
   const s = new Set<string>();

@@ -77,14 +77,24 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
     );
   };
 
+  // Same cell content as winner mode — the model's own pick and margin never
+  // change; the toggle only changes the question being graded (the tint) and
+  // the tooltip. The market's number lives in the Market column.
   const atsCell = (m: string, p: Prediction) => {
     const mm = p.market_margin;
-    // No line, or the model's margin sits exactly on it: no lean to grade.
+    const label = t.resultsTable.cellPick(
+      p.predicted_winner,
+      Math.abs(p.predicted_margin).toFixed(1),
+    );
+    // No market number, or the model's margin sits exactly on it: nothing to grade.
     if (mm == null || mm === 0 || p.predicted_margin === mm)
-      return <td key={m} className="model-cell">—</td>;
+      return (
+        <td key={m} className="model-cell" title={t.resultsTable.noCallTitle}>
+          {label}
+        </td>
+      );
     const leanHome = p.predicted_margin > mm;
     const side = leanHome ? p.home_team : p.away_team;
-    const sideLine = fmtLine(leanHome ? -mm : mm);
     let cls = "";
     let push = false;
     if (p.actual_margin !== null) {
@@ -97,10 +107,10 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
     }
     const title = push
       ? t.resultsTable.pushTitle
-      : t.resultsTable.cellTitleAts(p.predicted_margin.toFixed(1), fmtLine(mm));
+      : t.resultsTable.cellTitleAts(p.predicted_margin.toFixed(1), fmtLine(mm), side);
     return (
       <td key={m} className={`model-cell ${cls}`} title={title}>
-        {side} {sideLine}
+        {label}
       </td>
     );
   };

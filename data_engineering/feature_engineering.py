@@ -1908,10 +1908,18 @@ if __name__ == '__main__':
     print(f"  Away wins: {len(ml_df) - ml_df['TARGET_WIN'].sum()} ({(1-ml_df['TARGET_WIN'].mean())*100:.1f}%)")
     print(f"  Avg margin: {ml_df['TARGET_MARGIN'].mean():.1f} points")
 
-    # Save to CSV for later use (legacy path — kept so experiments/*.py keep working)
+    # Save to CSV for later use (legacy path — kept so experiments/*.py keep
+    # working). Best-effort ONLY: on Fargate the workdir is root-owned and
+    # appuser cannot write here (and the ephemeral CSV would be useless anyway).
+    # The features table below is the primary store — the cache must never
+    # kill the build. This exact write failing is what silently sank the first
+    # weekly retrain (2026-07-06).
     output_file = args.output_csv
-    ml_df.to_csv(output_file, index=False)
-    print(f"\nDataset saved to {output_file}")
+    try:
+        ml_df.to_csv(output_file, index=False)
+        print(f"\nDataset saved to {output_file}")
+    except OSError as exc:
+        print(f"\nWARNING: skipped CSV save ({exc}); writing features table next")
 
     # Primary store: MySQL features table (snapshot per run, atomic pointer).
     # Anything reading the feature dataset should go through core.features_io,

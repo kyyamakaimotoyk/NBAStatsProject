@@ -91,6 +91,8 @@ export default function ScatterPlot({
   trend,
   xDomain,
   yDomain,
+  xTicks,
+  yTicks,
 }: {
   wins: Pt[];
   losses: Pt[];
@@ -99,6 +101,8 @@ export default function ScatterPlot({
   trend: { x1: number; y1: number; x2: number; y2: number } | null;
   xDomain?: [number, number];
   yDomain?: [number, number];
+  xTicks?: number[];
+  yTicks?: number[];
 }) {
   const { t } = useLang();
   if (wins.length + losses.length === 0) return <p className="status">{t.scatter.noPoints}</p>;
@@ -113,6 +117,7 @@ export default function ScatterPlot({
           name={xLabel}
           height={SCATTER_GEOM.xAxisHeight}
           domain={xDomain ?? ["auto", "auto"]}
+          ticks={xTicks}
           tick={{ fontSize: 11, fill: "#9aa6c0" }}
           label={{ value: xLabel, position: "insideBottom", offset: -12, fill: "#9aa6c0", fontSize: 12 }}
         />
@@ -122,6 +127,7 @@ export default function ScatterPlot({
           name={yLabel}
           width={SCATTER_GEOM.yAxisWidth}
           domain={yDomain ?? ["auto", "auto"]}
+          ticks={yTicks}
           tick={{ fontSize: 11, fill: "#9aa6c0" }}
           label={{ value: yLabel, angle: -90, position: "insideLeft", fill: "#9aa6c0", fontSize: 12 }}
         />

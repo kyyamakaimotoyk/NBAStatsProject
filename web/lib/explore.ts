@@ -94,13 +94,31 @@ export function fiveNum(values: number[]): FiveNum | null {
 }
 
 /**
- * Round a data extent outward to a clean step so the scatter axes and the
- * marginal box strips can share the exact same numeric domain.
+ * Snap a data extent outward to a clean step and emit the matching tick
+ * positions, so the scatter axes and the marginal box strips share one tidy
+ * numeric scale. Recharts must be given these ticks explicitly — left to
+ * itself it subdivides the domain evenly and produces long-decimal tick
+ * labels that clip in the y-axis gutter.
  */
-export function niceDomain(min: number, max: number): [number, number] {
-  if (min === max) return [min - 1, max + 1];
-  const step = Math.pow(10, Math.floor(Math.log10((max - min) / 4)));
-  return [Math.floor(min / step) * step, Math.ceil(max / step) * step];
+export function niceScale(
+  min: number,
+  max: number,
+  maxTicks = 6,
+): { domain: [number, number]; ticks: number[] } {
+  if (min === max) {
+    min -= 1;
+    max += 1;
+  }
+  const raw = (max - min) / (maxTicks - 1);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const frac = raw / mag;
+  const step = (frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 2.5 ? 2.5 : frac <= 5 ? 5 : 10) * mag;
+  const d0 = Math.floor(min / step) * step;
+  const d1 = Math.ceil(max / step) * step;
+  const ticks: number[] = [];
+  // toFixed(10) scrubs float drift (0.30000000000000004 -> 0.3).
+  for (let v = d0; v <= d1 + step / 2; v += step) ticks.push(Number(v.toFixed(10)));
+  return { domain: [Number(d0.toFixed(10)), Number(d1.toFixed(10))], ticks };
 }
 
 /** Distinct team names present in the response (home or away). */

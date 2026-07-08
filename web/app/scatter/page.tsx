@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getScatter, type ScatterPoint } from "@/lib/api";
-import { SCATTER_CATALOG, linreg, fiveNum, niceDomain } from "@/lib/explore";
+import { SCATTER_CATALOG, linreg, fiveNum, niceScale } from "@/lib/explore";
 import { useLang } from "@/lib/i18n";
 import ScatterWithMarginals, { type TeamBox } from "@/components/ScatterWithMarginals";
 import TeamPicker from "@/components/TeamPicker";
@@ -107,14 +107,14 @@ export default function ScatterPage() {
     return { x1, y1: fit.slope * x1 + fit.intercept, x2, y2: fit.slope * x2 + fit.intercept };
   }, [visible, showTrend]);
 
-  // Shared axis domains so the scatter and its marginal strips line up exactly.
+  // Shared axis scales so the scatter and its marginal strips line up exactly.
   const domains = useMemo(() => {
     if (visible.length === 0) return null;
     const xs = visible.map((p) => p.x as number);
     const ys = visible.map((p) => p.y as number);
     return {
-      x: niceDomain(Math.min(...xs), Math.max(...xs)),
-      y: niceDomain(Math.min(...ys), Math.max(...ys)),
+      x: niceScale(Math.min(...xs), Math.max(...xs)),
+      y: niceScale(Math.min(...ys), Math.max(...ys)),
     };
   }, [visible]);
 
@@ -174,8 +174,10 @@ export default function ScatterPage() {
             xLabel={x}
             yLabel={y}
             trend={trend}
-            xDomain={domains.x}
-            yDomain={domains.y}
+            xDomain={domains.x.domain}
+            yDomain={domains.y.domain}
+            xTicks={domains.x.ticks}
+            yTicks={domains.y.ticks}
             boxes={boxes}
           />
           {boxes.length > 0 && (

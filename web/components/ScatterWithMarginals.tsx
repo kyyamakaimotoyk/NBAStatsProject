@@ -119,6 +119,8 @@ export default function ScatterWithMarginals({
   trend,
   xDomain,
   yDomain,
+  xTicks,
+  yTicks,
   boxes,
 }: {
   wins: Pt[];
@@ -128,6 +130,8 @@ export default function ScatterWithMarginals({
   trend: { x1: number; y1: number; x2: number; y2: number } | null;
   xDomain: [number, number];
   yDomain: [number, number];
+  xTicks?: number[];
+  yTicks?: number[];
   boxes: TeamBox[];
 }) {
   const { t } = useLang();
@@ -228,6 +232,8 @@ export default function ScatterWithMarginals({
             trend={trend}
             xDomain={xDomain}
             yDomain={yDomain}
+            xTicks={xTicks}
+            yTicks={yTicks}
           />
         </div>
         {hasBoxes && (

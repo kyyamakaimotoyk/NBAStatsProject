@@ -1,27 +1,64 @@
 # NBA Game Prediction Project
 
-A machine learning project that predicts NBA game outcomes (winner and point margin) using historical game data. Built as a learning project for PyTorch and ML fundamentals.
+An end-to-end machine learning system that predicts NBA game outcomes (winner and point margin). Started as a PyTorch learning project; now also running in production as **[hoopmodel.com](https://hoopmodel.com)** — a bilingual (EN/JA) public site where three models pick every game, every pick is logged before tip-off, graded after the final buzzer, and published, benchmarked against the betting market's closing line.
 
 ## Project Overview
 
-This project:
+Two halves, one repo:
+
+**The research bench (run locally)**
 - Fetches NBA game data via the NBA API and stores it in MySQL
-- Engineers 480+ features from rolling statistics including fatigue metrics
-- Trains both scikit-learn (Random Forest) and PyTorch (Neural Network) models
-- Predicts game outcomes with uncertainty estimates
-- Compares model predictions side-by-side
+- Engineers ~770 columns of rolling/context features: form, fatigue, ELO, player availability from official pre-game injury reports
+- Trains Random Forest, XGBoost, and PyTorch neural-net models with probability calibration (isotonic) and conformal margin intervals
+- Evaluation discipline: walk-forward validation, multi-seed ablations with paired tests, and an append-only experiment log — **`docs/model_tuning_log.md` (E1–E21) is the source of truth for every modeling decision**
+
+**The product (AWS, deployed from this repo)**
+- Static Next.js site + read-only FastAPI serving predictions, the fully graded 3-season track record, and data exploration
+- Nightly batch predictions and weekly retrains on ECS Fargate, freshness/drift/dead-man alarms, all infrastructure in Terraform, deploys via GitHub Actions
+
+## The public site — hoopmodel.com
+
+The production system is this repo's code, containerized and scheduled on AWS. The one architectural quirk that shapes everything: **stats.nba.com and cdn.nba.com block datacenter IPs**, so raw data is fetched at home on a residential IP and handed to the cloud through S3 — the cloud makes zero nba.com calls.
+
+```
+HOME PC (residential IP)                AWS (us-east-1)
+┌───────────────────────┐
+│ Task Scheduler, daily │  parquet drop
+│ home_ingest_push.py   ├───────────────► S3 ingest bucket (pending/, manifest-gated)
+│ nba_api → local MySQL │                        │
+└───────────────────────┘                        ▼
+                            ┌─────────────────────────────────────────┐
+                            │ nightly Fargate task (EventBridge)      │
+                            │ s3 load → grade yesterday → vegas lines │
+                            │ → freshness + drift checks → predict    │
+                            │ → NIGHTLY_RUN_OK heartbeat              │
+                            └──────────────┬──────────────────────────┘
+                                           ▼
+     RDS MySQL ◄──── weekly retrain (Mon): ELO → player_impact →
+         │           full-history features → train → validate
+         │                         └──► model bundles → S3 artifact store
+         ▼
+  FastAPI, read-only (Fargate + ALB) ──► CloudFront api.hoopmodel.com
+         ▲                               (5-min edge cache on read-heavy routes)
+  Next.js static export (S3) ──────────► CloudFront hoopmodel.com  (EN/JA, Recharts)
+```
+
+- **Frontend** (`web/`): Next.js App Router static export, client-side EN/JA i18n, Recharts. Pages: Tonight (slate + injury report), Track record, Model lab, Explore, Scatter, What wins games, About.
+- **API** (`api/`): FastAPI + SQLAlchemy Core, SELECT-only, public-safe column allowlists. Rotation-aware DB connector (fetches the auto-rotating RDS password from Secrets Manager at connect time).
+- **Infra** (`infra/`): everything is Terraform — VPC, RDS, ECS, ALB, CloudFront ×2, EventBridge schedules, CloudWatch metric-filter alarms (`ERROR`, `DATA_FRESHNESS_ALERT`, `MODEL_DRIFT_ALERT`, `NIGHTLY_RUN_OK` dead-man) → SNS email, Athena/Glue over CloudFront logs, budget alarm.
+- **CI/CD** (`.github/workflows/`): push to `api/**` → build → ECR → roll the service; push to `web/**` → build → S3 → CloudFront invalidation. GitHub OIDC — no stored AWS keys.
+- **Public-data policy**: the API never exposes hyperparameters, internal model-version names, feature lists/counts, or raw pre-calibration probabilities. Fan-facing performance only.
+- **Working notes** live in `docs/`: `aws_deployment_plan.md`, `terraform_lab.md`, `docker_lab.md`, `cicd_lab.md`, `ops_lab.md`, `traffic_lab.md`, `frontend_lab.md`, `troubleshooting_lab.md`, plus `preseason_checklist.md` for calendar-bound ops.
+
+---
 
 ## Quick Start
 
 ### Prerequisites
 
 ```bash
-# Install dependencies
-pip install sqlalchemy pandas numpy scikit-learn matplotlib joblib
-pip install torch torchvision  # For PyTorch models
-pip install nba_api  # For fetching live schedules
-pip install dash dash-bootstrap-components plotly  # For visualization app
-pip install python-dotenv  # For environment-variable config (see Database Setup below)
+pip install -r requirements.txt            # core: data + modeling + dashboard
+pip install -r requirements-pipeline.txt   # extras for the batch/cloud pipeline
 ```
 
 **Windows Note**: PyTorch must be imported before NumPy/Pandas due to DLL conflicts. This is handled automatically in `predict_games.py`. If you encounter `OSError: [WinError 1114] DLL initialization failed`, ensure PyTorch is imported first in your scripts.
@@ -79,7 +116,7 @@ Run scripts in this order for a complete pipeline:
 │         ↓                                                                   │
 │  2. player_impact.py          Populate player impact cache (for slot features)│
 │         ↓                                                                   │
-│  3. feature_engineering.py    Generate ML features → nba_ml_features.csv   │
+│  3. feature_engineering.py    Generate ML features → features table (DB)   │
 │         ↓                                                                   │
 │  4. baseline_models.py        Train scikit-learn models → models/*.joblib  │
 │         ↓                                                                   │
@@ -113,7 +150,9 @@ for date in ['2022-01-01', '2022-07-01', '2023-01-01', '2023-07-01', '2024-01-01
 
 # Step 3: Generate features from raw game data
 python data_engineering/feature_engineering.py
-# Creates: nba_ml_features.csv
+# Creates: a new version in the `features` MySQL table and promotes the
+# feature_set_current pointer to it (see core/features_io.py). The legacy
+# nba_ml_features.csv is still written as a best-effort cache for experiments.
 
 # Step 4: Train scikit-learn models
 python modeling/baseline_models.py
@@ -151,7 +190,7 @@ python visualization/dataExploration.py
 A model bundle has three logically distinct datasets — *training*, *calibration*, *prediction* — and the boundary between them is what keeps the reported metrics honest. The exact code locations:
 
 ### 1. Training data selection
-**`modeling/predict_games.py:1933` `_prepare_training_data(engine)`** loads `nba_ml_features.csv` *in its entirety* (no date filtering). The CSV is itself built by `data_engineering/feature_engineering.py::build_feature_dataset` which takes `start_date='2020-01-01'` as a default and runs through the latest available game.
+**`modeling/predict_games.py` `_prepare_training_data(engine)`** loads the current feature snapshot *in its entirety* (no date filtering) via `core/features_io.py` — the `features` table at the version `feature_set_current` points to, falling back to the legacy `nba_ml_features.csv` only if the DB is unavailable. The snapshot is built by `data_engineering/feature_engineering.py::build_feature_dataset`, which runs through the latest available game.
 
 Then **`predict_games.py:1213-1218`** does the actual train/eval split:
 ```python
@@ -234,15 +273,21 @@ To make the registry test metrics airtight, fit imputer/scaler on `X_train` only
 
 | Script | Purpose |
 |--------|---------|
-| `predict_games.py` | **Main prediction script** - Predicts winners and margins using RF or NN |
-| `feature_engineering.py` | Builds 550+ ML features including player slot features |
+| `predict_games.py` | **Main prediction script** - Predicts winners and margins (RF / XGB / NN) |
+| `batch_predict_today.py` | **Nightly cloud job** - S3 load → grade yesterday → vegas refresh → freshness + drift checks → predict → heartbeat |
+| `home_ingest_push.py` | Home-side fetch + parquet export + S3 upload (residential-IP half of the ingest handoff) |
+| `s3_ingest_loader.py` | Cloud-side half: loads manifest-gated S3 drops into MySQL (game/date/version/replace modes) |
+| `walkforward_backfill.py` | Train-before-window walk-forward backfill (`wf_` provenance rows; never touches live receipts) |
+| `compute_elo.py` | Chronological pre-game ELO build → `team_elo_pregame` |
+| `historical_injury_scraper.py` | Official pre-game injury-report PDFs → `historical_injury_report` |
+| `feature_engineering.py` | Builds the versioned feature snapshot (~770 columns incl. player slot features) |
 | `player_projections.py` | Player-level projections with opponent adjustments |
 | `player_impact.py` | **Cache management** - Populates player impact table (run BEFORE feature_engineering.py) |
 | `prediction_tracker.py` | Logs predictions and tracks accuracy over time |
 | `evaluate_impact_approaches.py` | Validates impact estimation approaches |
 | `baseline_models.py` | Trains and evaluates scikit-learn models |
 | `pytorch_nba_models.py` | PyTorch neural network implementation (educational) |
-| `dataExploration.py` | Interactive Dash app with 7 tabs (incl. Model Performance) |
+| `dataExploration.py` | Interactive Dash app with 8 tabs (incl. Operations + Model Performance) |
 | `validate_models.py` | Held-out validation runner: re-runs saved models on a date window, logs results to `model_registry` |
 | `schema_exploration.py` | Utility to explore database structure |
 | `db.py` | Shared MySQL helper — `get_engine()` reads config from environment variables |
@@ -533,7 +578,7 @@ DEN @ ATL            | DEN      43.9%       -2.7      | ATL      51.2%       +1.
 - **Fatigue tracking**: Counts games in rolling windows to measure schedule density
 - **Integrated roster model**: Player availability embedded as features, not post-hoc adjustment
 
-**Output:** `nba_ml_features.csv` (~8,800 games, ~700 columns)
+**Output:** a new timestamped version in the `features` MySQL table (~770 columns per game), with the `feature_set_current` pointer promoted atomically — readers go through `core/features_io.py`, never raw CSV reads. As of 2026-07 the build covers full history (three-plus seasons), so each weekly version is self-sufficient. `nba_ml_features.csv` is still written as a legacy cache for `experiments/*.py` (best-effort: skipped with a warning where the filesystem is read-only, e.g. on Fargate).
 
 ```bash
 python data_engineering/feature_engineering.py
@@ -779,7 +824,12 @@ Live tracking is the only path that catches concept drift (the world changes; th
 - **Strengths**: Learns complex patterns, scales to large data, GPU acceleration
 - **Performance**: see Model Performance tab (current values from `model_registry`)
 
-### Neural Network with Player Embeddings (PyTorch) ⬅️ NEW
+### XGBoost
+- **Algorithm**: Gradient-boosted trees; the third production model (`--model xgb`)
+- **Calibration**: displayed win probabilities pass through an eval-slice isotonic calibrator with a degeneracy guard (E20/E21); **picks derive from the raw probability** for all models (E21 — raw beat calibrated picks across a 3-season backtest)
+- **Performance**: see Model lab / `model_registry`
+
+### Neural Network with Player Embeddings (PyTorch) — research only, not deployed
 - **Algorithm**: 4-layer MLP (256→128→64→1) with BatchNorm, Dropout, and player embedding layer
 - **Embedding Layer**: Maps player IDs → 16-dimensional learned vectors
 - **Input**: Team features + 16 player embeddings (8 per team) + availability masks
@@ -816,6 +866,8 @@ Both the `<type>_classifier` and `<type>_regressor` rows in `model_registry` ref
 A `models/bundles/<key>_current.joblib` pointer is updated on every retrain — `load_model_bundle(key)` with no `version` argument loads the latest. Atomicity is guaranteed by `os.replace` on a `.tmp` file, so a killed training process can't leave a half-written bundle.
 
 Legacy fixed-name files (`models/rf_classifier.joblib` etc.) are also still written for any reader that hasn't been migrated; they're not the source of truth anymore.
+
+**In production the artifact store is S3**: `scripts/sync_models.py` pushes bundles up, and cloud containers hydrate `models/bundles/` from S3 on first use (a fresh container is fully functional with only env vars + network). Every bundle records its `feature_set_version` and `data_through_date` for lineage and the leakage guard.
 
 ---
 
@@ -860,75 +912,87 @@ Scripts are organized by concern. Each top-level folder is a Python package (has
 ```
 NBAStatsProject/
 ├── core/                              # Shared infrastructure
-│   ├── db.py                          # get_engine() — reads MySQL config from .env
+│   ├── db.py                          # get_engine() — reads MySQL config from .env / task env
+│   ├── features.py                    # THE feature-selection allowlist (single source of truth)
+│   ├── features_io.py                 # Versioned feature store: features table + feature_set_current pointer
+│   ├── artifact_store.py              # Model-bundle store (local dir locally, S3 in prod)
 │   └── model_registry.py              # Versioned model registry helpers (training/validation rows)
 │
-├── data_engineering/                  # Raw data fetch → feature CSV pipeline
-│   ├── main_refactored.py             # NBA API → MySQL ingest (boxscores)
-│   ├── feature_engineering.py         # Builds nba_ml_features.csv (~500 features)
+├── data_engineering/                  # Raw data fetch → feature pipeline
+│   ├── main_refactored.py             # NBA API → MySQL ingest (27 boxscore tables + game_list)
+│   ├── home_ingest_push.py            # Home-side nightly job: fetch → parquet → S3 (residential IP)
+│   ├── s3_ingest_loader.py            # Cloud-side loader: pending/ drops → MySQL upserts
+│   ├── feature_engineering.py         # Builds the versioned feature snapshot (~770 columns)
+│   ├── compute_elo.py                 # Chronological pre-game ELO → team_elo_pregame
 │   ├── player_impact.py               # Player impact cache (compute_date-snapshotted)
 │   ├── player_projections.py          # Per-player projections with opponent adjustments
-│   ├── injury_data.py                 # Live injury feed (NBA/ESPN scraper)
-│   ├── schema_exploration.py          # Database introspection utility
-│   ├── verify_imported_games.py       # Data-sanity script for importedgamesmemory
-│   └── add_v3_columns.py              # One-shot schema migration helper
+│   ├── historical_injury_scraper.py   # Official pre-game injury PDFs → historical_injury_report
+│   ├── injury_data.py                 # Live injury feed (ESPN)
+│   └── schema_exploration.py          # Database introspection utility
 │
 ├── modeling/                          # Training, prediction, evaluation
-│   ├── predict_games.py               # MAIN prediction CLI (RF + NN + SHAP + backfill range)
+│   ├── predict_games.py               # MAIN prediction CLI (RF/XGB/NN, SHAP, calibration, backfill)
+│   ├── batch_predict_today.py         # Nightly cloud entrypoint (load→grade→check→predict→heartbeat)
+│   ├── walkforward_backfill.py        # Train-before-window backfill (wf_ provenance rows)
 │   ├── prediction_tracker.py          # Prediction logging + actuals backfill
 │   ├── validate_models.py             # Held-out validation runner
+│   ├── model_types.py                 # Model-type registry (dispatch for rf/nn/xgb/nn-embed)
 │   ├── baseline_models.py             # Sklearn baselines (tutorial-style)
-│   ├── pytorch_nba_models.py          # PyTorch training script (tutorial-style)
-│   ├── evaluate_impact_approaches.py  # Compares historical vs advanced impact methods
-│   └── featureSelection.py            # SelectKBest experiment
+│   └── pytorch_nba_models.py          # PyTorch training script (tutorial-style)
 │
-├── visualization/                     # Dashboards + plotting
-│   ├── dataExploration.py             # Dash app (8 tabs incl. Operations + Model Performance)
-│   ├── data_exploration_tutorial.py   # SQLAlchemy + pandas tutorial script
-│   └── prediction_visualizations.py   # One-off matplotlib charts
+├── api/                               # Public read-only FastAPI (Fargate)
+│   ├── main.py                        # Routes: predictions, performance, accuracy, explore
+│   ├── queries.py                     # SELECT-only queries, public-safe column policy
+│   ├── db.py                          # Rotation-aware engine (Secrets Manager at connect time)
+│   └── schemas.py                     # Pydantic response models
 │
-├── orchestration/                     # Top-level runners
-│   └── pipeline.py                    # Status / recommend / run; backs the Operations tab
+├── web/                               # Public site (Next.js static export, EN/JA)
+│   ├── app/                           # Pages: /, /accuracy, /performance, /explore, /scatter, /drivers, /about
+│   ├── components/                    # Recharts charts, tables, pickers
+│   └── lib/                           # api fetchers, client-side aggregations, i18n dictionaries
 │
-├── tests/
-│   └── test_prediction_tracking.py
+├── infra/                             # Terraform: the whole AWS stack
+│   ├── network.tf / database.tf / ecs.tf / api_service.tf / api_alb.tf
+│   ├── frontend.tf / api_cloudfront.tf / dns.tf / ecr.tf / storage.tf
+│   ├── ingest.tf                      # S3 ingest bucket + home-ingest IAM user
+│   ├── schedule.tf                    # EventBridge: nightly predict + weekly retrain
+│   ├── alarms.tf                      # Metric-filter alarms → SNS email
+│   └── analytics.tf / cf_logs.tf / budget.tf / github_oidc.tf
 │
-├── deprecated/                        # Superseded scripts kept for reference
-│   ├── main.py                        # Old monolithic importer
-│   ├── main2.py                       # Older variant
-│   ├── NBADataImporter.py             # Old class (superseded by main_refactored.py; has a pre-existing syntax bug at L96)
-│   └── importedgamesmemory_discrepancies_*.csv
+├── experiments/                       # E-numbered research harnesses (see docs/model_tuning_log.md)
+│   ├── e2_walk_forward.py / e3_noise_ablation.py / e13_calibration.py
+│   ├── e14_intervals.py / e15_cross_context.py / e16_playoff_ceiling.py
+│   └── e17_series_eval.py / e20_calibration.py / e21_calibration_backtest.py
 │
-├── sql/
-│   └── create_predictions_table.sql   # model_predictions DDL
+├── orchestration/
+│   └── pipeline.py                    # Stage sequencer (status/recommend/run); cloud + Operations tab
 │
-├── docs/
-│   └── DATABASE_SCHEMA.md             # Database documentation
+├── visualization/
+│   └── dataExploration.py             # Internal Dash app (8 tabs incl. Operations + Model Performance)
 │
-├── outputs/                           # Generated artifacts (gitignored)
-│   ├── predictions_history/           # Per-day prediction PNGs (predictions_YYYYMMDD.png)
-│   └── impact_evaluation_results.csv
+├── scripts/                           # One-off / scheduled helpers
+│   ├── home_ingest.bat                # Windows Task Scheduler wrapper (must stay ASCII+CRLF)
+│   ├── sync_models.py                 # Push/pull model bundles ↔ S3 artifact store
+│   ├── migrate_features_csv_to_db.py  # CSV → features-table migration
+│   └── ship_features_version.py       # One-off: ship a local feature version to RDS via S3
 │
-├── models/                            # Saved trained model artifacts
-│   ├── rf_classifier.joblib
-│   ├── rf_regressor.joblib
-│   ├── nn_classifier.pt
-│   ├── nn_regressor.pt
-│   ├── nn_embed_classifier.pt
-│   ├── nn_embed_regressor.pt
-│   ├── nn_embed_config.joblib
-│   ├── scaler.joblib
-│   ├── feature_names.joblib
-│   └── nn_config.joblib
+├── .github/workflows/                 # CI/CD (OIDC, no stored keys)
+│   ├── api.yml                        # api/** → build → ECR → roll service
+│   └── frontend.yml                   # web/** → build → S3 → CloudFront invalidation
 │
-├── logs/                              # Pipeline run logs (gitignored)
-│   └── pipeline_<run_id>.log
+├── docs/                              # Working notes + reports
+│   ├── model_tuning_log.md            # ⭐ Canonical experiment log (E1–E21)
+│   ├── DATABASE_SCHEMA.md / aws_deployment_plan.md / preseason_checklist.md
+│   └── *_lab.md                       # terraform / docker / cicd / ops / traffic / frontend labs
 │
-├── .env                               # MySQL credentials (gitignored)
-├── .env.example                       # Template for .env (committed)
-├── .gitignore
-├── nba_ml_features.csv                # Generated feature CSV (stays at root for CWD-relative reads)
-├── requirements.txt
+├── tests/ · sql/ · deprecated/ · outputs/ · logs/ · models/   # as named (mostly gitignored artifacts)
+│
+├── Dockerfile.api                     # Lean API image
+├── Dockerfile.pipeline                # Heavy compute image (torch + sklearn + xgboost)
+├── docker-compose.yml
+├── .env / .env.example                # MySQL credentials (gitignored / template)
+├── nba_ml_features.csv                # Legacy feature cache (primary store is the DB)
+├── requirements.txt / requirements-pipeline.txt
 └── README.md
 ```
 
@@ -936,15 +1000,16 @@ NBAStatsProject/
 
 | You want to… | Folder |
 |---|---|
-| Pull new NBA games into MySQL | `data_engineering/` |
-| Rebuild the feature CSV | `data_engineering/` |
+| Pull new NBA games into MySQL | `data_engineering/` (at home: `home_ingest_push.py`) |
+| Rebuild the feature snapshot | `data_engineering/feature_engineering.py` → `features` table |
 | Train, predict, validate, log | `modeling/` |
-| See the dashboard / Operations tab | `visualization/` |
-| Run the end-to-end pipeline | `orchestration/` |
-| Read shared DB / registry helpers | `core/` |
-| Look at a generated chart | `outputs/predictions_history/` |
-| Run a SQL DDL | `sql/` |
-| See the schema docs | `docs/` |
+| Change the public API | `api/` (CI deploys on push) |
+| Change the public site | `web/` (CI deploys on push) |
+| Change AWS infrastructure | `infra/` (`terraform apply` — manual, deliberate) |
+| Re-run or read an experiment | `experiments/` + `docs/model_tuning_log.md` |
+| Run the end-to-end pipeline | `orchestration/pipeline.py` |
+| See the internal dashboard | `visualization/` |
+| Read shared DB / feature / registry helpers | `core/` |
 
 ### Common commands (run from project root)
 
@@ -982,6 +1047,8 @@ The project connects to a local MySQL database. Configuration is **read from env
 
 All scripts call `db.get_engine()` from `core/db.py`, which reads the `NBA_DB_*` env vars and constructs a SQLAlchemy engine. Each script also exposes a thin `create_engine()` wrapper for backwards compatibility — that wrapper now just delegates to `core.db.get_engine()`.
 
+**In the cloud** the same env-var contract points at RDS MySQL (task definitions inject host/user/db). The public API is special-cased: RDS rotates its password weekly via Secrets Manager, so `api/db.py` fetches the secret **at connect time** (`creator=` hook, with a one-shot refresh-and-retry on auth failure) instead of reading a value injected at container launch — long-lived API tasks survive rotation.
+
 ---
 
 ## Recent Enhancements
@@ -1005,6 +1072,8 @@ python modeling/predict_games.py --accuracy-report  # Show accuracy metrics
 ---
 
 ## Experiments & Research
+
+> **The canonical experiment log is [`docs/model_tuning_log.md`](docs/model_tuning_log.md)** — E1 through E21, append-only, one entry per experiment with hypothesis, method, numbers, and the shipped decision. Highlights: E7 pre-game injury source (leak fix), E9 ELO (the one feature that cleared a paired significance test), E12 noise-aware ablation methodology, E13/E14 calibration + conformal intervals, E15 cross-context, E19 season-end audit + lineage-tracked retrain, E20/E21 calibration policy (picks derive from raw probabilities; eval-slice isotonic for XGB display only; 3-season walk-forward backtest). The write-ups below are early-era deep dives kept for reference.
 
 ### Neural Network Target Scaling Fix (2025-12-08)
 
@@ -1461,16 +1530,14 @@ LAL @ BOS                 BOS         62.0%     58.2%     +3.5 pts   +/-8.2
 6. ~~**Database performance**: Add indexes for 66x query speedup~~ ✅ DONE (2025-12-06)
 7. ~~**Injury impact features in training**: Integrated roster model with SHAP visibility~~ ✅ DONE (2025-12-10)
 8. ~~**Player embeddings for NN**: Embedding layer for player-specific learned representations~~ ✅ DONE (2025-12-10)
-9. **Injury data integration**: Use `nbainjuries` package for real-time injury reports ⬅️ HIGH PRIORITY
-   - Currently requires manual `--injuries` flag
-   - Real injury data would automate player availability detection
+9. ~~**Injury data integration**: automated pre-game availability~~ ✅ DONE (E7 + `historical_injury_scraper.py`; injury report also displayed on the public site)
 10. **SHAP for embedding model**: Custom explainer for embedding inputs
 11. **Minutes redistribution modeling**: Model how minutes shift when a player is OUT
-12. **Betting lines**: Compare predictions to Vegas spreads
+12. ~~**Betting lines**: Compare predictions to Vegas spreads~~ ✅ DONE (`vegas_lines` table; market benchmark live across the public site — headline cards, classification bars, margin-vs-market grading)
 13. **Ensemble methods**: Combine RF and NN predictions
 14. **Travel distance**: Calculate miles traveled for road trips
-15. **LLM dashboard commentary**: On the Model Performance tab, call out to an LLM to read the current registry/predictions and write an independent, plain-English assessment of how the models are doing (calibration, drift, regression vs prior version) without me hand-curating numbers in markdown.
-16. **Vegas spread benchmark**: Once a line-of-the-day data source is available, add a "vs Vegas" tab comparing our margin predictions to closing spreads — currently parked, no data source.
+15. **LLM dashboard commentary**: LLM reads the current registry/predictions and writes an independent, plain-English assessment (calibration, drift, regression vs prior version). Parked.
+16. **Online-Platt recalibration re-pilot**: revisit at ~200 live pairs next season (E21 rejected online-isotonic on variance grounds).
 
 ---
 

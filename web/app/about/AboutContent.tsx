@@ -14,10 +14,7 @@ function AboutEnglish() {
     <section>
       <h1>About HoopModel</h1>
       <p className="subtle">
-        A side project built by{" "}
-        <a href={LINKEDIN_URL} target="_blank" rel="noopener noreferrer">
-          Kai Yamamoto
-        </a>{" "}
+        A side project built by Kai Y.
         that predicts NBA game winners (and their winning margins),
         and keeps score on itself, in public.
       </p>
@@ -92,8 +89,7 @@ function AboutJapanese() {
     <section>
       <h1>HoopModelについて</h1>
       <p className="subtle">
-        HoopModelは、<a href={LINKEDIN_URL} target="_blank" rel="noopener noreferrer">私</a>
-        が趣味で運営している機械学習プロジェクトです。NBAの試合の勝敗と点差を
+        HoopModelは、私が趣味で運営している機械学習プロジェクトです。NBAの試合の勝敗と点差を
         毎晩予想し、その結果をすべて公開しています。
       </p>
 

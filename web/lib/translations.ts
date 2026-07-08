@@ -46,7 +46,6 @@ const en = {
     gameDate: "Game date",
     winnerAccuracyY: "Winner accuracy",
     marginMissY: "Average margin miss (pts)",
-    dailyWinnerAccuracyY: "Daily winner accuracy",
     actualHomeWinRateY: "Actual home-win rate",
     rocNotEnough: "Not enough graded games for a ROC curve yet.",
     rocXLabel: "False positive rate (called home win, away won)",
@@ -138,6 +137,9 @@ const en = {
     cardMarket: "Market closing line",
     cardMarketSub: (modelMae: string, n: string, total: string, closerPct: number) =>
       `vs our ±${modelMae} — paired on the ${n} of ${total} graded games with a line · we were closer on ${closerPct}%`,
+    cardVsMarket: "Margin vs the market",
+    cardVsMarketSub: (w: number, l: number, ties: number) =>
+      `${w}–${l}${ties > 0 ? `–${ties}` : ""} — when our margin disagreed with the market's number, the result landed on our side this often`,
     cardGraded: "Games graded",
     cardGradedSub: "in this window",
     marketSeries: "Market closing line",
@@ -182,7 +184,27 @@ const en = {
     noCompleted: "No completed games in this window yet.",
     accuracyGames: (n: number) => `accuracy · ${n} games`,
     maeCalib: (mae: string, calib: string) => `MAE ${mae} · calib err ${calib}`,
-    dailyAcc: "Daily win-prediction accuracy",
+    confTitle: "Hit rate by pick confidence",
+    confXLabel: "Pick confidence",
+    confCaption:
+      "Confidence is the probability the model gave its own pick. Each bar is the hit rate of picks in that band; a band needs at least 20 graded picks to draw a bar (game counts in the tooltip). A well-behaved model climbs from left to right — its surer picks should land more often. The dashed line is coin-flip.",
+    agreeTitle: "When the models agree — and when they don't",
+    agree: {
+      consensus: "All three agree",
+      majority: "2–1 majority pick",
+      dissenter: "Lone dissenter",
+    } as Record<string, string>,
+    agreeCaption:
+      "Only games where all three models logged a graded pick. When they all agree, the shared pick is scored once; on 2–1 splits, the two-model majority and the lone dissenter are scored separately. Game counts in the tooltip; the dashed line is coin-flip.",
+    skillTitle: "Skill curve — wins above coin-flip",
+    skillYLabel: "Wins above coin-flip",
+    skillCaption:
+      "The running total of correct picks minus half the games played: a coin-flipper drifts around zero, skill climbs. Every series counts only games with a market closing line, so the dashed market-favorite benchmark is on the same footing.",
+    histTitle: "Margin miss distribution",
+    histXLabel: "Predicted − actual home margin (pts)",
+    histCaption:
+      "Signed margin miss for every graded game, in 5-point bins (the outermost bars collect all larger misses). Centered on zero means unbiased; a hump to the right of zero means the model systematically overrates the home side. This is the spread behind the single margin-miss number.",
+    nGames: (n: number) => `${n.toLocaleString()} games`,
     calibration: "Calibration — predicted win prob vs. actual home-win rate",
     calibXLabel: "Predicted home win %",
     roc: "ROC — how cleanly each model separates home wins from losses",
@@ -190,10 +212,8 @@ const en = {
       'How to read: each point along a curve is a different confidence cutoff for calling "home win." The higher a curve bows above the dashed diagonal (coin-flip), the better that model ranks games — AUC 0.5 is no skill, 1.0 is perfect. Unlike accuracy, this scores the probabilities, not just the picks.',
     confusion: "Confusion matrix — where the misses live",
     confusionCaption:
-      "How to read: rows are what actually happened, columns are what the model picked. The two green diagonal cells are correct calls; off-diagonal are mistakes. TN = correctly called an away win, TP = correctly called a home win, FP = picked home but away won, FN = picked away but home won. Comparing FP vs FN shows whether a model leans too hard on home court.",
+      "How to read: rows are what actually happened, columns are what the model picked. The two green diagonal cells are correct calls; off-diagonal are mistakes. TN = correctly called an away win, TP = correctly called a home win, FP = picked home but away won, FN = picked away but home won. Comparing FP vs FN shows whether a model leans too hard on home court. The market matrix counts each game once, its pick being the closing-line favorite; games with a pick'em line (no favorite) are excluded.",
     gameByGame: "Game-by-game results",
-    resultsCaption:
-      'Every game in the selected window, newest first — scroll within the table. Each model\'s cell shows its pick and projected margin, tinted by whether the pick was right; hover a cell for the win probability. "—" means that model logged no prediction for the game.',
   },
 
   confMatrix: {
@@ -210,6 +230,16 @@ const en = {
     cellTitle: (winner: string, pct: number, coin: boolean) =>
       `${winner} at ${pct}% win probability${coin ? " (coin flip)" : ""}`,
     cellPick: (team: string, margin: string) => `${team} by ${margin}`,
+    gradeLabel: "Grade:",
+    modeSu: "Winner call",
+    modeAts: "Margin vs the market",
+    cellTitleAts: (pred: string, line: string) =>
+      `model home margin ${pred} vs the market's ${line}`,
+    pushTitle: "The final margin landed exactly on the market's number — no winner",
+    captionSu:
+      'Every game in the selected window, newest first — scroll within the table. Each model\'s cell shows its pick and projected margin, tinted by whether the pick was right; hover a cell for the win probability. "—" means that model logged no prediction for the game.',
+    captionAts:
+      'Margin vs the market: each cell shows which side the model\'s margin favors relative to the market\'s closing number — "NYK +6.5" means the model expects NYK to do better than the 6.5 points the market gives them, even if it still expects them to lose. Green = the final margin landed on the model\'s side of that number, red = the market\'s side, gray = exactly on the number (no winner). "—" means no market number, no disagreement, or no prediction.',
   },
 
   picksStrip: {
@@ -354,7 +384,6 @@ const ja: Dict = {
     gameDate: "試合日",
     winnerAccuracyY: "勝敗的中率",
     marginMissY: "平均点差誤差（点）",
-    dailyWinnerAccuracyY: "日別的中率",
     actualHomeWinRateY: "実際のホーム勝率",
     rocNotEnough: "ROC曲線を描くには、採点済みの試合がまだ足りません。",
     rocXLabel: "偽陽性率（ホーム勝ちと予想して外れた割合）",
@@ -447,6 +476,9 @@ const ja: Dict = {
     cardMarket: "市場の最終予想点差",
     cardMarketSub: (modelMae: string, n: string, total: string, closerPct: number) =>
       `当モデルは±${modelMae}。市場の予想点差がある${n}試合（採点済み${total}試合中）で比較すると、${closerPct}%の試合で当モデルの方が実際の点差に近い予想でした`,
+    cardVsMarket: "点差予想の対市場成績",
+    cardVsMarketSub: (w: number, l: number, ties: number) =>
+      `${w}勝${l}敗${ties > 0 ? `${ties}分` : ""} — 市場の点差予想とモデルの予想が食い違った試合で、実際の点差がモデル側に落ちた割合です`,
     cardGraded: "採点済みの試合",
     cardGradedSub: "この期間の合計",
     marketSeries: "市場の最終予想点差",
@@ -491,7 +523,27 @@ const ja: Dict = {
     noCompleted: "この期間には、終了した試合がまだありません。",
     accuracyGames: (n: number) => `的中率（${n}試合）`,
     maeCalib: (mae: string, calib: string) => `平均誤差 ${mae}点 · 較正誤差 ${calib}`,
-    dailyAcc: "日別の的中率",
+    confTitle: "確信度別の的中率",
+    confXLabel: "予想の確信度",
+    confCaption:
+      "確信度は、モデルが自分の選んだ側に与えた勝率です。棒は、その確信度帯に入る予想が実際に的中した割合を示します（採点済みが20試合に満たない帯は表示しません。試合数はカーソルで確認できます）。健全なモデルほどグラフは右肩上がりになり、確信の強い予想ほどよく当たるはずです。破線はコイン投げと同じ50%です。",
+    agreeTitle: "3つのモデルの予想が一致するとき・割れるとき",
+    agree: {
+      consensus: "3モデル一致",
+      majority: "2対1の多数派",
+      dissenter: "少数派の1モデル",
+    } as Record<string, string>,
+    agreeCaption:
+      "3つのモデルすべてが予想し、採点済みの試合が対象です。予想が一致した試合では共通の予想を、2対1に割れた試合では多数派（2モデル）と少数派（1モデル）を分けて採点しています。試合数はカーソルで確認できます。破線は50%です。",
+    skillTitle: "スキルカーブ — コイン投げを上回る的中数",
+    skillYLabel: "コイン投げ超過の的中数",
+    skillCaption:
+      "（的中数 − 試合数の半分）の累計です。コイン投げなら0付近を漂い、実力があれば右肩上がりになります。すべての系列は市場の最終予想点差がある試合だけを対象にしているため、破線の市場フェイバリットと同じ土俵で比較できます。",
+    histTitle: "点差誤差の分布",
+    histXLabel: "予想点差 − 実際の点差（点）",
+    histCaption:
+      "採点済みの全試合について、予想点差と実際の点差のずれ（符号付き）を5点刻みで集計しています（両端の棒は±30点を超える誤差をまとめたものです）。0を中心に対称なら偏りがなく、0より右に山が寄っていればホーム側を過大評価している傾向です。平均誤差という1つの数字には表れない、誤差の広がりが見えます。",
+    nGames: (n: number) => `${n.toLocaleString()}試合`,
     calibration: "キャリブレーション — 予想勝率どおりに勝っているか",
     calibXLabel: "予想ホーム勝率（%）",
     roc: "ROC曲線 — ホームの勝ち負けをどこまで見分けられるか",
@@ -499,10 +551,8 @@ const ja: Dict = {
       "見方: 曲線上の各点は、どこまで確信があれば「ホーム勝利」と判定するか、そのしきい値を変えたときの結果に対応します。曲線が破線の対角線(コイン投げと同等)より上に膨らむほど、そのモデルは勝敗の見極めに優れています。AUCは0.5で予測力なし、1.0で完全な予測です。的中率と異なり、予想の当たり外れではなく、出力された確率そのものを評価する指標です。",
     confusion: "混同行列 — どんな外し方をしているか",
     confusionCaption:
-      "見方: 行が実際の結果、列がモデルの予想です。対角線上の緑の2マスが正解、残りの2マスが不正解です。TNはアウェイ勝利の的中、TPはホーム勝利の的中、FPはホーム勝利と予想して外れた試合、FNはアウェイ勝利と予想して外れた試合を表します。FPとFNを比較すると、モデルがホーム側に偏っていないかを確認できます。",
+      "見方: 行が実際の結果、列がモデルの予想です。対角線上の緑の2マスが正解、残りの2マスが不正解です。TNはアウェイ勝利の的中、TPはホーム勝利の的中、FPはホーム勝利と予想して外れた試合、FNはアウェイ勝利と予想して外れた試合を表します。FPとFNを比較すると、モデルがホーム側に偏っていないかを確認できます。市場の行列は各試合を1回だけ集計し、市場の最終予想点差で優勢とされた側をその予想として扱います。互角のライン（優勢なし）の試合は除外しています。",
     gameByGame: "試合ごとの結果",
-    resultsCaption:
-      "選択した期間の全試合を新しい順に表示しています(表内をスクロールできます)。各モデルの欄には予想した勝者と点差を表示し、的中なら緑、外れなら赤の背景になります。カーソルを合わせると勝率が表示されます。「—」は、そのモデルがその試合を予想しなかったことを示します。",
   },
 
   confMatrix: {
@@ -519,6 +569,16 @@ const ja: Dict = {
     cellTitle: (winner: string, pct: number, coin: boolean) =>
       `${winner}が勝つ確率 ${pct}%${coin ? "（五分五分）" : ""}`,
     cellPick: (team: string, margin: string) => `${team} ${margin}点差`,
+    gradeLabel: "採点基準:",
+    modeSu: "勝敗のみ",
+    modeAts: "点差（市場との比較）",
+    cellTitleAts: (pred: string, line: string) =>
+      `モデルの予想点差 ${pred} ／ 市場の予想点差 ${line}`,
+    pushTitle: "実際の点差が市場の予想とちょうど同じだった試合（勝敗なし）",
+    captionSu:
+      "選択した期間の全試合を新しい順に表示しています（表内をスクロールできます）。各モデルの欄には予想した勝者と点差を表示し、的中なら緑、外れなら赤の背景になります。カーソルを合わせると勝率が表示されます。「—」は、そのモデルがその試合を予想しなかったことを示します。",
+    captionAts:
+      "点差（市場との比較）: 各モデルの欄には、市場の最終予想点差に対してモデルがどちらの側を有利と見ているかを表示します。例えば「NYK +6.5」は、勝敗ではNYKの負けを予想していても、市場が見込む6.5点差ほどは離されないという意味です。実際の点差がモデル側に落ちれば緑、市場側に落ちれば赤、ちょうど市場の数字どおりなら灰色（勝敗なし）です。「—」は市場の予想がない、モデルと市場の数字が同じ、または予想がない試合です。",
   },
 
   picksStrip: {

@@ -51,25 +51,159 @@ export function summaryByModel(rows: Prediction[]): ModelSummary[] {
 
 type Pivot = { data: Record<string, number | string>[]; models: string[] };
 
-/** One row per game_date with each model's hit-rate (%) that day. */
-export function dailyAccuracy(rows: Prediction[]): Pivot {
-  const byDate = new Map<string, Map<string, { c: number; n: number }>>();
-  const models = new Set<string>();
+/**
+ * Hit rate by pick confidence: picks bucketed by the probability the model
+ * gave its OWN chosen side (max of home/away win prob). Buckets with fewer
+ * than MIN_BUCKET_N graded picks emit no bar (a rate over a handful of games
+ * is noise); the count always rides along as `<model>_n` for the tooltip.
+ */
+const MIN_BUCKET_N = 20;
+const CONF_BUCKETS = [
+  { key: "50–55%", lo: 0.5, hi: 0.55 },
+  { key: "55–60%", lo: 0.55, hi: 0.6 },
+  { key: "60–65%", lo: 0.6, hi: 0.65 },
+  { key: "65%+", lo: 0.65, hi: 1.01 },
+];
+
+export function confidenceBuckets(rows: Prediction[]): Pivot {
+  const models = [...new Set(rows.map((r) => r.model_type))].sort();
+  const acc = new Map<string, Map<string, { c: number; n: number }>>(); // bucket -> model
   for (const r of rows) {
-    models.add(r.model_type);
-    const day = byDate.get(r.game_date) ?? byDate.set(r.game_date, new Map()).get(r.game_date)!;
-    const cell = day.get(r.model_type) ?? day.set(r.model_type, { c: 0, n: 0 }).get(r.model_type)!;
+    if (r.is_correct === null) continue;
+    const conf = Math.max(r.home_win_probability, 1 - r.home_win_probability);
+    const bucket = CONF_BUCKETS.find((b) => conf >= b.lo && conf < b.hi);
+    if (!bucket) continue;
+    const byModel = acc.get(bucket.key) ?? acc.set(bucket.key, new Map()).get(bucket.key)!;
+    const cell =
+      byModel.get(r.model_type) ?? byModel.set(r.model_type, { c: 0, n: 0 }).get(r.model_type)!;
     cell.n++;
-    if (r.is_correct === true) cell.c++;
+    if (r.is_correct) cell.c++;
   }
-  const data = [...byDate.entries()]
+  const data = CONF_BUCKETS.map(({ key }) => {
+    const row: Record<string, number | string> = { bucket: key };
+    for (const m of models) {
+      const cell = acc.get(key)?.get(m);
+      row[`${m}_n`] = cell?.n ?? 0;
+      if (cell && cell.n >= MIN_BUCKET_N) row[m] = Math.round((cell.c / cell.n) * 1000) / 10;
+    }
+    return row;
+  });
+  return { data, models };
+}
+
+/**
+ * Consensus vs split decisions, over games where all three models logged a
+ * graded pick: hit rate when they all agree, the 2-1 majority's rate on split
+ * games, and the lone dissenter's rate on those same games.
+ */
+export function agreementSplit(
+  rows: Prediction[],
+): { key: "consensus" | "majority" | "dissenter"; pct: number; n: number }[] {
+  const byGame = new Map<string, Prediction[]>();
+  for (const r of rows) {
+    if (r.is_correct === null) continue;
+    (byGame.get(r.game_id) ?? byGame.set(r.game_id, []).get(r.game_id)!).push(r);
+  }
+  const c = { consensus: { c: 0, n: 0 }, majority: { c: 0, n: 0 }, dissenter: { c: 0, n: 0 } };
+  for (const rs of byGame.values()) {
+    if (rs.length !== 3 || new Set(rs.map((r) => r.model_type)).size !== 3) continue;
+    const picks = new Map<string, number>();
+    for (const r of rs) picks.set(r.predicted_winner, (picks.get(r.predicted_winner) ?? 0) + 1);
+    if (picks.size === 1) {
+      c.consensus.n++;
+      if (rs[0].is_correct) c.consensus.c++;
+    } else {
+      const majorityPick = [...picks.entries()].find(([, cnt]) => cnt === 2)?.[0];
+      if (majorityPick === undefined) continue; // two teams -> a 3-way split can't happen
+      const maj = rs.find((r) => r.predicted_winner === majorityPick)!;
+      const dis = rs.find((r) => r.predicted_winner !== majorityPick)!;
+      c.majority.n++;
+      if (maj.is_correct) c.majority.c++;
+      c.dissenter.n++;
+      if (dis.is_correct) c.dissenter.c++;
+    }
+  }
+  return (Object.keys(c) as (keyof typeof c)[])
+    .filter((k) => c[k].n > 0)
+    .map((k) => ({ key: k, pct: Math.round((c[k].c / c[k].n) * 1000) / 10, n: c[k].n }));
+}
+
+/**
+ * Skill curve: running total of (correct picks - half the games played) per
+ * model, plus the market favorite under the `market` key. A coin-flipper
+ * drifts along zero. Every series counts ONLY games with a non-zero closing
+ * line so the benchmark comparison is same-footing; series are forward-filled
+ * so each date carries every line.
+ */
+export function skillCurve(rows: Prediction[]): Pivot {
+  const lined = rows.filter(
+    (r) => r.is_correct !== null && r.market_margin != null && r.market_margin !== 0,
+  );
+  const models = [...new Set(lined.map((r) => r.model_type))].sort();
+  // date -> series -> that day's {correct, games}
+  const byDate = new Map<string, Map<string, { c: number; n: number }>>();
+  const bump = (date: string, series: string, correct: boolean) => {
+    const day = byDate.get(date) ?? byDate.set(date, new Map()).get(date)!;
+    const cell = day.get(series) ?? day.set(series, { c: 0, n: 0 }).get(series)!;
+    cell.n++;
+    if (correct) cell.c++;
+  };
+  const seen = new Set<string>();
+  for (const r of lined) {
+    bump(r.game_date, r.model_type, r.is_correct === true);
+    if (!seen.has(r.game_id)) {
+      seen.add(r.game_id);
+      bump(r.game_date, "market", (r.market_margin as number) > 0 === homeWon(r));
+    }
+  }
+  const cum = new Map<string, number>([...models, "market"].map((s) => [s, 0]));
+  const data = [...byDate.keys()].sort().map((date) => {
+    const row: Record<string, number | string> = { date };
+    for (const [series, cell] of byDate.get(date)!) {
+      cum.set(series, (cum.get(series) ?? 0) + cell.c - 0.5 * cell.n);
+    }
+    for (const [series, v] of cum) row[series] = Math.round(v * 10) / 10;
+    return row;
+  });
+  return { data, models };
+}
+
+export type ErrorHistBin = { x: number; pct: number; n: number };
+export type ErrorHist = { model: string; n: number; bins: ErrorHistBin[] };
+
+/**
+ * Signed margin-miss distribution per model (predicted - actual home margin),
+ * in `binWidth`-point bins centered on multiples of binWidth; everything past
+ * +/-clampAt collects in the edge bins. Every model emits the full bin range
+ * so the small-multiple panels share one axis.
+ */
+export function marginErrorHist(rows: Prediction[], binWidth = 5, clampAt = 30): ErrorHist[] {
+  const byModel = new Map<string, number[]>();
+  for (const r of rows) {
+    if (r.actual_margin === null) continue;
+    const err = r.predicted_margin - r.actual_margin;
+    (byModel.get(r.model_type) ?? byModel.set(r.model_type, []).get(r.model_type)!).push(err);
+  }
+  const half = clampAt / binWidth;
+  const centers = Array.from({ length: 2 * half + 1 }, (_, i) => (i - half) * binWidth);
+  return [...byModel.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([date, m]) => {
-      const row: Record<string, number | string> = { date };
-      for (const [model, cell] of m) row[model] = Math.round((cell.c / cell.n) * 100);
-      return row;
+    .map(([model, errs]) => {
+      const counts = new Map<number, number>(centers.map((c) => [c, 0]));
+      for (const e of errs) {
+        const center = Math.max(-half, Math.min(half, Math.round(e / binWidth))) * binWidth;
+        counts.set(center, (counts.get(center) ?? 0) + 1);
+      }
+      return {
+        model,
+        n: errs.length,
+        bins: centers.map((x) => ({
+          x,
+          n: counts.get(x)!,
+          pct: Math.round(((counts.get(x)! / errs.length) * 100) * 10) / 10,
+        })),
+      };
     });
-  return { data, models: [...models].sort() };
 }
 
 const dayNum = (iso: string) => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 86_400_000);
@@ -272,7 +406,60 @@ export function rocCurve(rows: Prediction[]): { points: RocPoint[]; auc: number 
   return { points, auc };
 }
 
+export type MarginVsMarket = { w: number; l: number; ties: number; n: number; pct: number };
+
+/**
+ * Directional margin test vs the market: for each game with a non-zero closing
+ * number where the model's margin disagrees with it, whose side did the final
+ * margin land on? (The gambling world calls this "against the spread"; the
+ * public site deliberately doesn't.) Ties = the final margin landed exactly on
+ * the market's number and are excluded from the rate.
+ */
+export function marginVsMarket(rows: Prediction[]): MarginVsMarket | null {
+  let w = 0;
+  let l = 0;
+  let ties = 0;
+  for (const r of rows) {
+    const mm = r.market_margin;
+    if (mm == null || mm === 0 || r.actual_margin === null || r.predicted_margin === mm) continue;
+    if (r.actual_margin === mm) ties++;
+    else if (r.actual_margin > mm === r.predicted_margin > mm) w++;
+    else l++;
+  }
+  const n = w + l;
+  return n > 0 ? { w, l, ties, n, pct: Math.round((w / n) * 1000) / 10 } : null;
+}
+
 export type Confusion = { tp: number; fp: number; fn: number; tn: number };
+
+/**
+ * Confusion counts for the market benchmark: one entry per distinct game with
+ * a non-zero closing line, the "pick" being the market favorite. Pick'em lines
+ * make no call and are excluded (same footing as classificationRates).
+ */
+export function marketConfusionCounts(rows: Prediction[]): Confusion | null {
+  const seen = new Set<string>();
+  const c: Confusion = { tp: 0, fp: 0, fn: 0, tn: 0 };
+  let n = 0;
+  for (const r of rows) {
+    if (
+      r.market_margin == null ||
+      r.market_margin === 0 ||
+      r.actual_winner === null ||
+      seen.has(r.game_id)
+    )
+      continue;
+    seen.add(r.game_id);
+    n++;
+    const predHome = r.market_margin > 0;
+    const actHome = homeWon(r);
+    if (predHome && actHome) c.tp++;
+    else if (predHome && !actHome) c.fp++;
+    else if (!predHome && actHome) c.fn++;
+    else c.tn++;
+  }
+  return n > 0 ? c : null;
+}
 
 /** 2x2 winner-call outcomes: predicted home/away pick vs the actual winner. */
 export function confusionCounts(rows: Prediction[]): Confusion | null {

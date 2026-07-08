@@ -630,6 +630,47 @@ h2 {
   text-underline-offset: 2px;
 }
 
+/* Game-by-game grade toggle + push tint (landed exactly on the line) */
+.table-mode {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.table-mode label.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+.cell-push {
+  background: rgba(148, 163, 184, 0.16);
+}
+
+/* Margin-error histograms: small multiples, one panel per model */
+.hist-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.hist-cell {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.hist-title {
+  font-size: 0.85rem;
+  color: var(--text);
+  margin-bottom: 0.25rem;
+}
+.hist-n {
+  color: var(--muted);
+}
+.hist-xlabel {
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 0.25rem;
+}
+
 /* Five-number tooltip for the marginal box plots */
 .box-tip {
   position: absolute;

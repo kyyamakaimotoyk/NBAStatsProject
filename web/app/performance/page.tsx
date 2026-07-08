@@ -4,18 +4,30 @@ import { useEffect, useState } from "react";
 import { getPerformanceResults, type Prediction } from "@/lib/api";
 import {
   summaryByModel,
-  dailyAccuracy,
+  confidenceBuckets,
+  agreementSplit,
+  skillCurve,
+  marginErrorHist,
   calibrationBins,
   rocCurve,
   confusionCounts,
+  marketConfusionCounts,
 } from "@/lib/perf";
 import { useLang } from "@/lib/i18n";
 import PerfLineChart from "@/components/PerfLineChart";
-import ResultsTable from "@/components/ResultsTable";
 import RocChart, { type RocCurveData } from "@/components/RocChart";
 import ConfusionMatrix from "@/components/ConfusionMatrix";
+import ResultsTable from "@/components/ResultsTable";
+import BucketBars from "@/components/BucketBars";
+import AccuracyBars from "@/components/AccuracyBars";
+import ErrorHistogram from "@/components/ErrorHistogram";
+import TrendChart, { type TrendSeries } from "@/components/TrendChart";
 
 const COLORS: Record<string, string> = { rf: "#3b82f6", nn: "#22c55e", xgb: "#f59e0b" };
+const MARKET_COLOR = "#cbd5e1";
+// Agreement classes are one measure, not competing entities — a single
+// neutral hue keeps them from reading as a fourth, fifth and sixth model.
+const AGREE_COLOR = "#94a3b8";
 
 export default function PerformancePage() {
   const { t } = useLang();
@@ -70,19 +82,87 @@ export default function PerformancePage() {
             ))}
           </div>
 
-          <h2>{t.perf.dailyAcc}</h2>
+          <h2>{t.perf.confTitle}</h2>
           {(() => {
-            const d = dailyAccuracy(rows);
+            const cb = confidenceBuckets(rows);
             return (
-              <PerfLineChart
-                data={d.data}
-                models={d.models}
-                xKey="date"
-                xLabel={t.charts.gameDate}
-                yLabel={t.charts.dailyWinnerAccuracyY}
+              <BucketBars
+                data={cb.data}
+                series={cb.models.map((m) => ({
+                  key: m,
+                  name: t.models[m] ?? m,
+                  color: COLORS[m] ?? "#888",
+                }))}
+                xKey="bucket"
+                xLabel={t.perf.confXLabel}
+                yLabel={t.charts.winnerAccuracyY}
+                gamesLabel={t.perf.nGames}
               />
             );
           })()}
+          <p className="caption">{t.perf.confCaption}</p>
+
+          {(() => {
+            const agree = agreementSplit(rows);
+            if (agree.length === 0) return null;
+            return (
+              <>
+                <h2>{t.perf.agreeTitle}</h2>
+                <AccuracyBars
+                  data={agree.map((a) => ({
+                    name: t.perf.agree[a.key],
+                    pct: a.pct,
+                    n: a.n,
+                    color: AGREE_COLOR,
+                  }))}
+                  yLabel={t.charts.winnerAccuracyY}
+                />
+                <p className="caption">{t.perf.agreeCaption}</p>
+              </>
+            );
+          })()}
+
+          <h2>{t.perf.skillTitle}</h2>
+          {(() => {
+            const sc = skillCurve(rows);
+            const series: TrendSeries[] = [
+              ...sc.models.map((m) => ({
+                key: m,
+                name: t.models[m] ?? m,
+                color: COLORS[m] ?? "#888",
+              })),
+              { key: "market", name: t.accuracy.marketFavorite, color: MARKET_COLOR, dashed: true },
+            ];
+            const vals = sc.data.flatMap((d) =>
+              series.map((s) => Number(d[s.key])).filter(Number.isFinite),
+            );
+            const lo = Math.min(0, Math.floor(Math.min(...vals, 0) / 5) * 5);
+            const hi = Math.max(5, Math.ceil(Math.max(...vals, 0) / 5) * 5);
+            return (
+              <TrendChart
+                data={sc.data}
+                series={series}
+                yDomain={[lo, hi]}
+                refY={0}
+                xLabel={t.charts.gameDate}
+                yLabel={t.perf.skillYLabel}
+              />
+            );
+          })()}
+          <p className="caption">{t.perf.skillCaption}</p>
+
+          <h2>{t.perf.histTitle}</h2>
+          <ErrorHistogram
+            panels={marginErrorHist(rows).map((h) => ({
+              label: t.models[h.model] ?? h.model,
+              color: COLORS[h.model] ?? "#888",
+              n: h.n,
+              bins: h.bins,
+            }))}
+            xLabel={t.perf.histXLabel}
+            gamesLabel={t.perf.nGames}
+          />
+          <p className="caption">{t.perf.histCaption}</p>
 
           <h2>{t.perf.calibration}</h2>
           {(() => {
@@ -121,6 +201,12 @@ export default function PerformancePage() {
 
           <h2>{t.perf.confusion}</h2>
           <div className="conf-row">
+            {(() => {
+              const mkt = marketConfusionCounts(rows);
+              return mkt ? (
+                <ConfusionMatrix label={t.accuracy.marketFavorite} counts={mkt} />
+              ) : null;
+            })()}
             {[...new Set(rows.map((r) => r.model_type))].sort().map((m) => {
               const counts = confusionCounts(rows.filter((r) => r.model_type === m));
               return counts ? (
@@ -132,7 +218,6 @@ export default function PerformancePage() {
 
           <h2>{t.perf.gameByGame}</h2>
           <ResultsTable rows={rows} />
-          <p className="caption">{t.perf.resultsCaption}</p>
         </>
       )}
     </section>

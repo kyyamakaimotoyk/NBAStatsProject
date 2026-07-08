@@ -7,6 +7,7 @@ import {
   trendSeries,
   homeAwaySplit,
   marketCompare,
+  marginVsMarket,
   classificationRates,
 } from "@/lib/perf";
 import { useLang } from "@/lib/i18n";
@@ -14,6 +15,7 @@ import TrendChart, { type TrendSeries } from "@/components/TrendChart";
 import MarginScatter from "@/components/MarginScatter";
 import PicksStrip from "@/components/PicksStrip";
 import AccuracyBars from "@/components/AccuracyBars";
+import ResultsTable from "@/components/ResultsTable";
 
 const COLORS: Record<string, string> = { rf: "#3b82f6", nn: "#22c55e", xgb: "#f59e0b" };
 const MARKET_COLOR = "#cbd5e1";
@@ -50,6 +52,7 @@ export default function AccuracyPage() {
   );
   const featuredSummary = summaries.find((s) => s.model === featured);
   const market = useMemo(() => marketCompare(featuredRows), [featuredRows]);
+  const duel = useMemo(() => marginVsMarket(featuredRows), [featuredRows]);
   const split = useMemo(() => homeAwaySplit(featuredRows), [featuredRows]);
   const trend = useMemo(() => (rows ? trendSeries(rows) : { data: [], models: [] }), [rows]);
   const cls = useMemo(() => (rows ? classificationRates(rows) : []), [rows]);
@@ -140,6 +143,15 @@ export default function AccuracyPage() {
                 </div>
               </div>
             )}
+            {duel && (
+              <div className="card">
+                <div className="card-title">{t.accuracy.cardVsMarket}</div>
+                <div className="card-metric">{duel.pct.toFixed(1)}%</div>
+                <div className="card-sub">
+                  {t.accuracy.cardVsMarketSub(duel.w, duel.l, duel.ties)}
+                </div>
+              </div>
+            )}
             <div className="card">
               <div className="card-title">{t.accuracy.cardGraded}</div>
               <div className="card-metric">{featuredSummary.n.toLocaleString()}</div>
@@ -205,6 +217,11 @@ export default function AccuracyPage() {
               <p className="caption">{t.accuracy.homeAwayCaption}</p>
             </>
           )}
+
+          {/* The full receipts, all models side by side (heading lives under
+              t.perf; the grade toggle and caption live inside the table). */}
+          <h2>{t.perf.gameByGame}</h2>
+          <ResultsTable rows={rows} />
         </>
       )}
     </section>

@@ -233,13 +233,15 @@ const en = {
     gradeLabel: "Grade:",
     modeSu: "Winner call",
     modeAts: "Margin vs the market",
+    market: "Market",
+    marketTitle: (line: string) => `the market's closing home margin: ${line}`,
     cellTitleAts: (pred: string, line: string) =>
       `model home margin ${pred} vs the market's ${line}`,
     pushTitle: "The final margin landed exactly on the market's number — no winner",
     captionSu:
-      'Every game in the selected window, newest first — scroll within the table. Each model\'s cell shows its pick and projected margin, tinted by whether the pick was right; hover a cell for the win probability. "—" means that model logged no prediction for the game.',
+      'Every game in the selected window, newest first — scroll within the table. The Market column is the closing favorite and margin, graded on the same terms as the models. Each model\'s cell shows its pick and projected margin, tinted by whether the pick was right; hover a cell for the win probability. "—" means no market number, or no prediction for the game.',
     captionAts:
-      'Margin vs the market: each cell shows which side the model\'s margin favors relative to the market\'s closing number — "NYK +6.5" means the model expects NYK to do better than the 6.5 points the market gives them, even if it still expects them to lose. Green = the final margin landed on the model\'s side of that number, red = the market\'s side, gray = exactly on the number (no winner). "—" means no market number, no disagreement, or no prediction.',
+      'Margin vs the market: each cell shows which side the model\'s margin favors relative to the market\'s closing number (the Market column) — "NYK +6.5" means the model expects NYK to do better than the 6.5 points the market gives them, even if it still expects them to lose. Green = the final margin landed on the model\'s side of that number, red = the market\'s side, gray = exactly on the number (no winner). "—" means no market number, no disagreement, or no prediction.',
   },
 
   picksStrip: {
@@ -572,13 +574,15 @@ const ja: Dict = {
     gradeLabel: "採点基準:",
     modeSu: "勝敗のみ",
     modeAts: "点差（市場との比較）",
+    market: "市場",
+    marketTitle: (line: string) => `市場の最終予想点差（ホーム側）: ${line}`,
     cellTitleAts: (pred: string, line: string) =>
       `モデルの予想点差 ${pred} ／ 市場の予想点差 ${line}`,
     pushTitle: "実際の点差が市場の予想とちょうど同じだった試合（勝敗なし）",
     captionSu:
-      "選択した期間の全試合を新しい順に表示しています（表内をスクロールできます）。各モデルの欄には予想した勝者と点差を表示し、的中なら緑、外れなら赤の背景になります。カーソルを合わせると勝率が表示されます。「—」は、そのモデルがその試合を予想しなかったことを示します。",
+      "選択した期間の全試合を新しい順に表示しています（表内をスクロールできます）。「市場」の欄は市場の最終予想（優勢とされた側と点差）で、モデルと同じ基準で採点しています。各モデルの欄には予想した勝者と点差を表示し、的中なら緑、外れなら赤の背景になります。カーソルを合わせると勝率が表示されます。「—」は市場の予想がない、またはそのモデルがその試合を予想しなかったことを示します。",
     captionAts:
-      "点差（市場との比較）: 各モデルの欄には、市場の最終予想点差に対してモデルがどちらの側を有利と見ているかを表示します。例えば「NYK +6.5」は、勝敗ではNYKの負けを予想していても、市場が見込む6.5点差ほどは離されないという意味です。実際の点差がモデル側に落ちれば緑、市場側に落ちれば赤、ちょうど市場の数字どおりなら灰色（勝敗なし）です。「—」は市場の予想がない、モデルと市場の数字が同じ、または予想がない試合です。",
+      "点差（市場との比較）: 各モデルの欄には、市場の最終予想点差（「市場」の欄）に対してモデルがどちらの側を有利と見ているかを表示します。例えば「NYK +6.5」は、勝敗ではNYKの負けを予想していても、市場が見込む6.5点差ほどは離されないという意味です。実際の点差がモデル側に落ちれば緑、市場側に落ちれば赤、ちょうど市場の数字どおりなら灰色（勝敗なし）です。「—」は市場の予想がない、モデルと市場の数字が同じ、または予想がない試合です。",
   },
 
   picksStrip: {

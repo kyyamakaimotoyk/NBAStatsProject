@@ -13,6 +13,9 @@ type GameRow = {
   away: string;
   home: string;
   final: string | null;
+  mm: number | null; // market closing home margin (0 = market makes no call)
+  actualWinner: string | null;
+  actualMargin: number | null;
   byModel: Partial<Record<string, Prediction>>;
 };
 
@@ -42,11 +45,17 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
           away: p.away_team,
           home: p.home_team,
           final: finalScoreLabel(p),
+          mm: null,
+          actualWinner: null,
+          actualMargin: null,
           byModel: {},
         })
         .get(p.game_id)!;
     g.byModel[p.model_type] = p;
     if (!g.final) g.final = finalScoreLabel(p);
+    if (g.mm == null && p.market_margin != null) g.mm = p.market_margin;
+    if (g.actualWinner == null) g.actualWinner = p.actual_winner;
+    if (g.actualMargin == null) g.actualMargin = p.actual_margin;
   }
   // Newest first.
   const list = [...games.values()].sort(
@@ -101,6 +110,27 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
     return mode === "su" ? suCell(m, p) : atsCell(m, p);
   };
 
+  // The benchmark's own column: the closing favorite and margin. Graded like a
+  // model in winner-call mode; shown untinted in margin mode, where it is the
+  // number the model cells are measured against.
+  const marketCell = (g: GameRow) => {
+    if (g.mm == null || g.mm === 0) return <td className="model-cell">—</td>;
+    const fav = g.mm > 0 ? g.home : g.away;
+    const label = t.resultsTable.cellPick(fav, Math.abs(g.mm).toFixed(1));
+    const title = t.resultsTable.marketTitle(fmtLine(g.mm));
+    let cls = "";
+    if (mode === "su" && g.actualWinner !== null) {
+      cls = fav === g.actualWinner ? "cell-win" : "cell-loss";
+    } else if (mode === "ats" && g.actualMargin !== null && g.actualMargin === g.mm) {
+      cls = "cell-push";
+    }
+    return (
+      <td className={`model-cell ${cls}`} title={title}>
+        {label}
+      </td>
+    );
+  };
+
   return (
     <>
       <div className="controls table-mode">
@@ -120,6 +150,7 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
             <tr>
               <th>{t.resultsTable.date}</th>
               <th>{t.resultsTable.matchup}</th>
+              <th>{t.resultsTable.market}</th>
               <th>{t.resultsTable.final}</th>
               {MODEL_ORDER.map((m) => (
                 <th key={m}>{t.models[m] ?? m}</th>
@@ -133,6 +164,7 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
                 <td>
                   {g.away} @ {g.home}
                 </td>
+                {marketCell(g)}
                 <td>{g.final ?? "—"}</td>
                 {MODEL_ORDER.map((m) => cell(m, g.byModel[m]))}
               </tr>

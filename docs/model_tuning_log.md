@@ -39,6 +39,7 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **E21** | **Multi-season calibration backtest + empirical guard threshold + online-recalibration pilot** | E20 shipped on one test window and a round-number ±10pp guard; its residuals deferred both to E21. Three legs: (1) does eval-slice isotonic actually beat raw / Platt across seasons? (2) what guard threshold does the healthy-fit pick-shift distribution justify? (3) does weekly online recalibration on live logged pairs beat the shipped map? | `experiments/e21_calibration_backtest.py`: 16 monthly walk-forward windows across 2023-24 → 2025-26 (fresh 4,167-game multi-season CSV, prod config, `--no-db-write`), RF+XGB × 3 seeds, raw vs iso_eval vs platt_eval; every fit logs its eval-slice pick-shift (48 healthy fits/model). `experiments/e21_online_pilot.py`: weekly chronological replay of the 186 live (raw prob, outcome) pairs/model from E18 logging; raw vs shipped-stale vs online iso vs online Platt. | **Leg 1**: calibration is accuracy-neutral for both models (Wilcoxon p>0.14 everywhere; mean −0.4 to −0.9pp). ECE: RF raw is already calibrated — iso does NOT improve it (p=0.78); XGB raw is genuinely miscalibrated (~0.12) and both calibrators fix it decisively (−0.038 iso / −0.034 Platt, p≤0.001). **Leg 2**: the ±10pp guard is not discriminative — **40% of healthy fits exceed it**, 25% exceed even the known-degenerate +14.2pp; healthy p99 ≈ 23pp (RF) / 27pp (XGB). **Leg 3 (pilot, n=129)**: raw RF beat everything live (0.667 vs shipped 0.620); online isotonic actively harmful (0.597 acc, 0.225 ECE); Platt the least-bad online option. | **Measured 2026-07-03** — recommendations pending: drop RF calibrator, keep XGB's, guard → per-model p99 tripwire + live home-share monitor; see §E21. |
 | **E21b** | *(same experiment — decision)* | | | **Shipped**: raw-derived picks for all models (`_derive_pick_probability` returns raw; +0.5pp mean, raw right on 53% of ~1,900 backtest flips / 62% live; permanently immune to calibrator pathology); guard re-set from ±10pp to the healthy **p99 (±25pp)** as a true extreme-degeneracy ERROR tripwire; missing-requested-bundle in the nightly is now ERROR (the silent `WARN: skipping xgb` hid all season). **Also shipped (user-approved)**: RF display calibration dropped — RF ships unwrapped, displayed prob == raw (calibrator stored in bundle for telemetry/revert); XGB keeps its calibrator (halves ECE, p<0.001). **Pending**: live home-share drift monitor (next season's nightly); 20260703 bundle promotion (after the honest xgb Apr–Jun backfill on the old S3 bundle). | **Implemented 2026-07-03** |
 | **E18** | **Calibration audit + logging fix + leakage guard** | User-surfaced bug: Game Predictions tab showed NYK winner for CLE@NYK 2026-05-25 while Model Evaluation tab showed CLE pick logged — same model, same game, different pick. Root cause: dashboard reads E13 isotonic-calibrated classifier; the logging path in `predict_games.py` still derived `predicted_winner` from the **regressor margin sign** (`result['win_prob']` = `np.mean(margin_samples > 0)`), an older signal that pre-dates E13. Two-headed model → two different picks near the boundary. Also surfaced: bundle metadata stored no `data_through_date`, so the backfill loop happily predicted for dates within the training window with no warning. | (1) Logging now uses calibrated classifier: `p_cal = result['win_prob_classifier']`; `predicted_winner = home if p_cal > 0.5 else away`. (2) New `home_win_probability_raw` column added via idempotent migration in `prediction_tracker.ensure_table_exists`; the pre-isotonic prob is logged alongside the calibrated one. NN/NN-embed have no isotonic wrapper → raw == calibrated. (3) Bundle metadata gains `train_start_date / train_end_date / eval_start_date / eval_end_date / data_through_date` (the latest GAME_DATE the production model saw). (4) Backfill loop in `predict_games.py` gates on `data_through_date`: dates ≤ that are skipped with a loud message; `--allow-leakage` overrides. (5) Model Evaluation per-game table now shows **Win% raw** + **Win% cal** side-by-side; for legacy rows raw is NULL. | Data fix only (no model retrain). Game Predictions and Model Evaluation now read the same field. Backfill predictions on training-window dates are refused by default — past metrics on those rows were optimistic by an unmeasured amount. **A/B comparison columns ready**: re-run `predict_games.py --start-date X --end-date Y --no-shap --no-plot` for `X > data_through_date` to populate `home_win_probability_raw` and start the raw-vs-calibrated comparison. | **Implemented 2026-05-26** — see "Calibration audit & leakage guard" section below. |
+| **P1** | **Player counting-stat projections** — dataset + baselines + two-stage XGB + 3-season validation/calibration report | New product surface (public `/players` projection table + Bedrock LLM fantasy advisor, docs/player_projections_plan.md) needs per-player MIN + PTS/REB/AST/STL/BLK/TOV/3PM/3PA/FTM/FTA. User-set ship gate: deep calibration + validation on the last 3 seasons before `/players` goes public. | `experiments/p1_player_dataset.py`: 57,854 top-8-by-rolling-MPG player-games (2023-24 → 2025-26 regular seasons, 2022-23 warm-up), ~150 leakage-safe shift-1 features incl. approved Tier-2 groups A/B/C/G (opportunity/hustle, vacated minutes/usage, Vegas spread/total/implied). `p1_player_models.py`: naive L10, Marcel shrinkage (must-beat), two-stage XGB (minutes model × per-36 rates; `count:poisson` with log-minutes exposure for STL/BLK/TOV/3PA/FTA; 3PM/FTM = attempts × shrunken make-rate). `p1_player_validation.py`: 2 season walk-forward folds, paired t-tests, decile reliability, Poisson frequency calibration, split-conformal coverage, minutes-vs-rate decomposition, slices, fantasy aggregates, feature-target correlation matrix. | **XGB beats Marcel on 10/11 targets in both folds, all p≤2.6e-11** (MIN MAE 4.93→4.63 / 4.87→4.59; PTS 5.23→5.03 / 5.17→4.96; 3PA −0.16; STL flat — R²≈0.08, near-noise). Decile calibration tight; conformal coverage 0.78-0.82 (80%) / 0.89-0.91 (90%); Poisson tails over-forecast elite STL/BLK bins; ~15% of PTS error attributable to the minutes model; fantasy-pts MAE 8.03 vs Marcel 8.41. Full report: docs/p1_player_validation_report.md. | **Baseline established 2026-07-09** — `/players` ship gate pending Kai's review; §P1 below |
 
 ---
 
@@ -1125,3 +1126,79 @@ for policy-level changes, the way E12 made multi-seed the bar for feature change
 (Also: this entry was briefly duplicated by a session restart mid-analysis — the two
 write-ups reached the same verdicts independently from the same JSON, which is its own
 kind of replication.)
+
+---
+
+## 2026-07-09 — Experiment P1: player counting-stat projections (dataset, baselines, two-stage XGB, 3-season validation)
+
+### Why this experiment exists
+First experiment of the P-series (player-grain models; plan: `docs/player_projections_plan.md`).
+The target product is a public `/players` daily projection table plus a Bedrock LLM fantasy
+advisor that reads it. The user-set ship gate: a deep calibration + validation report over the
+last 3 seasons before anything goes public. This entry establishes the modeling baseline and
+the evidence bar; the report itself is generated by code
+(`experiments/p1_player_validation.py` → `docs/p1_player_validation_report.md`) so it can be
+re-run after any change.
+
+### Hypothesis
+A two-stage XGBoost (a minutes model times per-36 rate models, Poisson-with-exposure for the
+low-count stats) beats a properly built Marcel-style shrinkage baseline on per-stat MAE with
+paired significance in **both** walk-forward folds — the falsifiable version of "ML adds value
+over a weighted average" for this task. Secondary claims: predicted deciles are calibrated,
+Poisson λ implies honest 0/1/2+ frequencies, and split-conformal intervals achieve nominal
+coverage.
+
+### Setup
+- **Dataset** (`experiments/p1_player_dataset.py`): 57,854 player-games — top-8 players per
+  team by rolling MPG, 713 players, 3,617 games, regular seasons 2023-24/2024-25/2025-26,
+  rolling warm-up on 2022-23. ~150 leakage-safe features (shift-1 rolling), Tier-1 plus the
+  user-approved Tier-2 groups A (form/shot-diet/priors), B (touches/passes/rebound
+  chances/hustle), C (vacated minutes + vacated usage of absent regulars), G (Vegas spread,
+  total, implied team total — 80.7% coverage). Playertrack/hustle/usage coverage 100%.
+- **Folds**: train 2023-24 → test 2024-25; train 2023-24+2024-25 → test 2025-26.
+- **Models**: `naive` (L10 average), `marcel` (blended per-36 L10/season/prior-season, shrunk
+  toward league mean by GP, × projected minutes), `xgb` (two-stage; 3PM/FTM derived as
+  attempts × shrunken season make-rate so makes ≤ attempts by construction).
+- **Tests**: paired t on per-row |error| (xgb vs marcel), per stat, per fold.
+
+### Results
+- **Verdict on the hypothesis: confirmed for 10 of 11 targets.** XGB beats Marcel in both
+  folds at p≤2.6e-11 for MIN, PTS, REB, AST, BLK, TOV, FG3M, FG3A, FTM, FTA. The exception is
+  **STL** (ΔMAE ≈ 0, p=0.55/0.77) — steals are near-noise (XGB R² 0.078); even so
+  DEFLECTIONS_L10 is the strongest single steals correlate (+0.26), edging STL_L10 itself
+  (+0.24), so the hustle features are earning their seat.
+- **Headline MAEs (fold 2, n=19,251)**: MIN 4.59 (Marcel 4.87), PTS 4.96 (5.17), REB 2.02,
+  AST 1.49, 3PM 0.99, 3PA 1.61 (Marcel 1.77 — biggest relative win), FTA 1.82.
+- **Calibration**: decile reliability tight for MIN/PTS/REB/AST/3PA (bottom decile slightly
+  under-predicted, ~0.6 MIN / 0.2 PTS). Poisson frequency honest through λ≈2; above that the
+  model **over-forecasts elite STL/BLK games** (BLK bin λ∈[2,3): mean λ 2.32 vs actual 1.96)
+  — tail shrinkage is a known Phase-B refinement.
+- **Conformal coverage**: 80% intervals → 0.78-0.82 empirical; 90% → 0.89-0.91. Honest.
+- **Minutes vs rates**: re-scoring with actual minutes cuts PTS MAE 4.96→4.20 — ~15% of PTS
+  error lives in the minutes model (REB 11%, 3PA 12%, TOV only 2%). The minutes model is the
+  highest-leverage improvement target, as designed.
+- **Feature evidence** (`outputs/p1_feature_target_correlations.csv` + XGB gain): the
+  engineered EXPECTED_USG_POSS is the #1 PTS feature (gain 0.24); REB_CHANCES_L10 (+0.64) is
+  effectively as informative as REB_L10 itself; VACATED_MIN and LONG_ABSENCE_RETURN both make
+  the minutes model's top-8. Groups B/C/H all show up on merit; G rides mostly through the
+  minutes model (blowout risk).
+- **Fantasy**: fantasy-points MAE 8.03 (xgb) vs 8.41 (marcel) vs 8.45 (naive); z-weighted
+  composite 2.23 vs 2.32 vs 2.35.
+
+### Decision
+Baseline established; XGB two-stage is the production candidate for Phase B (nightly
+`player_predictions` + grading), pending Kai's review of
+`docs/p1_player_validation_report.md` — the agreed `/players` ship gate.
+
+### Caveats / follow-ups
+- Absence signal is *did-not-play-today* (top-8 selection + vacated features) — includes
+  surprise scratches; the E7 problem in milder form. Phase B switches to
+  `historical_injury_report` pregame data; expect headline MAEs to worsen slightly and
+  honestly when it does.
+- Single fixed seed (deterministic-ish XGB). The E12 multi-seed bar applies when the NN
+  multi-output variant enters as an E-experiment.
+- Regular season only; playoff rotations are a different regime (E15/E16 lesson).
+- Poisson tail over-forecast for STL/BLK; candidate fix: shrink λ above ~2, or negative
+  binomial.
+- STL may simply be at its noise floor — consider dropping the STL model to Marcel output in
+  production if two more folds agree.

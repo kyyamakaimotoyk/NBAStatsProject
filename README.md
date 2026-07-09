@@ -48,7 +48,8 @@ HOME PC (residential IP)                AWS (us-east-1)
 - **Infra** (`infra/`): everything is Terraform — VPC, RDS, ECS, ALB, CloudFront ×2, EventBridge schedules, CloudWatch metric-filter alarms (`ERROR`, `DATA_FRESHNESS_ALERT`, `MODEL_DRIFT_ALERT`, `NIGHTLY_RUN_OK` dead-man) → SNS email, Athena/Glue over CloudFront logs, budget alarm.
 - **CI/CD** (`.github/workflows/`): push to `api/**` → build → ECR → roll the service; push to `web/**` → build → S3 → CloudFront invalidation. GitHub OIDC — no stored AWS keys.
 - **Public-data policy**: the API never exposes hyperparameters, internal model-version names, feature lists/counts, or raw pre-calibration probabilities. Fan-facing performance only.
-- **Working notes** live in `docs/`: `aws_deployment_plan.md`, `terraform_lab.md`, `docker_lab.md`, `cicd_lab.md`, `ops_lab.md`, `traffic_lab.md`, `frontend_lab.md`, `troubleshooting_lab.md`, plus `preseason_checklist.md` for calendar-bound ops.
+- **Working notes** live in `docs/`: `aws_deployment_plan.md`, `terraform_lab.md`, `docker_lab.md`, `cicd_lab.md`, `ops_lab.md`, `traffic_lab.md`, `frontend_lab.md`, `troubleshooting_lab.md`, `bedrock_lab.md` (hands-on Bedrock/LLM labs for the fantasy advisor), plus `preseason_checklist.md` for calendar-bound ops.
+- **Player projections initiative** (P-series): plan in `docs/player_projections_plan.md` (per-player counting-stat model → public `/players` table → Bedrock LLM fantasy advisor); first validation/calibration report in `docs/p1_player_validation_report.md`.
 
 ---
 
@@ -1007,6 +1008,8 @@ NBAStatsProject/
 | Change the public site | `web/` (CI deploys on push) |
 | Change AWS infrastructure | `infra/` (`terraform apply` — manual, deliberate) |
 | Re-run or read an experiment | `experiments/` + `docs/model_tuning_log.md` |
+| Player-projection experiments (P-series) | `experiments/p1_*.py` + `docs/player_projections_plan.md` + `docs/p1_player_validation_report.md` |
+| Learn Bedrock / build the LLM advisor | `docs/bedrock_lab.md` + `docs/player_projections_plan.md` §5 |
 | Run the end-to-end pipeline | `orchestration/pipeline.py` |
 | See the internal dashboard | `visualization/` |
 | Read shared DB / feature / registry helpers | `core/` |

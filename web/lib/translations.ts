@@ -137,9 +137,9 @@ const en = {
     cardMarket: "Market closing line",
     cardMarketSub: (modelMae: string, n: string, total: string, closerPct: number) =>
       `vs our ±${modelMae} — paired on the ${n} of ${total} graded games with a line · we were closer on ${closerPct}%`,
-    cardVsMarket: "Margin vs the market",
-    cardVsMarketSub: (w: number, l: number, ties: number) =>
-      `${w}–${l}${ties > 0 ? `–${ties}` : ""} — when our margin disagreed with the market's number, the result landed on our side this often`,
+    cardSpread: "Against the spread",
+    cardSpreadSub: (w: number, l: number, ties: number) =>
+      `${w}–${l}${ties > 0 ? `–${ties}` : ""} — the model's own margin as its line, graded against the final score: a win when its team wins by more than the stated number`,
     cardGraded: "Games graded",
     cardGradedSub: "in this window",
     marketSeries: "Market closing line",
@@ -227,22 +227,22 @@ const en = {
     date: "Date",
     matchup: "Matchup",
     final: "Final",
-    cellTitle: (winner: string, pct: number, coin: boolean) =>
-      `${winner} at ${pct}% win probability${coin ? " (coin flip)" : ""}`,
+    cellTitle: (winner: string, pct: number, coin: boolean, margin: string) =>
+      `${winner} at ${pct}% win probability${coin ? " (coin flip)" : ""} · projected margin: ${margin}`,
     cellPick: (team: string, margin: string) => `${team} by ${margin}`,
     gradeLabel: "Grade:",
-    modeSu: "Winner call",
-    modeAts: "Margin vs the market",
+    modeSu: "Winner classification",
+    modeAts: "Against the spread",
     market: "Market",
-    marketTitle: (line: string) => `the market's closing home margin: ${line}`,
-    cellTitleAts: (pred: string, line: string, side: string) =>
-      `model home margin ${pred} vs the market's ${line} — the model's side of the number: ${side}`,
-    noCallTitle: "No market number to grade against (or the model's margin equals it exactly)",
-    pushTitle: "The final margin landed exactly on the market's number — no winner",
+    marketTitle: (line: string) => `the market's closing line: ${line}`,
+    cellTitleAts: (team: string, num: string) =>
+      `graded against the final score only: correct if ${team} wins by more than ${num}`,
+    noCallTitle: "The model's margin is exactly zero — no side to grade",
+    pushTitle: "The final margin landed exactly on the stated number — no winner",
     captionSu:
-      'Every game in the selected window, newest first — scroll within the table. The Market column is the closing favorite and margin, graded on the same terms as the models. Each model\'s cell shows its pick and projected margin, tinted by whether the pick was right; hover a cell for the win probability. "—" means no market number, or no prediction for the game.',
+      'Winner classification: cells show each predictor\'s call — the market\'s closing favorite and each model\'s pick — green when that team won, red when it didn\'t. Newest games first; scroll within the table; hover a model\'s cell for its win probability and projected margin. "—" means no closing line, or no prediction for the game.',
     captionAts:
-      "Margin vs the market: the cells show the same picks and margins — only the grading changes. A model's margin sits on one side of the market's number (the Market column): predict a smaller home margin than the market and you're on the away side of it, even while picking the same winner. Green = the final margin landed on the model's side, red = the market's side, gray = exactly on the number (no winner). Ungraded cells have no market number to compare against — hover any cell for the numbers.",
+      'Against the spread: each cell is that predictor\'s own line — "SAS -6.5" from the market means SAS favored by 6.5; "SAS -1.7" from a model means it expects SAS to win by 1.7. Every line is graded against the final score alone: green if the stated team won by more than its number, red if not, gray if the game landed exactly on it (a push). Models are graded against their own numbers, not the market\'s.',
   },
 
   picksStrip: {
@@ -479,9 +479,9 @@ const ja: Dict = {
     cardMarket: "市場の最終予想点差",
     cardMarketSub: (modelMae: string, n: string, total: string, closerPct: number) =>
       `当モデルは±${modelMae}。市場の予想点差がある${n}試合（採点済み${total}試合中）で比較すると、${closerPct}%の試合で当モデルの方が実際の点差に近い予想でした`,
-    cardVsMarket: "点差予想の対市場成績",
-    cardVsMarketSub: (w: number, l: number, ties: number) =>
-      `${w}勝${l}敗${ties > 0 ? `${ties}分` : ""} — 市場の点差予想とモデルの予想が食い違った試合で、実際の点差がモデル側に落ちた割合です`,
+    cardSpread: "対スプレッド（ATS）",
+    cardSpreadSub: (w: number, l: number, ties: number) =>
+      `${w}勝${l}敗${ties > 0 ? `${ties}分` : ""} — モデル自身の予想点差をラインとして最終スコアで採点し、示したチームがその点差より大きく勝てば的中です`,
     cardGraded: "採点済みの試合",
     cardGradedSub: "この期間の合計",
     marketSeries: "市場の最終予想点差",
@@ -569,22 +569,22 @@ const ja: Dict = {
     date: "日付",
     matchup: "対戦カード",
     final: "最終スコア",
-    cellTitle: (winner: string, pct: number, coin: boolean) =>
-      `${winner}が勝つ確率 ${pct}%${coin ? "（五分五分）" : ""}`,
+    cellTitle: (winner: string, pct: number, coin: boolean, margin: string) =>
+      `${winner}が勝つ確率 ${pct}%${coin ? "（五分五分）" : ""} ・ 予想点差: ${margin}`,
     cellPick: (team: string, margin: string) => `${team} ${margin}点差`,
     gradeLabel: "採点基準:",
-    modeSu: "勝敗のみ",
-    modeAts: "点差（市場との比較）",
+    modeSu: "勝敗の分類",
+    modeAts: "対スプレッド（ATS）",
     market: "市場",
-    marketTitle: (line: string) => `市場の最終予想点差（ホーム側）: ${line}`,
-    cellTitleAts: (pred: string, line: string, side: string) =>
-      `モデルの予想点差 ${pred} ／ 市場の予想点差 ${line} — モデルが有利と見る側: ${side}`,
-    noCallTitle: "採点対象外（市場の予想がない、またはモデルの点差が市場とちょうど同じ）",
-    pushTitle: "実際の点差が市場の予想とちょうど同じだった試合（勝敗なし）",
+    marketTitle: (line: string) => `市場の最終ライン: ${line}`,
+    cellTitleAts: (team: string, num: string) =>
+      `最終スコアのみで採点: ${team}が${num}点差より大きく勝てば的中`,
+    noCallTitle: "モデルの予想点差が0のため、採点対象外です",
+    pushTitle: "実際の点差が示された数字とちょうど同じだった試合（勝敗なし）",
     captionSu:
-      "選択した期間の全試合を新しい順に表示しています（表内をスクロールできます）。「市場」の欄は市場の最終予想（優勢とされた側と点差）で、モデルと同じ基準で採点しています。各モデルの欄には予想した勝者と点差を表示し、的中なら緑、外れなら赤の背景になります。カーソルを合わせると勝率が表示されます。「—」は市場の予想がない、またはそのモデルがその試合を予想しなかったことを示します。",
+      "勝敗の分類: 各欄には市場（最終ラインで優勢とされた側）と各モデルの予想勝者を表示し、そのチームが勝てば緑、負ければ赤になります。新しい試合が上で、表内をスクロールできます。モデルの欄にカーソルを合わせると勝率と予想点差が表示されます。「—」は市場のラインがない、または予想がない試合です。",
     captionAts:
-      "点差（市場との比較）: 各欄の表示は「勝敗のみ」と同じ予想のままで、採点基準だけが変わります。モデルの予想点差は、市場の最終予想点差（「市場」の欄）より大きいか小さいかのどちらかです。実際の点差がモデル側に落ちれば緑、市場側に落ちれば赤、ちょうど市場の数字どおりなら灰色（勝敗なし）になります。色が付かない欄は、比較する市場の予想がない試合です。詳しい数字はカーソルを合わせると表示されます。",
+      "対スプレッド: 各欄はその予想者自身のラインです。市場の「SAS -6.5」はSASが6.5点差で優勢という意味で、モデルの「SAS -1.7」はSASが1.7点差で勝つという予想です。採点は最終スコアだけと比較して行います。示されたチームがその数字より大きい点差で勝てば緑、そうでなければ赤、ちょうどその点差なら灰色（プッシュ）です。モデルは市場のラインではなく、自分自身の数字に対して採点されます。",
   },
 
   picksStrip: {

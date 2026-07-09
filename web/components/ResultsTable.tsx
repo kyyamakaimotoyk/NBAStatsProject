@@ -21,15 +21,14 @@ type GameRow = {
 
 type Mode = "su" | "ats";
 
-// "+6.5" / "-3" — a side's spread, trailing .0 dropped.
-const fmtLine = (v: number) => {
-  const abs = Math.abs(v) % 1 ? Math.abs(v).toFixed(1) : String(Math.abs(v));
-  return `${v > 0 ? "+" : v < 0 ? "-" : ""}${abs}`;
-};
+const fmtNum = (v: number) =>
+  Math.abs(v) % 1 ? Math.abs(v).toFixed(1) : String(Math.abs(v));
 
-/** Every game in the window, one row per game, one column per model, gradable
- * two ways: straight-up winner calls, or against the market closing line. The
- * whole table scrolls in place (sticky header) rather than being capped. */
+/** Every game in the window, one row per game, one column per model plus the
+ * market, gradable two ways: winner classification (team-only calls), or
+ * against the spread — each predictor's OWN line ("SAS -1.7") graded against
+ * the final score alone: green if the stated team won by more than its
+ * number. The whole table scrolls in place. */
 export default function ResultsTable({ rows }: { rows: Prediction[] }) {
   const { t } = useLang();
   const [mode, setMode] = useState<Mode>("su");
@@ -62,55 +61,50 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
     (a, b) => b.game_date.localeCompare(a.game_date) || b.game_id.localeCompare(a.game_id),
   );
 
+  // Grade a stated line against the final score: did the favored side win by
+  // more than its number? Returns a cell class ("" while ungraded).
+  const gradeLine = (favHome: boolean, line: number, actualMargin: number | null) => {
+    if (actualMargin === null) return { cls: "", push: false };
+    if (actualMargin === line) return { cls: "cell-push", push: true };
+    return { cls: actualMargin > line === favHome ? "cell-win" : "cell-loss", push: false };
+  };
+
   const suCell = (m: string, p: Prediction) => {
     const homePct = Math.round(p.home_win_probability * 100);
     const pickPct = p.predicted_winner === p.home_team ? homePct : 100 - homePct;
+    const marginPhrase = t.resultsTable.cellPick(
+      p.predicted_margin >= 0 ? p.home_team : p.away_team,
+      fmtNum(p.predicted_margin),
+    );
     const cls = p.is_correct === null ? "" : p.is_correct ? "cell-win" : "cell-loss";
     return (
       <td
         key={m}
         className={`model-cell ${cls}`}
-        title={t.resultsTable.cellTitle(p.predicted_winner, pickPct, pickPct <= 55)}
+        title={t.resultsTable.cellTitle(p.predicted_winner, pickPct, pickPct <= 55, marginPhrase)}
       >
-        {t.resultsTable.cellPick(p.predicted_winner, Math.abs(p.predicted_margin).toFixed(1))}
+        {p.predicted_winner}
       </td>
     );
   };
 
-  // Same cell content as winner mode — the model's own pick and margin never
-  // change; the toggle only changes the question being graded (the tint) and
-  // the tooltip. The market's number lives in the Market column.
+  // The model's own margin as a sportsbook-style line ("SAS -1.7"), graded
+  // against the final score only — the market plays no part in model grading.
   const atsCell = (m: string, p: Prediction) => {
-    const mm = p.market_margin;
-    const label = t.resultsTable.cellPick(
-      p.predicted_winner,
-      Math.abs(p.predicted_margin).toFixed(1),
-    );
-    // No market number, or the model's margin sits exactly on it: nothing to grade.
-    if (mm == null || mm === 0 || p.predicted_margin === mm)
+    if (p.predicted_margin === 0)
       return (
         <td key={m} className="model-cell" title={t.resultsTable.noCallTitle}>
-          {label}
+          —
         </td>
       );
-    const leanHome = p.predicted_margin > mm;
-    const side = leanHome ? p.home_team : p.away_team;
-    let cls = "";
-    let push = false;
-    if (p.actual_margin !== null) {
-      if (p.actual_margin === mm) {
-        cls = "cell-push";
-        push = true;
-      } else {
-        cls = (p.actual_margin > mm) === leanHome ? "cell-win" : "cell-loss";
-      }
-    }
-    const title = push
-      ? t.resultsTable.pushTitle
-      : t.resultsTable.cellTitleAts(p.predicted_margin.toFixed(1), fmtLine(mm), side);
+    const favHome = p.predicted_margin > 0;
+    const team = favHome ? p.home_team : p.away_team;
+    const num = fmtNum(p.predicted_margin);
+    const { cls, push } = gradeLine(favHome, p.predicted_margin, p.actual_margin);
+    const title = push ? t.resultsTable.pushTitle : t.resultsTable.cellTitleAts(team, num);
     return (
       <td key={m} className={`model-cell ${cls}`} title={title}>
-        {label}
+        {team} -{num}
       </td>
     );
   };
@@ -120,23 +114,27 @@ export default function ResultsTable({ rows }: { rows: Prediction[] }) {
     return mode === "su" ? suCell(m, p) : atsCell(m, p);
   };
 
-  // The benchmark's own column: the closing favorite and margin. Graded like a
-  // model in winner-call mode; shown untinted in margin mode, where it is the
-  // number the model cells are measured against.
+  // The market's column, graded on the same terms as the models: its favorite
+  // in winner mode, its closing line vs the final score in spread mode.
   const marketCell = (g: GameRow) => {
     if (g.mm == null || g.mm === 0) return <td className="model-cell">—</td>;
-    const fav = g.mm > 0 ? g.home : g.away;
-    const label = t.resultsTable.cellPick(fav, Math.abs(g.mm).toFixed(1));
-    const title = t.resultsTable.marketTitle(fmtLine(g.mm));
-    let cls = "";
-    if (mode === "su" && g.actualWinner !== null) {
-      cls = fav === g.actualWinner ? "cell-win" : "cell-loss";
-    } else if (mode === "ats" && g.actualMargin !== null && g.actualMargin === g.mm) {
-      cls = "cell-push";
+    const favHome = g.mm > 0;
+    const fav = favHome ? g.home : g.away;
+    const num = fmtNum(g.mm);
+    if (mode === "su") {
+      const cls =
+        g.actualWinner === null ? "" : fav === g.actualWinner ? "cell-win" : "cell-loss";
+      return (
+        <td className={`model-cell ${cls}`} title={t.resultsTable.marketTitle(`${fav} -${num}`)}>
+          {fav}
+        </td>
+      );
     }
+    const { cls, push } = gradeLine(favHome, g.mm, g.actualMargin);
+    const title = push ? t.resultsTable.pushTitle : t.resultsTable.cellTitleAts(fav, num);
     return (
       <td className={`model-cell ${cls}`} title={title}>
-        {label}
+        {fav} -{num}
       </td>
     );
   };

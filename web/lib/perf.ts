@@ -406,24 +406,25 @@ export function rocCurve(rows: Prediction[]): { points: RocPoint[]; auc: number 
   return { points, auc };
 }
 
-export type MarginVsMarket = { w: number; l: number; ties: number; n: number; pct: number };
+export type SpreadRecord = { w: number; l: number; ties: number; n: number; pct: number };
 
 /**
- * Directional margin test vs the market: for each game with a non-zero closing
- * number where the model's margin disagrees with it, whose side did the final
- * margin land on? (The gambling world calls this "against the spread"; the
- * public site deliberately doesn't.) Ties = the final margin landed exactly on
- * the market's number and are excluded from the rate.
+ * "Against the spread" record where each prediction is its own line: a win
+ * when the team the model's margin favors wins by MORE than that stated
+ * margin, a loss otherwise, a tie (excluded from the rate) when the final
+ * margin lands exactly on it. Graded against the final score only — the
+ * market's number plays no part. A calibrated model's margin is a median
+ * estimate, so ~50% is the structural expectation here.
  */
-export function marginVsMarket(rows: Prediction[]): MarginVsMarket | null {
+export function spreadRecord(rows: Prediction[]): SpreadRecord | null {
   let w = 0;
   let l = 0;
   let ties = 0;
   for (const r of rows) {
-    const mm = r.market_margin;
-    if (mm == null || mm === 0 || r.actual_margin === null || r.predicted_margin === mm) continue;
-    if (r.actual_margin === mm) ties++;
-    else if (r.actual_margin > mm === r.predicted_margin > mm) w++;
+    if (r.actual_margin === null || r.predicted_margin === 0) continue;
+    const favHome = r.predicted_margin > 0;
+    if (r.actual_margin === r.predicted_margin) ties++;
+    else if (r.actual_margin > r.predicted_margin === favHome) w++;
     else l++;
   }
   const n = w + l;

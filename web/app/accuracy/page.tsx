@@ -7,7 +7,7 @@ import {
   trendSeries,
   homeAwaySplit,
   marketCompare,
-  marginVsMarket,
+  spreadRecord,
   classificationRates,
 } from "@/lib/perf";
 import { useLang } from "@/lib/i18n";
@@ -52,7 +52,7 @@ export default function AccuracyPage() {
   );
   const featuredSummary = summaries.find((s) => s.model === featured);
   const market = useMemo(() => marketCompare(featuredRows), [featuredRows]);
-  const duel = useMemo(() => marginVsMarket(featuredRows), [featuredRows]);
+  const duel = useMemo(() => spreadRecord(featuredRows), [featuredRows]);
   const split = useMemo(() => homeAwaySplit(featuredRows), [featuredRows]);
   const trend = useMemo(() => (rows ? trendSeries(rows) : { data: [], models: [] }), [rows]);
   const cls = useMemo(() => (rows ? classificationRates(rows) : []), [rows]);
@@ -145,10 +145,10 @@ export default function AccuracyPage() {
             )}
             {duel && (
               <div className="card">
-                <div className="card-title">{t.accuracy.cardVsMarket}</div>
+                <div className="card-title">{t.accuracy.cardSpread}</div>
                 <div className="card-metric">{duel.pct.toFixed(1)}%</div>
                 <div className="card-sub">
-                  {t.accuracy.cardVsMarketSub(duel.w, duel.l, duel.ties)}
+                  {t.accuracy.cardSpreadSub(duel.w, duel.l, duel.ties)}
                 </div>
               </div>
             )}

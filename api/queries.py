@@ -15,6 +15,7 @@ Only fan-facing fields (teams, pick, probability, margin, actual result) ship.
 """
 from __future__ import annotations
 
+import re as _re
 from functools import lru_cache
 from typing import Optional
 import sqlalchemy as sa
@@ -565,3 +566,172 @@ def margin_correlations(kind: str = "DIFF", window: str = "L5") -> list[dict]:
             out.append({"feature": feat, "column": c, "correlation": round(corr, 4)})
     out.sort(key=lambda d: abs(d["correlation"]), reverse=True)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Player explore (player_predictions + per-player boxscores)
+# ---------------------------------------------------------------------------
+
+_PLAYER_MODEL_TYPE = 'xgb_player'
+_MIN_ISO_RE = _re.compile(r'PT(\d+)M([\d.]+)S')
+
+
+def _parse_minutes(raw) -> Optional[float]:
+    """Boxscore minutes text ('34:12' or 'PT34M12.00S') -> float minutes."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    m = _MIN_ISO_RE.match(s)
+    if m:
+        return round(float(m.group(1)) + float(m.group(2)) / 60, 2)
+    if ':' in s:
+        try:
+            head, tail = s.split(':', 1)
+            return round(float(head) + float(tail) / 60, 2)
+        except ValueError:
+            return None
+    try:
+        return round(float(s), 2)
+    except ValueError:
+        return None
+
+
+def player_directory() -> list[dict]:
+    """Players that have model projections, tagged with their most recent team.
+
+    Sourced from player_predictions (top-8 rotation players only), so the
+    dropdowns never list deep-bench players the model does not project.
+    """
+    q = """
+        SELECT person_id, player_name, team_id, team_abbrev
+        FROM (
+            SELECT person_id, player_name, team_id, team_abbrev,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY person_id ORDER BY game_date DESC
+                   ) AS _rn
+            FROM player_predictions
+            WHERE model_type = :mt
+        ) x
+        WHERE _rn = 1
+        ORDER BY team_abbrev, player_name
+    """
+    with get_engine().connect() as conn:
+        return _rows(conn.execute(sa.text(q), {'mt': _PLAYER_MODEL_TYPE}))
+
+
+def player_gamelog(person_id: int, days: int = 1150) -> tuple[list[dict], Optional[str]]:
+    """Per-game actual stats (last ~3 seasons) with the model's out-of-sample
+    prediction attached where one exists. Public-safe: no model internals."""
+    q = """
+        SELECT g.GAME_DATE AS game_date,
+               SUBSTRING_INDEX(g.MATCHUP, ' ', -1) AS opp,
+               CASE WHEN POSITION(' vs. ' IN g.MATCHUP) > 0 THEN 1 ELSE 0 END AS is_home,
+               p.minutes AS _raw_minutes,
+               p.points AS pts, p.reboundsTotal AS reb, p.assists AS ast,
+               p.steals AS stl, p.blocks AS blk, p.turnovers AS tov,
+               p.threePointersMade AS fg3m, p.threePointersAttempted AS fg3a,
+               p.freeThrowsMade AS ftm, p.freeThrowsAttempted AS fta,
+               pp.pred_min, pp.pred_pts, pp.pred_reb, pp.pred_ast, pp.pred_stl,
+               pp.pred_blk, pp.pred_tov, pp.pred_fg3m, pp.pred_fg3a, pp.pred_ftm,
+               pp.pred_fta
+        FROM boxscoretraditionalv3_player p
+        JOIN game_list g ON g.GAME_ID = p.gameId AND g.TEAM_ID = p.teamId
+        LEFT JOIN player_predictions pp
+               ON pp.game_id = p.gameId AND pp.person_id = p.personId
+              AND pp.model_type = :mt
+        WHERE p.personId = :pid
+          AND COALESCE(p.minutes, '') <> ''  -- exclude DNP rows
+          AND g.GAME_DATE >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+        ORDER BY g.GAME_DATE
+    """
+    name_q = """
+        SELECT player_name FROM player_predictions
+        WHERE person_id = :pid ORDER BY game_date DESC LIMIT 1
+    """
+    with get_engine().connect() as conn:
+        rows = _rows(conn.execute(
+            sa.text(q), {'pid': person_id, 'mt': _PLAYER_MODEL_TYPE, 'days': days}))
+        name = conn.execute(sa.text(name_q), {'pid': person_id}).scalar()
+    for r in rows:
+        r['min'] = _parse_minutes(r.pop('_raw_minutes'))
+    return rows, name
+
+
+def _team_profile(conn, team_id: int) -> Optional[dict]:
+    """Rolling last-10-games profile for a team (advanced + volume stats)."""
+    q_adv = """
+        SELECT AVG(x.pace) AS pace, AVG(x.offensiveRating) AS off_rtg,
+               AVG(x.defensiveRating) AS def_rtg,
+               AVG(x.offensiveReboundPercentage) AS oreb_pct,
+               AVG(x.defensiveReboundPercentage) AS dreb_pct,
+               AVG(x.effectiveFieldGoalPercentage) AS efg_pct,
+               AVG(x.assistPercentage) AS ast_pct
+        FROM (
+            SELECT t.pace, t.offensiveRating, t.defensiveRating,
+                   t.offensiveReboundPercentage, t.defensiveReboundPercentage,
+                   t.effectiveFieldGoalPercentage, t.assistPercentage
+            FROM boxscoreadvancedv3_team t
+            JOIN game_list g ON g.GAME_ID = t.gameId AND g.TEAM_ID = t.teamId
+            WHERE t.teamId = :tid
+            ORDER BY g.GAME_DATE DESC
+            LIMIT 10
+        ) x
+    """
+    q_vol = """
+        SELECT AVG(x.FG3A) AS fg3a_pg, AVG(x.FTA) AS fta_pg, AVG(x.PTS) AS pts_pg,
+               MAX(x.TEAM_ABBREVIATION) AS team_abbrev
+        FROM (SELECT FG3A, FTA, PTS, TEAM_ABBREVIATION FROM game_list
+              WHERE TEAM_ID = :tid ORDER BY GAME_DATE DESC LIMIT 10) x
+    """
+    adv = conn.execute(sa.text(q_adv), {'tid': team_id}).mappings().first()
+    vol = conn.execute(sa.text(q_vol), {'tid': team_id}).mappings().first()
+    if adv is None or adv['pace'] is None:
+        return None
+    out = {'team_id': team_id}
+    for src in (adv, vol):
+        for k, v in dict(src).items():
+            # AVG() over MySQL ints comes back as Decimal — normalize to float.
+            out[k] = v if v is None or isinstance(v, str) else round(float(v), 2)
+    return out
+
+
+def _next_game(conn, team_id: int) -> Optional[dict]:
+    """Next scheduled game for a team from league_schedule (None offseason /
+    if the schedule table is missing)."""
+    q = """
+        SELECT gameDate, homeTeam_teamId, awayTeam_teamId,
+               homeTeam_teamTricode, awayTeam_teamTricode
+        FROM league_schedule
+        WHERE (homeTeam_teamId = :tid OR awayTeam_teamId = :tid)
+          AND gameDate >= CURDATE()
+        ORDER BY gameDate
+        LIMIT 1
+    """
+    try:
+        row = conn.execute(sa.text(q), {'tid': team_id}).mappings().first()
+    except Exception as e:
+        print(f"[players] next_game lookup failed: {e}")
+        return None
+    if row is None:
+        return None
+    is_home = int(row['homeTeam_teamId']) == int(team_id)
+    return {
+        'game_date': str(row['gameDate'])[:10],
+        'is_home': is_home,
+        'opp_team_id': int(row['awayTeam_teamId'] if is_home else row['homeTeam_teamId']),
+        'opp_abbrev': row['awayTeam_teamTricode'] if is_home else row['homeTeam_teamTricode'],
+    }
+
+
+def player_team_context(team_id: int) -> Optional[dict]:
+    """L10 profile for the player's team, plus the next opponent's profile
+    when a scheduled game exists (offseason: next_game/opponent are null)."""
+    with get_engine().connect() as conn:
+        team = _team_profile(conn, team_id)
+        if team is None:
+            return None
+        nxt = _next_game(conn, team_id)
+        opp = _team_profile(conn, nxt['opp_team_id']) if nxt else None
+    return {'team': team, 'next_game': nxt, 'opponent': opp}

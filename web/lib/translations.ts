@@ -23,6 +23,7 @@ const en = {
     modelLab: "Model lab",
     explore: "Explore",
     scatter: "Scatter",
+    players: "Players",
     drivers: "What wins games",
     about: "About",
   },
@@ -256,6 +257,49 @@ const en = {
     miss: "miss",
   },
 
+  playersExplore: {
+    title: "Player explorer",
+    subtitle:
+      "Per-game counting stats for every rotation player, next to what our projection model predicted for that game. Pick a team, a player, a stat, and a window.",
+    teamLabel: "Team:",
+    playerLabel: "Player:",
+    statLabel: "Stat:",
+    windowLabel: "Window:",
+    windows: {
+      L5: "Last 5 games",
+      L10: "Last 10 games",
+      season: "This season",
+      three: "Last 3 seasons",
+    } as Record<string, string>,
+    errLoad: (e: string) => `Couldn't load: ${e}`,
+    loading: "Loading…",
+    noData: "No player projections available yet.",
+    noPreds:
+      "No model predictions in this window — projections cover the 2024-25 season onward.",
+    chartHeading: (name: string, stat: string) => `${name} — ${stat}, game by game`,
+    backtestNote:
+      "Predicted values are the model's out-of-sample backtest: each one was produced by a model trained only on earlier seasons.",
+    distHeading: (stat: string) => `${stat} distribution`,
+    distPoissonNote:
+      "The dotted line is the frequency the model's Poisson rate implies — bars far from the line mean the model mis-judges how streaky this stat is.",
+    errHeading: (stat: string) => `Prediction error (predicted − actual ${stat})`,
+    errSummary: (n: number, mae: number, bias: number) =>
+      `${n} predicted games · average miss ${mae.toFixed(2)} · bias ${bias >= 0 ? "+" : ""}${bias.toFixed(2)} (positive = model too high).`,
+    shareOfGames: "Share of games",
+    poissonExpected: "Model-implied share",
+    predicted: "Predicted",
+    actual: "Actual",
+    teamCompareHeading: "Team vs next opponent (last 10 games)",
+    nextGame: (date: string, isHome: boolean, opp: string) =>
+      `Next game: ${date} ${isHome ? "vs." : "@"} ${opp}`,
+    noNextGame: "No upcoming game scheduled (offseason) — showing the team profile alone.",
+    statCol: "Stat",
+    teamCol: "Team",
+    oppCol: "Opponent",
+    compareCaption:
+      "Rolling averages over each team's last 10 games. Pace and opponent defense are the context the projections lean on most.",
+  },
+
   drivers: {
     title: "What wins games",
     subtitle:
@@ -363,6 +407,7 @@ const ja: Dict = {
     modelLab: "モデルラボ",
     explore: "データ探索",
     scatter: "散布図",
+    players: "Players", // untranslated with the rest of playersExplore (see below)
     drivers: "勝敗を分けるもの",
     about: "このサイトについて",
   },
@@ -597,6 +642,11 @@ const ja: Dict = {
     hit: "的中",
     miss: "外れ",
   },
+
+  // Deliberately NOT translated yet: the machine-drafted JA copy didn't read
+  // right (Kai transcreates JA himself). Mirrors the English namespace so the
+  // JA toggle shows English on this page until real copy replaces it.
+  playersExplore: en.playersExplore,
 
   drivers: {
     title: "勝敗を分けるもの",

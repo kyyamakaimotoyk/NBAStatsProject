@@ -146,3 +146,85 @@ class RollingResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     database: str
+
+
+# --- Player explore -----------------------------------------------------------
+
+
+class PlayerDirEntry(BaseModel):
+    person_id: int
+    player_name: Optional[str] = None
+    team_id: Optional[int] = None
+    team_abbrev: Optional[str] = None
+
+
+class PlayerDirectoryResponse(BaseModel):
+    count: int
+    players: list[PlayerDirEntry]
+
+
+class PlayerGameRow(BaseModel):
+    """One played game: actual counting stats + the model's out-of-sample
+    prediction where one exists (pred_* are null for games the projection
+    model did not cover)."""
+    game_date: date
+    opp: Optional[str] = None
+    is_home: int
+    min: Optional[float] = None
+    pts: Optional[float] = None
+    reb: Optional[float] = None
+    ast: Optional[float] = None
+    stl: Optional[float] = None
+    blk: Optional[float] = None
+    tov: Optional[float] = None
+    fg3m: Optional[float] = None
+    fg3a: Optional[float] = None
+    ftm: Optional[float] = None
+    fta: Optional[float] = None
+    pred_min: Optional[float] = None
+    pred_pts: Optional[float] = None
+    pred_reb: Optional[float] = None
+    pred_ast: Optional[float] = None
+    pred_stl: Optional[float] = None
+    pred_blk: Optional[float] = None
+    pred_tov: Optional[float] = None
+    pred_fg3m: Optional[float] = None
+    pred_fg3a: Optional[float] = None
+    pred_ftm: Optional[float] = None
+    pred_fta: Optional[float] = None
+
+
+class PlayerGamelogResponse(BaseModel):
+    person_id: int
+    player_name: Optional[str] = None
+    count: int
+    rows: list[PlayerGameRow]
+
+
+class TeamProfile(BaseModel):
+    """Rolling last-10-games team profile (public aggregates only)."""
+    team_id: int
+    team_abbrev: Optional[str] = None
+    pace: Optional[float] = None
+    off_rtg: Optional[float] = None
+    def_rtg: Optional[float] = None
+    oreb_pct: Optional[float] = None
+    dreb_pct: Optional[float] = None
+    efg_pct: Optional[float] = None
+    ast_pct: Optional[float] = None
+    fg3a_pg: Optional[float] = None
+    fta_pg: Optional[float] = None
+    pts_pg: Optional[float] = None
+
+
+class NextGameInfo(BaseModel):
+    game_date: str
+    is_home: bool
+    opp_team_id: int
+    opp_abbrev: Optional[str] = None
+
+
+class TeamContextResponse(BaseModel):
+    team: TeamProfile
+    next_game: Optional[NextGameInfo] = None  # null in the offseason
+    opponent: Optional[TeamProfile] = None

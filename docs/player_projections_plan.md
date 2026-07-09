@@ -246,6 +246,19 @@ Artifacts (e-series conventions): `outputs/p1_player_validation.json` +
   `get_expected_roster` + live injuries), grading job, pipeline stages (`player_features`,
   `player_train`), registry/bundle wiring.
 - **Phase C — /players page** (§4), public at launch.
+  - **C-partial DONE 2026-07-09 — player-explore page** (Kai request): `player_predictions`
+    table created + backfilled with P1 walk-forward out-of-sample predictions
+    (`experiments/p1_backfill_predictions.py`, 38,177 rows, 2024-25 + 2025-26; 2023-24 is
+    training-only so has none). New API endpoints `/api/players/directory|gamelog|team-context`
+    (public-safe; gamelog = 3 seasons of actuals LEFT JOIN predictions, DNP rows excluded;
+    team-context = L10 profile + next opponent from `league_schedule`, gracefully null in
+    the offseason). New page `/players/explore`: team→player→stat→window dropdowns,
+    actual-vs-predicted game chart (tooltip: date, opponent, pred, actual), stat distribution
+    with Poisson overlay for STL/BLK/TOV/3PM, prediction-error histogram with MAE/bias,
+    team-vs-next-opponent panel. EN/JA copy; nav "Players".
+    **Prod deploy step**: RDS has no `player_predictions` rows until
+    `python experiments/p1_backfill_predictions.py` runs against RDS (one-off pipeline-task
+    run, same env as the nightly job) — until then the page shows the empty state.
 - **Phase D — advisor** (§5): IAM + Bedrock access, endpoint, guardrails, UI.
 - **Phase E (optional/parked):** NN-embed experiment (B), distributional outputs (D), MCP
   tool loop, Tier-2 feature ablation rounds.

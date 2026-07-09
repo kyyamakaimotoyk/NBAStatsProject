@@ -163,3 +163,91 @@ export type MarginCorrResponse = {
 
 export const getMarginCorrelations = (kind: "DIFF" | "HOME" | "AWAY", window: "L5" | "L10") =>
   getJSON<MarginCorrResponse>(`/api/explore/margin-corr?kind=${kind}&window=${window}`);
+
+// --- Player explore -----------------------------------------------------------
+
+export type PlayerDirEntry = {
+  person_id: number;
+  player_name: string | null;
+  team_id: number | null;
+  team_abbrev: string | null;
+};
+
+export type PlayerDirectoryResponse = {
+  count: number;
+  players: PlayerDirEntry[];
+};
+
+// One played game: actual counting stats + the model's out-of-sample prediction
+// where one exists (pred_* are null for games the projection model didn't cover).
+export type PlayerGameRow = {
+  game_date: string;
+  opp: string | null;
+  is_home: number;
+  min: number | null;
+  pts: number | null;
+  reb: number | null;
+  ast: number | null;
+  stl: number | null;
+  blk: number | null;
+  tov: number | null;
+  fg3m: number | null;
+  fg3a: number | null;
+  ftm: number | null;
+  fta: number | null;
+  pred_min: number | null;
+  pred_pts: number | null;
+  pred_reb: number | null;
+  pred_ast: number | null;
+  pred_stl: number | null;
+  pred_blk: number | null;
+  pred_tov: number | null;
+  pred_fg3m: number | null;
+  pred_fg3a: number | null;
+  pred_ftm: number | null;
+  pred_fta: number | null;
+};
+
+export type PlayerGamelogResponse = {
+  person_id: number;
+  player_name: string | null;
+  count: number;
+  rows: PlayerGameRow[];
+};
+
+export type TeamProfile = {
+  team_id: number;
+  team_abbrev: string | null;
+  pace: number | null;
+  off_rtg: number | null;
+  def_rtg: number | null;
+  oreb_pct: number | null;
+  dreb_pct: number | null;
+  efg_pct: number | null;
+  ast_pct: number | null;
+  fg3a_pg: number | null;
+  fta_pg: number | null;
+  pts_pg: number | null;
+};
+
+export type NextGameInfo = {
+  game_date: string;
+  is_home: boolean;
+  opp_team_id: number;
+  opp_abbrev: string | null;
+};
+
+export type TeamContextResponse = {
+  team: TeamProfile;
+  next_game: NextGameInfo | null; // null in the offseason
+  opponent: TeamProfile | null;
+};
+
+export const getPlayerDirectory = () =>
+  getJSON<PlayerDirectoryResponse>("/api/players/directory");
+
+export const getPlayerGamelog = (personId: number) =>
+  getJSON<PlayerGamelogResponse>(`/api/players/gamelog?person_id=${personId}`);
+
+export const getTeamContext = (teamId: number) =>
+  getJSON<TeamContextResponse>(`/api/players/team-context?team_id=${teamId}`);

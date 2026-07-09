@@ -34,6 +34,9 @@ from api.schemas import (
     AccuracySummaryResponse,
     RollingResponse,
     HealthResponse,
+    PlayerDirectoryResponse,
+    PlayerGamelogResponse,
+    TeamContextResponse,
 )
 
 app = FastAPI(
@@ -189,3 +192,30 @@ def accuracy_rolling(
     _check_model(model)
     rows = queries.accuracy_rolling(days, model)
     return RollingResponse(days=days, points=rows)
+
+
+@app.get("/api/players/directory", response_model=PlayerDirectoryResponse, tags=["players"])
+def players_directory():
+    """All players with model projections, tagged with their latest team.
+    Drives the team -> player dropdowns on the player-explore page."""
+    rows = queries.player_directory()
+    return PlayerDirectoryResponse(count=len(rows), players=rows)
+
+
+@app.get("/api/players/gamelog", response_model=PlayerGamelogResponse, tags=["players"])
+def players_gamelog(person_id: int = Query(..., ge=1)):
+    """Per-game actual stats over the last ~3 seasons with the model's
+    out-of-sample prediction attached where one exists."""
+    rows, name = queries.player_gamelog(person_id)
+    return PlayerGamelogResponse(
+        person_id=person_id, player_name=name, count=len(rows), rows=rows)
+
+
+@app.get("/api/players/team-context", response_model=TeamContextResponse, tags=["players"])
+def players_team_context(team_id: int = Query(..., ge=1)):
+    """L10 profile of the player's team vs the next opponent (offseason:
+    next_game/opponent are null)."""
+    ctx = queries.player_team_context(team_id)
+    if ctx is None:
+        raise HTTPException(status_code=404, detail=f"unknown team_id {team_id}")
+    return ctx

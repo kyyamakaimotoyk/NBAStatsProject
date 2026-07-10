@@ -22,7 +22,7 @@ but a naive backtest would not (the E7 problem, in a milder form).
 Phase B production replaces this with `historical_injury_report`.
 
 Output: outputs/p1_player_dataset.pkl (pandas DataFrame).
-Run:    python experiments/p1_player_dataset.py
+Run:    python data_engineering/player_dataset.py
 """
 import os
 import sys

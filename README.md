@@ -59,8 +59,14 @@ HOME PC (residential IP)                AWS (us-east-1)
 
 ```bash
 pip install -r requirements.txt            # core: data + modeling + dashboard
-pip install -r requirements-pipeline.txt   # extras for the batch/cloud pipeline
+pip install -r requirements-pipeline.txt   # extras for the batch/cloud pipeline (xgboost, shap)
+pip install -r requirements-dev.txt        # local-only extras (matplotlib, injury scraper, Athena)
+pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu   # PyTorch, CPU build
 ```
+
+**Why torch is a separate line**: it is deliberately absent from every requirements file — plain PyPI serves the multi-GB CUDA build, so `Dockerfile.pipeline` installs the CPU wheel from PyTorch's own index in its own layer, and local installs do the same by hand. If you have a GPU, pick your build at [pytorch.org](https://pytorch.org/get-started/locally/) instead.
+
+**Why `requirements-dev.txt` is separate**: `requirements.txt` is baked into the pipeline Docker image, so packages needed only on a dev machine (plotting, the residential-IP-only injury scraper and its Java-backed PDF parser, Athena) live in `requirements-dev.txt` to keep the image lean. Note `nbainjuries` needs a Java runtime on PATH.
 
 **Windows Note**: PyTorch must be imported before NumPy/Pandas due to DLL conflicts. This is handled automatically in `predict_games.py`. If you encounter `OSError: [WinError 1114] DLL initialization failed`, ensure PyTorch is imported first in your scripts.
 
@@ -87,6 +93,47 @@ MySQL credentials live in environment variables — never in source. To set up:
 4. All scripts read these vars via `db.get_engine()`. `python-dotenv` auto-loads `.env` on import — no manual `set` / `export` needed.
 
 > ⚠️ **If you forked this repo from a public commit history**: rotate your MySQL user's password. Earlier commits in this repo's history contained credentials in plain text. Removing them from current files does **not** remove them from git history.
+
+### Seeding the Database (new developers)
+
+The research bench assumes a populated local MySQL 8.x `nba_data` schema — `game_list`, the 27 boxscore tables, and the derived tables (`player_impact`, `features`, `model_registry`, `model_predictions`, `historical_injury_report`, `vegas_lines`, …). A fresh clone has none of that. Two ways to get there:
+
+**Option A — restore a dump from the project owner (recommended; minutes).** The canonical data lives in the owner's local MySQL (it is the *origin* of prod data, not a copy of it). Produce the dump with:
+
+```bash
+# owner's machine (Git Bash on Windows)
+mysqldump --single-transaction --quick --set-gtid-purged=OFF -u <user> -p nba_data | gzip > nba_data_dump.sql.gz
+```
+
+Restore on the new machine, then verify:
+
+```bash
+mysql -u <user> -p -e "CREATE DATABASE IF NOT EXISTS nba_data CHARACTER SET utf8mb4"
+gunzip -c nba_data_dump.sql.gz | mysql -u <user> -p nba_data
+
+python data_engineering/schema_exploration.py    # tables + row counts
+python orchestration/pipeline.py status          # freshness report per layer
+```
+
+A full dump includes every derived table, so you can skip First-Time Setup entirely and go straight to predictions and the dashboard. For scale: the full dump used to seed RDS in June 2026 (`infra/nba_data.sql`, gitignored) was ~1.5 GB raw — expect roughly 150–300 MB gzipped. If the dump is unwieldy, the versioned `features` table usually dominates it — the owner can exclude it (`--ignore-table=nba_data.features`) and you rebuild locally with `python data_engineering/feature_engineering.py` after populating the `player_impact` cache (First-Time Setup steps 2–3). Check what's big before deciding:
+
+```sql
+SELECT table_name, table_rows, ROUND((data_length+index_length)/1024/1024) AS mb
+FROM information_schema.tables WHERE table_schema='nba_data' ORDER BY mb DESC;
+```
+
+**Option B — build from scratch via the NBA API (hours; residential IP only).** stats.nba.com and cdn.nba.com block datacenter/VPN IPs, so this must run from a home connection:
+
+```bash
+python data_engineering/main_refactored.py                                     # game_list + boxscore tables (the long part)
+python data_engineering/historical_injury_scraper.py --start-date 2022-01-01   # pre-game injury reports (~30 min; needs Java)
+python data_engineering/compute_elo.py                                         # pre-game ELO (E9 is on in prod)
+# then First-Time Setup steps 2–5 below (player_impact → features → train)
+```
+
+Vegas lines (for the market-benchmark grading) come from `data_engineering/vegas_lines_kaggle_import.py` / `vegas_lines_espn.py` — optional for the core loop.
+
+**Why not read from the production RDS?** It isn't reachable (private subnets, `publicly_accessible = false`, no bastion), it's the small instance serving the live site, and the research bench needs a *writable* database anyway — every pipeline stage writes. Local MySQL is not a downgrade; it's the same layout the cloud runs on.
 
 ### Predict Today's Games
 
@@ -141,7 +188,7 @@ python data_engineering/schema_exploration.py
 # This is REQUIRED for player slot features to have non-zero values
 # Takes ~2 minutes per date
 python -c "
-from player_impact import create_engine, populate_player_impact_table
+from data_engineering.player_impact import create_engine, populate_player_impact_table
 engine = create_engine()
 for date in ['2022-01-01', '2022-07-01', '2023-01-01', '2023-07-01', '2024-01-01', '2024-07-01']:
     print(f'Populating {date}...')
@@ -993,7 +1040,7 @@ NBAStatsProject/
 ├── docker-compose.yml
 ├── .env / .env.example                # MySQL credentials (gitignored / template)
 ├── nba_ml_features.csv                # Legacy feature cache (primary store is the DB)
-├── requirements.txt / requirements-pipeline.txt
+├── requirements.txt / requirements-pipeline.txt / requirements-dev.txt
 └── README.md
 ```
 
@@ -1008,7 +1055,7 @@ NBAStatsProject/
 | Change the public site | `web/` (CI deploys on push) |
 | Change AWS infrastructure | `infra/` (`terraform apply` — manual, deliberate) |
 | Re-run or read an experiment | `experiments/` + `docs/model_tuning_log.md` |
-| Player-projection experiments (P-series) | `experiments/p1_*.py` + `docs/player_projections_plan.md` + `docs/p1_player_validation_report.md` |
+| Player projections (P-series) | prod: `data_engineering/player_dataset.py`, `modeling/player_projection_models.py`, `scripts/backfill_player_predictions.py`; eval: `experiments/p1_player_validation.py` + `docs/p1_player_validation_report.md`; plan: `docs/player_projections_plan.md` |
 | Learn Bedrock / build the LLM advisor | `docs/bedrock_lab.md` + `docs/player_projections_plan.md` §5 |
 | Run the end-to-end pipeline | `orchestration/pipeline.py` |
 | See the internal dashboard | `visualization/` |
@@ -1385,7 +1432,7 @@ New (Integrated):
 **Usage**:
 ```bash
 # Populate player impact table (run daily)
-python -c "from player_impact import *; populate_player_impact_table(create_engine())"
+python -c "from data_engineering.player_impact import create_engine, populate_player_impact_table; populate_player_impact_table(create_engine())"
 
 # Regenerate training data with new features
 python data_engineering/feature_engineering.py
@@ -1559,7 +1606,7 @@ Run `python data_engineering/player_impact.py` or `populate_player_impact_table(
 **Solution**: Populate the cache for historical dates before running feature_engineering.py:
 ```bash
 python -c "
-from player_impact import create_engine, populate_player_impact_table
+from data_engineering.player_impact import create_engine, populate_player_impact_table
 engine = create_engine()
 for date in ['2022-01-01', '2022-07-01', '2023-01-01', '2023-07-01', '2024-01-01', '2024-07-01']:
     print(f'Populating {date}...')
@@ -1574,7 +1621,7 @@ python modeling/pytorch_nba_models.py
 **Verify cache status**:
 ```bash
 python -c "
-from player_impact import create_engine
+from data_engineering.player_impact import create_engine
 from sqlalchemy import text
 engine = create_engine()
 with engine.connect() as conn:

@@ -10,7 +10,7 @@ The table schema is the Phase-B production schema (nightly job will upsert
 into the same unique key), so this doubles as the migration.
 
 Run locally against the home DB, and once on the pipeline task against RDS:
-    python experiments/p1_backfill_predictions.py
+    python scripts/backfill_player_predictions.py
 """
 import os
 import sys
@@ -23,8 +23,8 @@ import sqlalchemy as sa
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.db import get_engine  # noqa: E402
-from experiments.p1_player_dataset import OUT_PATH as DATASET_PATH, build as build_dataset  # noqa: E402
-from experiments.p1_player_models import TwoStageXGB  # noqa: E402
+from data_engineering.player_dataset import OUT_PATH as DATASET_PATH, build as build_dataset  # noqa: E402
+from modeling.player_projection_models import TwoStageXGB  # noqa: E402
 
 MODEL_TYPE = 'xgb_player'
 MODEL_VERSION = 'p1_wf_20260709'

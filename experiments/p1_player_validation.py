@@ -32,8 +32,8 @@ from scipy import stats
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from experiments.p1_player_dataset import OUT_PATH as DATASET_PATH, build as build_dataset  # noqa: E402
-from experiments.p1_player_models import (  # noqa: E402
+from data_engineering.player_dataset import OUT_PATH as DATASET_PATH, build as build_dataset  # noqa: E402
+from modeling.player_projection_models import (  # noqa: E402
     MODELS, MarcelBaseline, POISSON_STATS, RATE_STATS, STAT_COLS, TARGETS,
     TwoStageXGB, feature_columns)
 

@@ -1,0 +1,24 @@
+# Local research-bench extras -- DELIBERATELY kept out of requirements.txt so
+# they never land in the Docker images:
+#   - Dockerfile.pipeline installs `-r requirements-pipeline.txt`, which pulls in
+#     requirements.txt. Anything added there ships to Fargate.
+#   - matplotlib is omitted from the pipeline image on purpose (the headless
+#     batch path never plots -- see the guarded import in modeling/predict_games.py).
+#   - nbainjuries drags in tabula-py + jpype1, which need a Java runtime (JRE)
+#     to parse the injury-report PDFs -- and the scraper can only run from a
+#     residential IP anyway (nba.com blocks datacenter IPs), so it must never
+#     be part of the cloud image.
+#
+# PyTorch is intentionally absent from EVERY requirements file: plain PyPI
+# serves the multi-GB CUDA build. Install the CPU wheel by hand (matches the
+# Dockerfile.pipeline pin):
+#   pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu
+# (GPU users: pick your build at https://pytorch.org/get-started/locally/ instead.)
+#
+# NOTE: keep this file pure ASCII -- pip decodes requirements files with the
+# system locale (cp932 on Japanese Windows), so non-ASCII bytes break installs.
+
+matplotlib==3.10.7   # predict_games.py --plot histograms; prediction_visualizations.py
+nbainjuries==1.0.0   # historical_injury_scraper.py + injury_data.py (needs Java on PATH -- tabula-py)
+pyathena==3.32.0     # dashboard traffic tab (Athena over CloudFront logs)
+seaborn>=0.13        # visualization/prediction_visualizations.py (standalone charts)

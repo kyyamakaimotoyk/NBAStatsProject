@@ -1202,3 +1202,10 @@ Baseline established; XGB two-stage is the production candidate for Phase B (nig
   binomial.
 - STL may simply be at its noise floor — consider dropping the STL model to Marcel output in
   production if two more folds agree.
+
+*(Addendum, later 2026-07-09: the production-bound P1 modules were promoted out of
+`experiments/` so the pipeline Docker image stays free of research code — dataset builder →
+`data_engineering/player_dataset.py`, models → `modeling/player_projection_models.py`,
+prediction writer → `scripts/backfill_player_predictions.py`. The validation harness stays at
+`experiments/p1_player_validation.py` and now imports from the production modules — same
+dependency direction as the E-series. Paths named above are the original locations.)*

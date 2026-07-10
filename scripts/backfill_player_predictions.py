@@ -22,25 +22,26 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.db import get_engine  # noqa: E402
-from data_engineering.player_dataset import (  # noqa: E402
-    OUT_PATH as DATASET_PATH, TARGETS, build as build_dataset)
+from data_engineering.player_dataset import TARGETS, build as build_dataset  # noqa: E402
 from modeling.player_predict import (  # noqa: E402
     MODEL_TYPE, ensure_player_predictions_table, team_abbrev_map,
     upsert_player_predictions)
 from modeling.player_projection_models import TwoStageXGB  # noqa: E402
 
-MODEL_VERSION = 'p1_wf_20260709'
+MODEL_VERSION = 'p2_wf_20260710'
+# Walk-forward by SEASON_YEAR (each year includes its playoffs/play-in/Cup):
 FOLDS = [
-    {'train': ['22023'], 'test': '22024'},
-    {'train': ['22023', '22024'], 'test': '22025'},
+    {'train': ['22022'], 'test': '22023'},
+    {'train': ['22022', '22023'], 'test': '22024'},
+    {'train': ['22022', '22023', '22024'], 'test': '22025'},
 ]
 
 
 def build_rows(ds: pd.DataFrame, abbrevs: dict) -> list:
     rows = []
     for fold in FOLDS:
-        train = ds[ds['SEASON_ID'].isin(fold['train'])]
-        test = ds[ds['SEASON_ID'] == fold['test']].copy()
+        train = ds[ds['SEASON_YEAR'].isin(fold['train'])]
+        test = ds[ds['SEASON_YEAR'] == fold['test']].copy()
         model = TwoStageXGB().fit(train)
         preds = model.predict(test)
         print(f"fold test={fold['test']}: {len(test):,} predictions")
@@ -70,12 +71,20 @@ def build_rows(ds: pd.DataFrame, abbrevs: dict) -> list:
 def main():
     engine = get_engine()
     ensure_player_predictions_table(engine)
-    if not os.path.exists(DATASET_PATH):
-        build_dataset(engine)
-    ds = pd.read_pickle(DATASET_PATH)
+    ds = build_dataset(engine)  # always fresh — the pkl may predate the protocol
     rows = build_rows(ds, team_abbrev_map(engine))
     upsert_player_predictions(engine, rows)
     print(f"upserted {len(rows):,} rows into player_predictions")
+    # Retire rows from older walk-forward protocols (e.g. p1_wf_*): the page
+    # dedupes by timestamp anyway, but stale rows are dead weight.
+    import sqlalchemy as sa
+    with engine.begin() as conn:
+        n = conn.execute(sa.text(
+            "DELETE FROM player_predictions WHERE model_type = :mt "
+            "AND model_version LIKE '%_wf_%' AND model_version != :mv"),
+            {'mt': MODEL_TYPE, 'mv': MODEL_VERSION}).rowcount
+    if n:
+        print(f"retired {n:,} rows from older walk-forward versions")
     print(f"done at {datetime.now().isoformat(timespec='seconds')}")
 
 

@@ -206,6 +206,16 @@ def predict_players_for_date(engine, game_date: str, injury_mode: str = 'auto',
         print(f"player projections: no games for {game_date}")
         return stats
     slate = slate.copy()
+    # Model covers regular season, playoffs, play-in, and the Cup final —
+    # skip preseason/all-star games (experimental rosters, no signal).
+    from data_engineering.player_dataset import PREDICTABLE_GID_TYPES
+    gid_type = slate['GAME_ID'].map(lambda g: str(int(g)).zfill(10)[2])
+    skipped = int((~gid_type.isin(PREDICTABLE_GID_TYPES)).sum())
+    if skipped:
+        print(f"player projections: skipping {skipped} preseason/exhibition game(s)")
+    slate = slate[gid_type.isin(PREDICTABLE_GID_TYPES)].copy()
+    if len(slate) == 0:
+        return stats
     slate['GAME_DATE'] = game_date
 
     outs = _out_names_by_team(engine, game_date, injury_mode)

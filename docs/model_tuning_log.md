@@ -40,6 +40,7 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **E21b** | *(same experiment — decision)* | | | **Shipped**: raw-derived picks for all models (`_derive_pick_probability` returns raw; +0.5pp mean, raw right on 53% of ~1,900 backtest flips / 62% live; permanently immune to calibrator pathology); guard re-set from ±10pp to the healthy **p99 (±25pp)** as a true extreme-degeneracy ERROR tripwire; missing-requested-bundle in the nightly is now ERROR (the silent `WARN: skipping xgb` hid all season). **Also shipped (user-approved)**: RF display calibration dropped — RF ships unwrapped, displayed prob == raw (calibrator stored in bundle for telemetry/revert); XGB keeps its calibrator (halves ECE, p<0.001). **Pending**: live home-share drift monitor (next season's nightly); 20260703 bundle promotion (after the honest xgb Apr–Jun backfill on the old S3 bundle). | **Implemented 2026-07-03** |
 | **E18** | **Calibration audit + logging fix + leakage guard** | User-surfaced bug: Game Predictions tab showed NYK winner for CLE@NYK 2026-05-25 while Model Evaluation tab showed CLE pick logged — same model, same game, different pick. Root cause: dashboard reads E13 isotonic-calibrated classifier; the logging path in `predict_games.py` still derived `predicted_winner` from the **regressor margin sign** (`result['win_prob']` = `np.mean(margin_samples > 0)`), an older signal that pre-dates E13. Two-headed model → two different picks near the boundary. Also surfaced: bundle metadata stored no `data_through_date`, so the backfill loop happily predicted for dates within the training window with no warning. | (1) Logging now uses calibrated classifier: `p_cal = result['win_prob_classifier']`; `predicted_winner = home if p_cal > 0.5 else away`. (2) New `home_win_probability_raw` column added via idempotent migration in `prediction_tracker.ensure_table_exists`; the pre-isotonic prob is logged alongside the calibrated one. NN/NN-embed have no isotonic wrapper → raw == calibrated. (3) Bundle metadata gains `train_start_date / train_end_date / eval_start_date / eval_end_date / data_through_date` (the latest GAME_DATE the production model saw). (4) Backfill loop in `predict_games.py` gates on `data_through_date`: dates ≤ that are skipped with a loud message; `--allow-leakage` overrides. (5) Model Evaluation per-game table now shows **Win% raw** + **Win% cal** side-by-side; for legacy rows raw is NULL. | Data fix only (no model retrain). Game Predictions and Model Evaluation now read the same field. Backfill predictions on training-window dates are refused by default — past metrics on those rows were optimistic by an unmeasured amount. **A/B comparison columns ready**: re-run `predict_games.py --start-date X --end-date Y --no-shap --no-plot` for `X > data_through_date` to populate `home_win_probability_raw` and start the raw-vs-calibrated comparison. | **Implemented 2026-05-26** — see "Calibration audit & leakage guard" section below. |
 | **P1** | **Player counting-stat projections** — dataset + baselines + two-stage XGB + 3-season validation/calibration report | New product surface (public `/players` projection table + Bedrock LLM fantasy advisor, docs/player_projections_plan.md) needs per-player MIN + PTS/REB/AST/STL/BLK/TOV/3PM/3PA/FTM/FTA. User-set ship gate: deep calibration + validation on the last 3 seasons before `/players` goes public. | `experiments/p1_player_dataset.py`: 57,854 top-8-by-rolling-MPG player-games (2023-24 → 2025-26 regular seasons, 2022-23 warm-up), ~150 leakage-safe shift-1 features incl. approved Tier-2 groups A/B/C/G (opportunity/hustle, vacated minutes/usage, Vegas spread/total/implied). `p1_player_models.py`: naive L10, Marcel shrinkage (must-beat), two-stage XGB (minutes model × per-36 rates; `count:poisson` with log-minutes exposure for STL/BLK/TOV/3PA/FTA; 3PM/FTM = attempts × shrunken make-rate). `p1_player_validation.py`: 2 season walk-forward folds, paired t-tests, decile reliability, Poisson frequency calibration, split-conformal coverage, minutes-vs-rate decomposition, slices, fantasy aggregates, feature-target correlation matrix. | **XGB beats Marcel on 10/11 targets in both folds, all p≤2.6e-11** (MIN MAE 4.93→4.63 / 4.87→4.59; PTS 5.23→5.03 / 5.17→4.96; 3PA −0.16; STL flat — R²≈0.08, near-noise). Decile calibration tight; conformal coverage 0.78-0.82 (80%) / 0.89-0.91 (90%); Poisson tails over-forecast elite STL/BLK bins; ~15% of PTS error attributable to the minutes model; fantasy-pts MAE 8.03 vs Marcel 8.41. Full report: docs/p1_player_validation_report.md. | **Baseline established 2026-07-09** — `/players` ship gate pending Kai's review; §P1 below |
+| **P2** | **Playoff support + 4th season** (extends P1) | Explore page showed playoff actuals with no predictions and no 2023-24 predictions; the nightly as first built would have predicted playoffs on features frozen at regular-season end. Kai: Option A (support playoffs) + extend backfill to 2023-24. | Season-year now spans regular+playoffs+play-in+Cup (`SEASON_YEAR` grouping key, `IS_PLAYOFF` feature, season-to-date accumulates through the postseason; preseason skipped via GAME_ID type digit). Warm-up 2021-22; train years 22-23..25-26 → 83,266 rows (5,708 playoff). Three walk-forward folds incl. new train-22-23→test-23-24. Harness unchanged → docs/p2_player_validation_report.md; backfill version `p2_wf_20260710`. | New fold 1 clears the gate (XGB beats Marcel 10/11, p≤5.6e-31; STL flat as in every fold). **Playoffs: XGB ≤ Marcel on 11/11 stats**; the regime shift lands in MINUTES (MAE 5.00 PO vs 4.54 reg) while PTS error *drops* in playoffs (4.79 vs 4.96 — healthy, stable-role rosters). Backfill 62,156 rows incl. postseason; 38,177 p1_wf rows retired. | **Implemented 2026-07-10** — §P2 below |
 
 ---
 
@@ -1209,3 +1210,63 @@ Baseline established; XGB two-stage is the production candidate for Phase B (nig
 prediction writer → `scripts/backfill_player_predictions.py`. The validation harness stays at
 `experiments/p1_player_validation.py` and now imports from the production modules — same
 dependency direction as the E-series. Paths named above are the original locations.)*
+
+---
+
+## 2026-07-10 — Experiment P2: playoff support + fourth season (extends P1)
+
+### Why
+Kai's review of the explore page surfaced two gaps: playoff games showed actuals with no
+predictions, and 2023-24 had no backfilled predictions at all. Both trace to P1 scope
+decisions (regular season only; 3 seasons with the first as warm-up). Decision: Option A —
+support playoffs properly rather than skipping them — plus one more season of history so
+2023-24 gets an honest walk-forward fold. This also closed a live-path hazard: the nightly
+as first built would have predicted playoff games next April on rolling features frozen at
+regular-season end (playoff games weren't loaded into the feature frames).
+
+### Hypothesis
+Including postseason rows in training (with an IS_PLAYOFF flag and season-to-date features
+that accumulate through the playoffs) yields playoff predictions that still beat Marcel,
+with the regime shift landing mainly in minutes (rotation tightening) rather than per-game
+production rates.
+
+### Setup
+- Season identity reworked: a season-year now spans regular + playoffs + play-in + Cup
+  final SEASON_IDs (`_expand_season_ids`); SEASON_YEAR is the grouping key for
+  season-to-date features and priors; IS_PLAYOFF (playoffs + play-in) is a model feature.
+  Preseason/All-Star games are explicitly skipped by the nightly (GAME_ID type filter).
+- Window extended one season back: warm-up 2021-22, train years 2022-23..2025-26.
+  Dataset: **83,266 rows** (5,708 playoff/play-in), 780 players, 5,206 games; Vegas
+  coverage 0.923.
+- Protocol: three walk-forward folds by SEASON_YEAR (train 22-23 → test 23-24; +23-24 →
+  24-25; +24-25 → 25-26), each test year including its playoffs. Harness:
+  `experiments/p1_player_validation.py` → `docs/p2_player_validation_report.md` (P1
+  outputs frozen as the pre-playoff protocol's artifacts).
+
+### Results
+- **New fold 1 (train one season → test 2023-24): the gate still clears.** XGB beats
+  Marcel 10/11 stats at p≤5.6e-31 (MIN 4.73 vs 5.00, PTS 4.97 vs 5.14; STL flat p=0.11,
+  as in every fold — noise floor).
+- **Playoff split (final fold, n=1,424 playoff rows): XGB ≤ Marcel on 11/11 playoff
+  stats** — playoff-aware training earns its keep. The hypothesis on the regime shift
+  held: MIN MAE 5.00 playoff vs 4.54 regular (harder — coach-driven rotation tightening),
+  while PTS is 4.79 playoff vs 4.96 regular (*lower*: playoff rosters are the healthy,
+  stable-role regulars, so production error for players who play actually shrinks).
+- Regular-season headline MAEs essentially unchanged from P1 (fold 3 regular: MIN 4.54,
+  PTS 4.96) — adding playoffs + a season didn't disturb the core.
+- **Backfill**: 62,156 walk-forward rows (2023-24 + 2024-25 + 2025-26, playoffs included)
+  as `p2_wf_20260710`; the 38,177 `p1_wf_20260709` rows retired. Explore page now shows
+  predictions for 2023-24 onward including postseason.
+
+### Decision
+Shipped as the P-series production protocol: `player_train` trains on all four
+season-years incl. playoffs; nightly predicts regular/playoff/play-in/Cup games and skips
+preseason. Playoff MAEs ship as the postseason calibration reference in the P2 report.
+
+### Caveats / follow-ups
+- Playoff n is small (~1.4k rows/eval); revisit the split as postseasons accumulate.
+- The first-round generated conclusion asserted "playoff errors run higher" before the
+  data said otherwise for production stats — conclusion text is now direction-aware.
+  Lesson: generated report prose must compute its comparators, not assume them.
+- STL stays at its noise floor in all three folds; the serve-Marcel-for-steals option
+  from P1 remains open.

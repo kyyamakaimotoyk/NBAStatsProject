@@ -1,10 +1,13 @@
-"""P1 — walk-forward validation + calibration report for player projections.
+"""P1/P2 — walk-forward validation + calibration report for player projections.
 
-Protocol (docs/player_projections_plan.md §6):
-  Fold 1: train 2023-24            -> test 2024-25
-  Fold 2: train 2023-24 + 2024-25  -> test 2025-26
-Rolling features warm up on 2022-23 inside the dataset builder, so fold-1
-training rows already carry well-formed L5/L10 windows.
+P2 protocol (P1 + playoffs + a 4th season; docs/player_projections_plan.md §6):
+  Fold 1: train 2022-23                      -> test 2023-24
+  Fold 2: train 2022-23..2023-24             -> test 2024-25
+  Fold 3: train 2022-23..2024-25             -> test 2025-26
+Each season-year INCLUDES its playoffs/play-in/Cup final (IS_PLAYOFF feature);
+the report breaks regular vs playoff error out separately. Rolling features
+warm up on 2021-22 inside the dataset builder, so fold-1 training rows carry
+well-formed L5/L10 windows.
 
 Per stat x method: MAE / RMSE / bias / R2, paired t-test (xgb vs marcel on
 per-row |error|), decile reliability, Poisson frequency calibration,
@@ -13,10 +16,12 @@ slice MAEs, fantasy-point aggregates, and the feature-target correlation
 matrix (Group A/B/C/G ablation evidence).
 
 Outputs:
-  outputs/p1_player_validation.json
-  outputs/p1_feature_target_correlations.csv
-  outputs/p1_feature_feature_correlations.csv
-  docs/p1_player_validation_report.md
+  outputs/p2_player_validation.json
+  outputs/p2_feature_target_correlations.csv
+  outputs/p2_feature_feature_correlations.csv
+  docs/p2_player_validation_report.md
+(The P1 outputs are frozen artifacts of the pre-playoff protocol — see the
+model tuning log's P1 entry; this script now produces the P2 series.)
 
 Run: python experiments/p1_player_validation.py [--rebuild-dataset]
 """
@@ -38,14 +43,15 @@ from modeling.player_projection_models import (  # noqa: E402
     TwoStageXGB, feature_columns)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-JSON_OUT = os.path.join(ROOT, 'outputs', 'p1_player_validation.json')
-CORR_FT_OUT = os.path.join(ROOT, 'outputs', 'p1_feature_target_correlations.csv')
-CORR_FF_OUT = os.path.join(ROOT, 'outputs', 'p1_feature_feature_correlations.csv')
-REPORT_OUT = os.path.join(ROOT, 'docs', 'p1_player_validation_report.md')
+JSON_OUT = os.path.join(ROOT, 'outputs', 'p2_player_validation.json')
+CORR_FT_OUT = os.path.join(ROOT, 'outputs', 'p2_feature_target_correlations.csv')
+CORR_FF_OUT = os.path.join(ROOT, 'outputs', 'p2_feature_feature_correlations.csv')
+REPORT_OUT = os.path.join(ROOT, 'docs', 'p2_player_validation_report.md')
 
 FOLDS = [
-    {'name': 'F1_train2324_test2425', 'train': ['22023'], 'test': '22024'},
-    {'name': 'F2_train2325_test2526', 'train': ['22023', '22024'], 'test': '22025'},
+    {'name': 'F1_train2223_test2324', 'train': ['22022'], 'test': '22023'},
+    {'name': 'F2_train2224_test2425', 'train': ['22022', '22023'], 'test': '22024'},
+    {'name': 'F3_train2225_test2526', 'train': ['22022', '22023', '22024'], 'test': '22025'},
 ]
 POISSON_CAL_STATS = ['STL', 'BLK', 'TOV', 'FG3M']
 DECILE_STATS = ['MIN', 'PTS', 'REB', 'AST', 'FG3A']
@@ -73,8 +79,8 @@ def _fantasy_points(df, prefix=''):
 
 
 def evaluate_fold(ds, fold):
-    train = ds[ds['SEASON_ID'].isin(fold['train'])].copy()
-    test = ds[ds['SEASON_ID'] == fold['test']].copy()
+    train = ds[ds['SEASON_YEAR'].isin(fold['train'])].copy()
+    test = ds[ds['SEASON_YEAR'] == fold['test']].copy()
     res = {'name': fold['name'], 'n_train': len(train), 'n_test': len(test)}
     preds = {}
     fitted = {}
@@ -218,6 +224,23 @@ def evaluate_fold(ds, fold):
                       xp.loc[month == mo, 'pred_PTS'] - test.loc[month == mo, 'PTS']))), 3)}
         for mo in sorted(month.unique())}
 
+    # --- regular vs playoff split (IS_PLAYOFF covers playoffs + play-in) ---
+    po = (test['IS_PLAYOFF'] == 1).to_numpy()
+    res['playoff_split'] = {}
+    for s in TARGETS:
+        entry = {}
+        for label, m in (('regular', ~po), ('playoff', po)):
+            if m.sum() == 0:
+                entry[label] = None
+                continue
+            entry[label] = {
+                'n': int(m.sum()),
+                'xgb_mae': round(float(np.mean(np.abs(
+                    preds['xgb'].loc[m, f'pred_{s}'] - test.loc[m, s]))), 3),
+                'marcel_mae': round(float(np.mean(np.abs(
+                    preds['marcel'].loc[m, f'pred_{s}'] - test.loc[m, s]))), 3)}
+        res['playoff_split'][s] = entry
+
     # --- fantasy aggregates per method ---
     res['fantasy'] = {}
     z_sd = {s: float(train[s].std()) for s in Z_CATS}
@@ -236,7 +259,7 @@ def evaluate_fold(ds, fold):
 
 def correlation_outputs(ds):
     """Feature x target and feature x feature Pearson matrices (train pool)."""
-    train = ds[ds['SEASON_ID'].isin(['22023', '22024'])]
+    train = ds[ds['SEASON_YEAR'].isin(['22022', '22023', '22024'])]
     feats = feature_columns(train)
     X = train[feats].astype(float)
     corr_ft = pd.DataFrame({t: X.corrwith(train[t].astype(float)) for t in TARGETS})
@@ -253,8 +276,9 @@ def correlation_outputs(ds):
 def dataset_summary(ds):
     summ = {'rows': int(len(ds)), 'players': int(ds['personId'].nunique()),
             'games': int(ds['GAME_ID'].nunique()),
+            'playoff_rows': int((ds['IS_PLAYOFF'] == 1).sum()),
             'rows_per_season': {k: int(v) for k, v in
-                                ds.groupby('SEASON_ID').size().items()}}
+                                ds.groupby('SEASON_YEAR').size().items()}}
     for label, col in [('vegas', 'GAME_TOTAL'), ('touches', 'TOUCHES_L10'),
                        ('hustle', 'DEFLECTIONS_L10'), ('usage', 'USG_PCT_L10'),
                        ('vacated', 'VACATED_MIN')]:
@@ -275,7 +299,12 @@ def write_report(results, summary, top_corr):
     f2 = results[-1]
     lines = []
     a = lines.append
-    a('# P1 — Player Counting-Stat Projection: Validation & Calibration Report')
+    a('# P2 — Player Counting-Stat Projection: Validation & Calibration Report')
+    a('')
+    a('P2 = the P1 protocol extended with (a) playoff/play-in/Cup-final games — as '
+      'training rows, an IS_PLAYOFF feature, and a separate playoff error breakout — '
+      'and (b) a fourth season, adding the train-2022-23 → test-2023-24 fold '
+      '(2021-22 becomes the rolling warm-up).')
     a('')
     a('Generated by `experiments/p1_player_validation.py`. Raw numbers: '
       '`outputs/p1_player_validation.json`; correlation matrices: '
@@ -343,8 +372,9 @@ def write_report(results, summary, top_corr):
     a('')
     a(f"- Rows: **{summary['rows']:,}** player-games "
       f"({summary['players']} players, {summary['games']:,} games), top-8 per team, "
-      'regular seasons 2023-24/2024-25/2025-26, rolling warm-up on 2022-23.')
-    a(f"- Rows per season: {summary['rows_per_season']}")
+      'season-years 2022-23..2025-26 including playoffs '
+      f"({summary['playoff_rows']:,} playoff/play-in rows), rolling warm-up on 2021-22.")
+    a(f"- Rows per season-year: {summary['rows_per_season']}")
     a(f"- Feature coverage (non-NaN share): vegas {summary['coverage_vegas']}, "
       f"playertrack touches {summary['coverage_touches']}, hustle {summary['coverage_hustle']}, "
       f"usage% {summary['coverage_usage']}, vacated-minutes {summary['coverage_vacated']}.")
@@ -388,7 +418,7 @@ def write_report(results, summary, top_corr):
         concl += f" Not cleared: {', '.join(flat)} — investigate before shipping those."
     a(concl)
     a('')
-    a('## Decile reliability (XGB, fold 2)')
+    a('## Decile reliability (XGB, final fold)')
     a('')
     a('Rows are deciles of the predicted value; a calibrated model has pred_mean ≈ '
       'actual_mean in every row.')
@@ -408,7 +438,7 @@ def write_report(results, summary, top_corr):
       'suppression of role players, so the public table can display these numbers '
       'without correction.')
     a('')
-    a('## Poisson frequency calibration (XGB, fold 2)')
+    a('## Poisson frequency calibration (XGB, final fold)')
     a('')
     a('For the Poisson-modeled stats, λ implies a full distribution over 0/1/2/… — this '
       'section tests whether those implied frequencies match reality. Rows bucket '
@@ -445,7 +475,7 @@ def write_report(results, summary, top_corr):
       'negative-binomial objective is the queued Phase-B refinement. TOV and 3PM are '
       'calibrated through their entire range.')
     a('')
-    a('## Split-conformal interval coverage (XGB, fold 2)')
+    a('## Split-conformal interval coverage (XGB, final fold)')
     a('')
     rows = [{'stat': s, **f2['conformal'][s]} for s in TARGETS]
     a(_md_table(rows, ['stat', 'halfwidth_80', 'halfwidth_90', 'coverage_80', 'coverage_90'],
@@ -460,7 +490,7 @@ def write_report(results, summary, top_corr):
       f"±{f2['conformal']['PTS']['halfwidth_90']}) are the honest cost of game-to-game "
       'variance, not a model defect — same lesson as E14 on team margins.')
     a('')
-    a('## Where does the error live: minutes vs rates (fold 2)')
+    a('## Where does the error live: minutes vs rates (final fold)')
     a('')
     a('`mae_actual_minutes` re-scores the same rate models with the *actual* minutes '
       'played — the gap to `mae_full` is the share of error attributable to the minutes '
@@ -485,7 +515,7 @@ def write_report(results, summary, top_corr):
       f"projection system cannot go far below ~{d['PTS']['mae_actual_minutes']:.1f} PTS "
       'MAE on this task.')
     a('')
-    a('## Slice MAEs (XGB, fold 2)')
+    a('## Slice MAEs (XGB, final fold)')
     a('')
     rows = [{'slice': k, **v} for k, v in f2['slices'].items()]
     a(_md_table(rows, ['slice', 'n', 'mae_MIN', 'mae_PTS', 'mae_REB', 'mae_AST', 'mae_FP']))
@@ -500,7 +530,49 @@ def write_report(results, summary, top_corr):
       'is worst — rest-management season, consistent with the absence-signal caveat). '
       'Nothing in the slices blocks shipping.')
     a('')
-    a('## Fantasy aggregates (fold 2)')
+    a('## Regular season vs playoffs (final fold)')
+    a('')
+    a('Playoff rows carry IS_PLAYOFF=1 (play-in included) and the model trains on prior '
+      "seasons' playoffs, so it can learn rotation tightening. The E15/E16 team-level "
+      'lesson says to expect a regime shift here — this table shows where it lands.')
+    a('')
+    rows = []
+    for s in TARGETS:
+        sp = f2['playoff_split'][s]
+        r = {'stat': s}
+        for lab in ('regular', 'playoff'):
+            d = sp.get(lab)
+            r[f'{lab}_n'] = d['n'] if d else 0
+            r[f'{lab}_xgb'] = d['xgb_mae'] if d else '—'
+            r[f'{lab}_marcel'] = d['marcel_mae'] if d else '—'
+        rows.append(r)
+    a(_md_table(rows, ['stat', 'regular_n', 'regular_xgb', 'regular_marcel',
+                       'playoff_n', 'playoff_xgb', 'playoff_marcel'],
+                ['Stat', 'Reg n', 'Reg XGB MAE', 'Reg Marcel MAE',
+                 'PO n', 'PO XGB MAE', 'PO Marcel MAE']))
+    a('')
+    pts_sp = f2['playoff_split']['PTS']
+    min_sp = f2['playoff_split']['MIN']
+    if pts_sp.get('playoff'):
+        beats = sum(1 for s in TARGETS
+                    if f2['playoff_split'][s].get('playoff')
+                    and f2['playoff_split'][s]['playoff']['xgb_mae']
+                    <= f2['playoff_split'][s]['playoff']['marcel_mae'])
+
+        def _cmp(sp):
+            po_v, rg_v = sp['playoff']['xgb_mae'], sp['regular']['xgb_mae']
+            return f"{po_v} playoff vs {rg_v} regular ({'higher' if po_v > rg_v else 'lower'})"
+
+        a(f"**Conclusion**: XGB is at-or-below Marcel on {beats}/{len(TARGETS)} playoff "
+          'stats, so playoff-aware training earns its keep in the postseason. Where the '
+          f'regime shift lands: MIN {_cmp(min_sp)} — rotation tightening is coach-driven '
+          f'and volatile — while production error for the players who do play tracks '
+          f'roster stability (PTS {_cmp(pts_sp)}: playoff rosters are the healthy, '
+          f"stable-role regulars). Small sample (playoff n={pts_sp['playoff']['n']}); "
+          'these per-stat playoff MAEs are the calibration reference for postseason '
+          'stretches on the explore page.')
+    a('')
+    a('## Fantasy aggregates (final fold)')
     a('')
     rows = [{'method': m, **f2['fantasy'][m]} for m in ['naive', 'marcel', 'xgb']]
     a(_md_table(rows, ['method', 'fp_mae', 'z_weighted_mae'],

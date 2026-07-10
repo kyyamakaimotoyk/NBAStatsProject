@@ -42,9 +42,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.db import get_engine  # noqa: E402
 from data_engineering.player_impact import parse_minutes  # noqa: E402
 
-WARMUP_SEASON = '22022'
-TRAIN_SEASONS = ['22023', '22024', '22025']
+WARMUP_SEASON = '22021'
+TRAIN_SEASONS = ['22022', '22023', '22024', '22025']
 ALL_SEASONS = [WARMUP_SEASON] + TRAIN_SEASONS
+
+# GAME_ID type digit (gid[2]): 1 preseason, 2 regular, 3 all-star, 4 playoffs,
+# 5 play-in, 6 NBA Cup final. We model/predict these:
+PREDICTABLE_GID_TYPES = ('2', '4', '5', '6')
 
 TARGETS = ['MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'FG3M', 'FG3A', 'FTM', 'FTA']
 STAT_COLS = TARGETS[1:]  # everything but MIN
@@ -68,13 +72,27 @@ def normalize_player_name(name: str) -> str:
 
 
 def season_id_from_game_id(game_id) -> str:
-    """'0022500306' -> '22025' (2025-26). Works for pre/regular/post prefixes."""
+    """'0022500306' -> '22025' (regular); '0042500401' -> '42025' (playoffs)."""
     g = str(int(game_id)).zfill(10)
-    return f"2{2000 + int(g[3:5])}"
+    return f"{g[2]}{2000 + int(g[3:5])}"
 
 
-def _season_filter(seasons) -> str:
-    return "','".join(seasons)
+def season_year(season_id) -> str:
+    """Canonical season-year key: '42024' (2024-25 playoffs) -> '22024'."""
+    return '2' + str(season_id)[1:]
+
+
+def _expand_season_ids(season_years) -> list:
+    """A season-year spans regular + playoffs + play-in + Cup final SEASON_IDs."""
+    out = []
+    for s in season_years:
+        yr = str(s)[1:]
+        out.extend(f'{t}{yr}' for t in PREDICTABLE_GID_TYPES)
+    return out
+
+
+def _season_filter(season_years) -> str:
+    return "','".join(_expand_season_ids(season_years))
 
 
 def load_frames(engine, seasons=None):
@@ -328,7 +346,7 @@ def add_player_rolling(pt, seasons):
         pt[out] = roll_mean(g, src, 10)
 
     # Season-to-date expanding per-36 (shifted), GP, shrunk make-rates.
-    gs = pt.groupby(['personId', 'SEASON_ID'])
+    gs = pt.groupby(['personId', 'SEASON_YEAR'])
     pt['GP_SEASON'] = gs.cumcount()
     csum_min = gs['MIN'].transform(lambda s: s.shift(1).expanding().sum())
     pt['MIN_SEASON_AVG'] = gs['MIN'].transform(lambda s: s.shift(1).expanding().mean())
@@ -342,19 +360,19 @@ def add_player_rolling(pt, seasons):
     pt['SHRUNK_3P_PCT'] = (c3m.fillna(0) + 0.36 * 50) / (c3a.fillna(0) + 50)
     pt['SHRUNK_FT_PCT'] = (cftm.fillna(0) + 0.78 * 30) / (cfta.fillna(0) + 30)
 
-    # Previous-season per-36 priors (season -> next season, in sorted order).
+    # Previous-season per-36 priors (season-year -> next season-year).
     season_sorted = sorted(set(seasons))
     next_season = {s: season_sorted[i + 1] for i, s in enumerate(season_sorted[:-1])}
-    agg = pt.groupby(['personId', 'SEASON_ID']).agg(
+    agg = pt.groupby(['personId', 'SEASON_YEAR']).agg(
         prev_min=('MIN', 'sum'),
         **{f'prev_{s}': (s, 'sum') for s in STAT_COLS}).reset_index()
     for s in STAT_COLS:
         agg[f'PREV_{s}36'] = agg[f'prev_{s}'] / agg['prev_min'].replace(0, np.nan) * 36
-    agg['applies_to'] = agg['SEASON_ID'].map(next_season)
+    agg['applies_to'] = agg['SEASON_YEAR'].map(next_season)
     prev = agg.dropna(subset=['applies_to'])[
         ['personId', 'applies_to', 'prev_min'] + [f'PREV_{s}36' for s in STAT_COLS]]
-    prev = prev.rename(columns={'applies_to': 'SEASON_ID', 'prev_min': 'PREV_SEASON_MIN'})
-    pt = pt.merge(prev, on=['personId', 'SEASON_ID'], how='left')
+    prev = prev.rename(columns={'applies_to': 'SEASON_YEAR', 'prev_min': 'PREV_SEASON_MIN'})
+    pt = pt.merge(prev, on=['personId', 'SEASON_YEAR'], how='left')
 
     # Rest / absence.
     pt['PLAYER_REST_DAYS'] = pt.groupby('personId')['GAME_DATE'].diff().dt.days.clip(upper=30)
@@ -403,8 +421,8 @@ def add_vacated_features(pt, team_ctx):
     pt = pt.merge(team_ctx[['GAME_ID', 'TEAM_ID', 'TEAM_GAME_NUM']],
                   on=['GAME_ID', 'TEAM_ID'], how='left')
     pt['PLAYER_TEAM_GAME_NUM'] = pt.sort_values('GAME_DATE').groupby(
-        ['personId', 'TEAM_ID', 'SEASON_ID']).cumcount() + 1
-    season_first = pt.groupby(['TEAM_ID', 'SEASON_ID'])['TEAM_GAME_NUM'].transform('min')
+        ['personId', 'TEAM_ID', 'SEASON_YEAR']).cumcount() + 1
+    season_first = pt.groupby(['TEAM_ID', 'SEASON_YEAR'])['TEAM_GAME_NUM'].transform('min')
     team_game_num_season = pt['TEAM_GAME_NUM'] - season_first + 1
     pt['MISSED_GAMES_SEASON'] = (team_game_num_season - pt['PLAYER_TEAM_GAME_NUM']).clip(lower=0)
     return pt
@@ -473,6 +491,11 @@ def _assemble(frames) -> pd.DataFrame:
         team_ctx[['GAME_ID', 'TEAM_ID', 'GAME_DATE']], on=['GAME_ID', 'TEAM_ID'])
     pt = pt.merge(meta, on=['GAME_ID', 'TEAM_ID'], how='inner')
     pt['IS_HOME'] = pt['MATCHUP'].str.contains('vs.', regex=False).astype(float)
+    # Season identity spans regular + postseason; season-to-date features
+    # accumulate straight through the playoffs. Play-in counts as playoff
+    # (rotations tighten the same way); the Cup final plays like a regular game.
+    pt['SEASON_YEAR'] = pt['SEASON_ID'].astype(str).map(season_year)
+    pt['IS_PLAYOFF'] = pt['SEASON_ID'].astype(str).str[0].isin(['4', '5']).astype(float)
 
     pt = add_player_rolling(pt, seasons)
     pt = add_vacated_features(pt, team_ctx)
@@ -508,7 +531,7 @@ def build(engine=None, out_path=OUT_PATH, seasons=None, train_seasons=None):
 
     pt = _assemble(frames)
     ds = pt[(pt['MIN_RANK'] <= TOP_N_PER_TEAM) & pt['MIN_L10'].notna()].copy()
-    ds = ds[ds['SEASON_ID'].isin(train_seasons)].copy()
+    ds = ds[ds['SEASON_YEAR'].isin(train_seasons)].copy()  # incl. their playoffs
 
     if out_path:
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -538,8 +561,9 @@ def build_inference_features(engine, slate: pd.DataFrame,
     d0 = slate['GAME_DATE'].min()
     slate_ids = {int(g) for g in slate['GAME_ID']}
 
-    cur = max(season_id_from_game_id(g) for g in slate['GAME_ID'])
-    prev = f"2{int(cur[1:]) - 1}"
+    cur_yr = max(int(str(int(g)).zfill(10)[3:5]) for g in slate['GAME_ID'])
+    cur = f'2{2000 + cur_yr}'
+    prev = f'2{2000 + cur_yr - 1}'
     frames = load_frames(engine, [prev, cur])
 
     # If the slate games were already played (backtesting a past date through

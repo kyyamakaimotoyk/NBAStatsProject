@@ -236,7 +236,16 @@ Report contents, per stat:
 
 Artifacts (e-series conventions): `outputs/p1_player_validation.json` +
 `docs/p1_player_validation_report.md`; charts as straight lines with visible points.
-**Gate: /players ships only after Kai reviews P1.**
+**Gate: /players ships only after Kai reviews P1.** (Gate passed; Phase A committed.)
+
+**P2 protocol (2026-07-10, supersedes P1 as the living protocol; P1 artifacts frozen):**
+playoffs/play-in/Cup final included — SEASON_YEAR spans all game types, IS_PLAYOFF is a
+model feature, season-to-date accumulates through the postseason, preseason is skipped —
+plus a fourth season-year (warm-up 2021-22, new fold train-2022-23 → test-2023-24 so the
+backfill covers 2023-24). Report: `docs/p2_player_validation_report.md`; backfill version
+`p2_wf_20260710` (62,156 rows incl. postseason). Key finding: XGB ≤ Marcel on 11/11
+playoff stats; the playoff regime shift lands in MINUTES (harder) while per-game
+production error is flat-to-lower. Full detail: model_tuning_log §P2.
 
 ## 7. Phasing
 

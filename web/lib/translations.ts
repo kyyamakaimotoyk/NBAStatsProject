@@ -275,7 +275,7 @@ const en = {
     loading: "Loading…",
     noData: "No player projections available yet.",
     noPreds:
-      "No model predictions in this window — projections cover the 2024-25 season onward.",
+      "No model predictions in this window — projections cover the 2023-24 season onward.",
     chartHeading: (name: string, stat: string) => `${name} — ${stat}, game by game`,
     backtestNote:
       "Predicted values are the model's out-of-sample backtest: each one was produced by a model trained only on earlier seasons.",

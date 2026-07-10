@@ -49,7 +49,7 @@ HOME PC (residential IP)                AWS (us-east-1)
 - **CI/CD** (`.github/workflows/`): push to `api/**` → build → ECR → roll the service; push to `web/**` → build → S3 → CloudFront invalidation. GitHub OIDC — no stored AWS keys.
 - **Public-data policy**: the API never exposes hyperparameters, internal model-version names, feature lists/counts, or raw pre-calibration probabilities. Fan-facing performance only.
 - **Working notes** live in `docs/`: `aws_deployment_plan.md`, `terraform_lab.md`, `docker_lab.md`, `cicd_lab.md`, `ops_lab.md`, `traffic_lab.md`, `frontend_lab.md`, `troubleshooting_lab.md`, `bedrock_lab.md` (hands-on Bedrock/LLM labs for the fantasy advisor), plus `preseason_checklist.md` for calendar-bound ops.
-- **Player projections initiative** (P-series): plan in `docs/player_projections_plan.md` (per-player counting-stat model → public `/players` table → Bedrock LLM fantasy advisor); first validation/calibration report in `docs/p1_player_validation_report.md`.
+- **Player projections initiative** (P-series): plan in `docs/player_projections_plan.md` (per-player counting-stat model → public `/players` table → Bedrock LLM fantasy advisor); current validation/calibration report in `docs/p2_player_validation_report.md` (P2 = playoffs + 4 seasons; `p1_player_validation_report.md` is the frozen pre-playoff baseline).
 
 ---
 
@@ -1055,7 +1055,7 @@ NBAStatsProject/
 | Change the public site | `web/` (CI deploys on push) |
 | Change AWS infrastructure | `infra/` (`terraform apply` — manual, deliberate) |
 | Re-run or read an experiment | `experiments/` + `docs/model_tuning_log.md` |
-| Player projections (P-series) | prod: `data_engineering/player_dataset.py`, `modeling/player_projection_models.py`, `scripts/backfill_player_predictions.py`; eval: `experiments/p1_player_validation.py` + `docs/p1_player_validation_report.md`; plan: `docs/player_projections_plan.md` |
+| Player projections (P-series) | prod: `data_engineering/player_dataset.py`, `modeling/player_projection_models.py`, `modeling/player_predict.py`, `scripts/backfill_player_predictions.py`; eval: `experiments/p1_player_validation.py` + `docs/p2_player_validation_report.md`; plan: `docs/player_projections_plan.md` |
 | Learn Bedrock / build the LLM advisor | `docs/bedrock_lab.md` + `docs/player_projections_plan.md` §5 |
 | Run the end-to-end pipeline | `orchestration/pipeline.py` |
 | See the internal dashboard | `visualization/` |

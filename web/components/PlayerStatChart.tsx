@@ -70,10 +70,20 @@ export default function PlayerStatChart({
 
   return (
     <ResponsiveContainer width="100%" height={330}>
-      <LineChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
+      <LineChart data={data} margin={{ top: 8, right: 24, bottom: 12, left: 8 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#243049" />
-        <XAxis dataKey="label" tick={{ fontSize: 12, fill: "#9aa6c0" }} minTickGap={40} />
-        <YAxis tick={{ fontSize: 12, fill: "#9aa6c0" }} />
+        <XAxis
+          dataKey="label"
+          tick={{ fontSize: 11, fill: "#9aa6c0" }}
+          minTickGap={40}
+          tickMargin={6}
+        />
+        <YAxis
+          domain={[0, "auto"]}
+          tick={{ fontSize: 11, fill: "#9aa6c0" }}
+          tickMargin={4}
+          width={44}
+        />
         <Tooltip content={<GameTooltip statLabel={statLabel} t={t} />} />
         <Legend verticalAlign="top" height={30} />
         <Line

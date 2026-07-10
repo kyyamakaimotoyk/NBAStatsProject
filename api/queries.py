@@ -638,9 +638,17 @@ def player_gamelog(person_id: int, days: int = 1150) -> tuple[list[dict], Option
                pp.pred_fta
         FROM boxscoretraditionalv3_player p
         JOIN game_list g ON g.GAME_ID = p.gameId AND g.TEAM_ID = p.teamId
-        LEFT JOIN player_predictions pp
-               ON pp.game_id = p.gameId AND pp.person_id = p.personId
-              AND pp.model_type = :mt
+        LEFT JOIN (
+            SELECT game_id, person_id,
+                   pred_min, pred_pts, pred_reb, pred_ast, pred_stl, pred_blk,
+                   pred_tov, pred_fg3m, pred_fg3a, pred_ftm, pred_fta,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY game_id, person_id
+                       ORDER BY prediction_timestamp DESC
+                   ) AS _rn
+            FROM player_predictions
+            WHERE model_type = :mt AND person_id = :pid
+        ) pp ON pp.game_id = p.gameId AND pp.person_id = p.personId AND pp._rn = 1
         WHERE p.personId = :pid
           AND COALESCE(p.minutes, '') <> ''  -- exclude DNP rows
           AND g.GAME_DATE >= DATE_SUB(CURDATE(), INTERVAL :days DAY)

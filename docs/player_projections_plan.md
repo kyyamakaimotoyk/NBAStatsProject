@@ -242,9 +242,35 @@ Artifacts (e-series conventions): `outputs/p1_player_validation.json` +
 
 - **Phase A — dataset + models + P1 report.** Dataset builder (3 seasons) → Marcel baseline →
   two-stage XGBoost → P1 report. *Gate: Kai reviews P1.*
-- **Phase B — production plumbing.** `player_predictions` table, nightly batch (top-8 via
-  `get_expected_roster` + live injuries), grading job, pipeline stages (`player_features`,
-  `player_train`), registry/bundle wiring.
+- **Phase B — production plumbing. BUILT 2026-07-09** (deploy pending: image rebuild +
+  `terraform apply` for the weekly-retrain command).
+  - **Train/serve parity by construction**: `data_engineering/player_dataset.py` gained
+    `build_inference_features()` — placeholder rows for the upcoming slate are appended to
+    the historical frames and the IDENTICAL shift(1) pipeline runs, so inference features
+    come from the same code as training features. Past-date slates drop their own real
+    rows first, so backtests through the production path are pregame-honest. Side benefit:
+    the vegas join is now two-pass (game_id, then date+teams) — training coverage rose
+    0.807 → 0.89 with values identical where both joins matched.
+  - **`modeling/player_predict.py`**: `train_and_save()` (weekly `player_train` pipeline
+    stage; bundle rides `save_model_bundle`/S3 as `player_xgb_*` with `data_through_date`
+    leakage metadata + holdout-MAE sanity print); `predict_players_for_date()` (nightly;
+    pregame injuries — live ESPN feed for today, `historical_injury_report` for
+    backfills; OUT players excluded from the placeholder roster, which feeds VACATED_*
+    honestly; leakage guard refuses in-window dates without `allow_leakage`);
+    `backfill_player_actuals()` (grades against final boxscores; predicted-but-DNP rows
+    grade as zeros — the honest cost of a missed scratch).
+  - **Nightly integration**: `batch_predict_today.py` runs the player stage after game
+    predictions; failures ERROR-log (CloudWatch alarm) but never block the game pipeline
+    or its dead-man heartbeat. Also fixed a latent guard: batch's early torch import now
+    catches OSError (Windows DLL-init) like predict_games does.
+  - **Weekly integration**: new `player_train` stage in `orchestration/pipeline.py`;
+    `infra/schedule.tf` weekly command now `...train,player_train,validate`.
+  - **API dedup fix**: the explore-page gamelog now takes the most recent prediction per
+    (game, player) via ROW_NUMBER, so weekly model versions coexisting with the P1
+    backfill can't produce duplicate rows.
+  - Cold-start caveat: at season open, candidate rosters come from last season's
+    boxscores (offseason trades invisible until players appear in games); the injury
+    feed still removes OUT players. A roster feed is a future refinement.
 - **Phase C — /players page** (§4), public at launch.
   - **C-partial DONE 2026-07-09 — player-explore page** (Kai request): `player_predictions`
     table created + backfilled with P1 walk-forward out-of-sample predictions
@@ -256,9 +282,11 @@ Artifacts (e-series conventions): `outputs/p1_player_validation.json` +
     actual-vs-predicted game chart (tooltip: date, opponent, pred, actual), stat distribution
     with Poisson overlay for STL/BLK/TOV/3PM, prediction-error histogram with MAE/bias,
     team-vs-next-opponent panel. EN/JA copy; nav "Players".
-    **Prod deploy step**: RDS has no `player_predictions` rows until
-    `python scripts/backfill_player_predictions.py` runs against RDS (one-off pipeline-task
-    run, same env as the nightly job) — until then the page shows the empty state.
+    **Prod deploy DONE 2026-07-09**: `scripts/backfill_player_predictions.py` ran as a
+    one-off pipeline task against RDS (`aws ecs run-task --cli-input-json
+    file://tmp/run_backfill_task.json` — the file:// form avoids PowerShell 5.1's
+    inline-JSON quote-stripping). RDS `player_predictions` is populated; /players/explore
+    is live end-to-end.
 - **Phase D — advisor** (§5): IAM + Bedrock access, endpoint, guardrails, UI.
 - **Phase E (optional/parked):** NN-embed experiment (B), distributional outputs (D), MCP
   tool loop, Tier-2 feature ablation rounds.

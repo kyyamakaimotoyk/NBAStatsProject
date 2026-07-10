@@ -40,8 +40,10 @@ if _os.getcwd() != _PROJECT_ROOT:
 # order even if a future caller imports batch_predict_today directly.
 try:
     import torch  # noqa: F401
-except ImportError:
-    pass  # NN models will be skipped if torch is unavailable.
+except (ImportError, OSError):
+    # OSError covers Windows DLL-init failures (same guard as predict_games);
+    # NN models will be skipped if torch is unavailable.
+    pass
 
 import argparse
 import sys
@@ -561,9 +563,38 @@ def main(argv=None) -> int:
             for k, v in stats.items():
                 totals[k] += v
 
+        # P-series: per-player projections for the same dates, plus grading of
+        # past player rows. Failures ERROR-log (the CloudWatch ERROR filter
+        # alarms on them) but never block the game-outcome pipeline — the
+        # dead-man heartbeat below stays game-owned.
+        p_totals = {'n_rows': 0, 'n_errors': 0}
+        try:
+            from modeling.player_predict import (
+                backfill_player_actuals, predict_players_for_date)
+            if not args.skip_backfill:
+                graded = backfill_player_actuals(
+                    engine, lookback_days=args.backfill_lookback)
+                print(f"player backfill: {graded}")
+            for game_date in game_dates:
+                if args.injury_source == 'auto':
+                    p_injury = 'live' if game_date >= today_iso else 'historical'
+                else:
+                    p_injury = args.injury_source
+                ps = predict_players_for_date(
+                    engine, game_date, injury_mode=p_injury, skip_log=args.no_log)
+                p_totals['n_rows'] += ps.get('n_rows', 0)
+                p_totals['n_errors'] += ps.get('n_errors', 0)
+        except Exception as exc:
+            p_totals['n_errors'] += 1
+            print(f"ERROR: player projections stage failed — {exc} "
+                  f"(game predictions unaffected)")
+        if p_totals['n_errors']:
+            print(f"ERROR: player projections finished with "
+                  f"{p_totals['n_errors']} error(s)")
+
         print()
         print(f"Done. {totals['n_predictions']} predictions across {totals['n_games']} games; "
-              f"{totals['n_errors']} errors.")
+              f"{totals['n_errors']} errors; {p_totals['n_rows']} player projections.")
         if totals['n_errors'] == 0:
             # Dead-man heartbeat: printed ONLY on a clean run. If the nightly task
             # never launches or errors out, this line is absent and the heartbeat

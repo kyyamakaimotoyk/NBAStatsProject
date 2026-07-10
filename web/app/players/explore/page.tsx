@@ -114,7 +114,7 @@ export default function PlayersExplorePage() {
       const base = preds.length >= 3 ? preds : actuals;
       if (base.length > 0) lambda = base.reduce((a, b) => a + b, 0) / base.length;
     }
-    return buildDistribution(actuals, lambda);
+    return buildDistribution(actuals, statKey, lambda);
   }, [rows, statKey, stat.poisson]);
 
   const errDist = useMemo(() => buildErrorDistribution(rows, statKey), [rows, statKey]);
@@ -190,6 +190,7 @@ export default function PlayersExplorePage() {
             bins={dist}
             barName={t.playersExplore.shareOfGames}
             poissonName={stat.poisson ? t.playersExplore.poissonExpected : undefined}
+            yCap={stat.poisson ? 0.8 : 0.4}
           />
           {stat.poisson && <p className="caption">{t.playersExplore.distPoissonNote}</p>}
 
@@ -198,7 +199,11 @@ export default function PlayersExplorePage() {
             <p className="status">{t.playersExplore.noPreds}</p>
           ) : (
             <>
-              <PlayerDistChart bins={errDist.bins} barName={t.playersExplore.shareOfGames} />
+              <PlayerDistChart
+                bins={errDist.bins}
+                barName={t.playersExplore.shareOfGames}
+                yCap={0.5}
+              />
               <p className="caption">
                 {t.playersExplore.errSummary(errDist.n, errDist.mae ?? 0, errDist.bias ?? 0)}
               </p>

@@ -160,7 +160,7 @@ resource "aws_scheduler_schedule" "weekly_retrain" {
         {
           name = "pipeline"
           command = ["sh", "-c",
-            "python data_engineering/compute_elo.py && python orchestration/pipeline.py run --stages player_impact,features,train,validate"]
+            "python data_engineering/compute_elo.py && python orchestration/pipeline.py run --stages player_impact,features,train,player_train,validate"]
         }
       ]
     })

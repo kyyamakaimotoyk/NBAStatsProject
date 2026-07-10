@@ -54,7 +54,7 @@ LOG_DIR = os.path.join(REPO_ROOT, 'logs')
 STATE_FILE = os.path.join(LOG_DIR, 'pipeline_state.json')
 FEATURES_CSV = os.path.join(REPO_ROOT, 'nba_ml_features.csv')
 
-STAGE_ORDER = ['fetch_data', 'player_impact', 'features', 'train', 'vegas_lines', 'predict', 'backfill', 'validate']
+STAGE_ORDER = ['fetch_data', 'player_impact', 'features', 'train', 'player_train', 'vegas_lines', 'predict', 'backfill', 'validate']
 
 
 # ============================================================================
@@ -414,6 +414,25 @@ class TrainStage(StageSpec):
 
 
 @dataclass
+class PlayerTrainStage(StageSpec):
+    name: str = 'player_train'
+    description: str = ('Retrain the per-player projection model (P-series two-stage XGB: '
+                        'minutes x per-36 rates) and save the player_xgb bundle.')
+
+    def build_cmd(self, **kwargs) -> List[str]:
+        code = (
+            "import sys, os; "
+            "sys.path.insert(0, os.getcwd()); "
+            "from core.db import get_engine; "
+            "from modeling.player_predict import train_and_save; "
+            "print('[pipeline.player_train] training player projection model...'); "
+            "train_and_save(get_engine()); "
+            "print('[pipeline.player_train] done.')"
+        )
+        return [sys.executable, '-c', code]
+
+
+@dataclass
 class VegasLinesStage(StageSpec):
     name: str = 'vegas_lines'
     description: str = ('Fetch ESPN/DraftKings Vegas lines into vegas_lines (vegas_lines_espn.py). '
@@ -524,6 +543,7 @@ STAGE_REGISTRY: Dict[str, StageSpec] = {
     'player_impact': PlayerImpactStage(),
     'features': FeaturesStage(),
     'train': TrainStage(),
+    'player_train': PlayerTrainStage(),
     'vegas_lines': VegasLinesStage(),
     'predict': PredictStage(),
     'backfill': BackfillStage(),

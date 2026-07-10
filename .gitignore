@@ -54,6 +54,7 @@ logs/
 # Generated dashboard / prediction outputs
 outputs/predictions_history/
 outputs/*.csv
+outputs/*.pkl  # rebuildable dataset caches (100MB+, regenerated from the DB in ~60s)
 
 # Jupyter checkpoints
 .ipynb_checkpoints/

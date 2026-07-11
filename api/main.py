@@ -37,6 +37,7 @@ from api.schemas import (
     PlayerDirectoryResponse,
     PlayerGamelogResponse,
     TeamContextResponse,
+    PlayerDailyResponse,
 )
 
 app = FastAPI(
@@ -219,3 +220,23 @@ def players_team_context(team_id: int = Query(..., ge=1)):
     if ctx is None:
         raise HTTPException(status_code=404, detail=f"unknown team_id {team_id}")
     return ctx
+
+
+@app.get("/api/players/predictions/latest", response_model=PlayerDailyResponse, tags=["players"])
+def players_predictions_latest():
+    """The most recent slate with player projections (the daily table's default)."""
+    d = queries.latest_player_prediction_date()
+    if d is None:
+        return PlayerDailyResponse(game_date=None, count=0, rows=[])
+    rows = queries.player_predictions_for_date(d)
+    return PlayerDailyResponse(game_date=d, count=len(rows), rows=rows)
+
+
+@app.get("/api/players/predictions", response_model=PlayerDailyResponse, tags=["players"])
+def players_predictions(date: str = Query(..., description="Game date YYYY-MM-DD")):
+    """Per-player projections for one date's slate, with own/opponent context."""
+    try:
+        rows = queries.player_predictions_for_date(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    return PlayerDailyResponse(game_date=date, count=len(rows), rows=rows)

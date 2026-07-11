@@ -280,7 +280,17 @@ production error is flat-to-lower. Full detail: model_tuning_log §P2.
   - Cold-start caveat: at season open, candidate rosters come from last season's
     boxscores (offseason trades invisible until players appear in games); the injury
     feed still removes OUT players. A roster feed is a future refinement.
-- **Phase C — /players page** (§4), public at launch.
+- **Phase C — /players page** (§4), public at launch. **BUILT 2026-07-10**: daily sortable
+  projections table at `/players` (nav "Players" now points here; the explorer is linked
+  both ways). First click-to-sort table in the repo (`PlayerProjectionsTable`: aria-sort,
+  text-asc/number-desc defaults, nulls last, sticky header). Date picker defaults to the
+  latest slate; team filter; graded slates get a Predicted/Actual toggle that re-sorts on
+  the visible values. Context columns (own pace, opp pace, opp DRtg, opp 3PA-allowed L10,
+  as of game date) are DENORMALIZED onto `player_predictions` at write time
+  (`CONTEXT_COLS` in player_predict.py; idempotent ALTER migration in
+  `ensure_player_predictions_table`; both the nightly and the backfill populate them) so
+  the API stays a plain SELECT and history stays point-in-time correct. Endpoints:
+  `GET /api/players/predictions?date=` + `/latest` (public-safe; version-deduped).
   - **C-partial DONE 2026-07-09 — player-explore page** (Kai request): `player_predictions`
     table created + backfilled with P1 walk-forward out-of-sample predictions
     (`scripts/backfill_player_predictions.py`, 38,177 rows, 2024-25 + 2025-26; 2023-24 is

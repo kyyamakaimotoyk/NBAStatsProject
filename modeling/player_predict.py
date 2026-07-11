@@ -69,12 +69,42 @@ CREATE TABLE IF NOT EXISTS player_predictions (
 UPSERT_COLS = [
     'game_id', 'game_date', 'person_id', 'player_name', 'team_id', 'team_abbrev',
     'opp_team_id', 'opp_abbrev', 'is_home', 'model_type', 'model_version',
+    'team_pace_l10', 'opp_pace_l10', 'opp_drtg_l10', 'opp_3pa_allowed_l10',
 ] + [f'pred_{s.lower()}' for s in TARGETS] + [f'actual_{s.lower()}' for s in TARGETS]
+
+
+def context_values(feature_row) -> dict:
+    """CONTEXT_COLS from one feature row (shared by nightly + backfill)."""
+    out = {}
+    for col, src in CONTEXT_COLS.items():
+        v = feature_row.get(src) if hasattr(feature_row, 'get') else feature_row[src]
+        out[col] = round(float(v), 2) if v is not None and np.isfinite(v) else None
+    return out
+
+
+# Display-context columns for the public /players table — own/opponent L10
+# profile AS OF the prediction date, denormalized at write time so the API
+# stays a plain SELECT and historical dates stay point-in-time correct.
+CONTEXT_COLS = {  # column -> feature-row source
+    'team_pace_l10': 'TEAM_PACE_L10',
+    'opp_pace_l10': 'OPP_PACE_L10',
+    'opp_drtg_l10': 'OPP_DRTG_L10',
+    'opp_3pa_allowed_l10': 'OPP_3PA_ALLOWED_L10',
+}
 
 
 def ensure_player_predictions_table(engine):
     with engine.begin() as conn:
         conn.execute(sa.text(DDL))
+        # Idempotent migration (prediction_tracker convention): add context
+        # columns to tables created before they existed.
+        existing = {r[0] for r in conn.execute(sa.text(
+            "SHOW COLUMNS FROM player_predictions"))}
+        for col in CONTEXT_COLS:
+            if col not in existing:
+                conn.execute(sa.text(
+                    f"ALTER TABLE player_predictions ADD COLUMN {col} FLOAT"))
+                print(f"player_predictions: added column {col}")
 
 
 def upsert_player_predictions(engine, rows, chunk: int = 2000):
@@ -246,6 +276,7 @@ def predict_players_for_date(engine, game_date: str, injury_mode: str = 'auto',
             'model_type': MODEL_TYPE,
             'model_version': version,
         }
+        row.update(context_values(f))
         for s in TARGETS:
             v = p[f'pred_{s}']
             row[f'pred_{s.lower()}'] = round(float(v), 2) if np.isfinite(v) else None

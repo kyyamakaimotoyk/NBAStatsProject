@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   getPlayerDirectory,
   getPlayerGamelog,
@@ -128,7 +129,10 @@ export default function PlayersExplorePage() {
   return (
     <section>
       <h1>{t.playersExplore.title}</h1>
-      <p className="subtle">{t.playersExplore.subtitle}</p>
+      <p className="subtle">
+        {t.playersExplore.subtitle}{" "}
+        <Link href="/players">{t.playersExplore.dailyLink}</Link>
+      </p>
 
       <div className="controls explore-controls">
         <label>

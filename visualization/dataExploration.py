@@ -2519,6 +2519,446 @@ def update_model_perf(start_date, end_date, models_selected, ref_model, _n_click
 
 
 #######################################################################################################################
+# TAB: Model Evolution — performance improvement across training iterations
+#
+# Reads the full model_registry history and answers "are the models actually getting
+# better from iteration to iteration, and are we overfitting?": metric trajectories
+# per model family, train-vs-test overfit gaps (flattened out of the train_metrics
+# JSON), feature count vs performance, and live monthly accuracy / margin MAE vs the
+# Vegas baseline. Registry test metrics come from the in-file 80/20 temporal split,
+# so treat them as optimistic relative to the walk-forward numbers in docs/.
+#######################################################################################################################
+
+_EVO_METRIC_LABELS = {
+    'test_accuracy': 'Test accuracy (classifier)',
+    'test_auc': 'Test AUC (classifier)',
+    'test_mae': 'Test MAE, points (regressor)',
+    'test_rmse': 'Test RMSE, points (regressor)',
+    'test_r2': 'Test R² (regressor)',
+}
+_EVO_CLF_METRICS = ('test_accuracy', 'test_auc')
+_EVO_LOWER_IS_BETTER = ('test_mae', 'test_rmse')
+_EVO_KIND_DASH = {'train': 'solid', 'validation': 'dash', 'backfill': 'dot'}
+_EVO_KIND_SYMBOL = {'train': 'circle', 'validation': 'diamond', 'backfill': 'square'}
+_EVO_VEGAS_PRIORITY = {'espn_draftkings': 0, 'espn_consensus': 1, 'espn_fanduel': 1,
+                       'espn_espnbet': 1, 'kaggle_sbr': 2, 'teamrankings': 3}
+
+
+def _evo_color(family):
+    """Family → chart color; tolerates nn_embed vs nn-embed naming drift."""
+    return _MODEL_COLOR.get(family, _MODEL_COLOR.get(family.replace('_', '-'), '#888888'))
+
+
+def _evo_parse_train_metrics(v):
+    """train_metrics arrives as a JSON string; return a dict ({} on any failure)."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return {}
+    if isinstance(v, dict):
+        return v
+    try:
+        return json.loads(v)
+    except Exception:
+        return {}
+
+
+def _load_registry_evolution(engine):
+    """model_registry with family/task split, a per-(family, task, kind) iteration
+    index, and the train-set metrics flattened out of the train_metrics JSON so the
+    overfit gap (train vs test) can be charted per iteration."""
+    try:
+        df = pd.read_sql(_sql_text(
+            "SELECT registry_id, run_kind, model_type, model_version, training_date, "
+            "feature_count, training_samples, test_samples, "
+            "test_accuracy, test_auc, test_mae, test_rmse, test_r2, "
+            "train_metrics, notes, is_current "
+            "FROM model_registry ORDER BY training_date ASC, registry_id ASC"
+        ), engine)
+    except Exception as e:
+        print(f"[model_evo] registry load failed: {e}")
+        return pd.DataFrame()
+    if df.empty:
+        return df
+    df['run_kind'] = df['run_kind'].fillna('train')
+    df['notes'] = df['notes'].fillna('')
+    parts = df['model_type'].str.rsplit('_', n=1)
+    df['family'] = parts.str[0]
+    df['task'] = parts.str[1]
+    tm = df['train_metrics'].apply(_evo_parse_train_metrics)
+    for key in ('accuracy', 'auc', 'mae', 'rmse', 'r2'):
+        df[f'train_{key}'] = tm.apply(lambda d, k=key: d.get(k))
+    df['training_date'] = pd.to_datetime(df['training_date'])
+    df = df.sort_values(['training_date', 'registry_id'])
+    df['iteration'] = df.groupby(['family', 'task', 'run_kind']).cumcount() + 1
+    return df
+
+
+def _evo_customdata(sub):
+    """Shared hover payload: version, date, features, samples, notes."""
+    return np.column_stack([
+        sub['model_version'].astype(str),
+        sub['training_date'].dt.strftime('%Y-%m-%d'),
+        sub['feature_count'].fillna(0).astype(int).astype(str),
+        sub['training_samples'].fillna(0).astype(int).astype(str),
+        sub['notes'].astype(str).str.slice(0, 70),
+    ])
+
+
+_EVO_HOVER = ('%{customdata[0]}<br>trained: %{customdata[1]}<br>'
+              'value: %{y:.4f}<br>features: %{customdata[2]}, '
+              'train n: %{customdata[3]}<br>%{customdata[4]}<extra></extra>')
+
+
+def _evo_metric_figure(reg, metric, families, x_mode):
+    """Chart 1: the selected registry metric across iterations, one line per family
+    (solid = training runs, dashed diamonds = held-out validations)."""
+    fig = go.Figure()
+    task = 'classifier' if metric in _EVO_CLF_METRICS else 'regressor'
+    sub_task = reg[(reg['task'] == task) & reg['family'].isin(families) & reg[metric].notna()]
+    for (family, kind), sub in sub_task.groupby(['family', 'run_kind']):
+        sub = sub.sort_values(['training_date', 'registry_id'])
+        x = sub['iteration'] if x_mode == 'iteration' else sub['training_date']
+        fig.add_trace(go.Scatter(
+            x=x, y=sub[metric],
+            mode='lines+markers',
+            name=family.upper() if kind == 'train' else f'{family.upper()} ({kind})',
+            legendgroup=family,
+            line=dict(color=_evo_color(family), width=2,
+                      dash=_EVO_KIND_DASH.get(kind, 'solid')),
+            marker=dict(size=8, symbol=_EVO_KIND_SYMBOL.get(kind, 'circle')),
+            customdata=_evo_customdata(sub),
+            hovertemplate=_EVO_HOVER,
+        ))
+    direction = 'lower is better' if metric in _EVO_LOWER_IS_BETTER else 'higher is better'
+    fig.update_layout(
+        template='plotly_dark', height=440, hovermode='closest',
+        title=f'{_EVO_METRIC_LABELS[metric]} across training iterations — {direction}',
+        xaxis_title='Iteration # (per model family)' if x_mode == 'iteration' else 'Training date',
+        yaxis_title=_EVO_METRIC_LABELS[metric],
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+    )
+    return fig
+
+
+def _evo_overfit_figure(reg, families, x_mode):
+    """Chart 2: overfit gap per iteration. Row 1 = classifier train−test accuracy,
+    row 2 = regressor test−train MAE. 0 = no gap; higher = more memorization."""
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=(x_mode == 'iteration'), vertical_spacing=0.12,
+        subplot_titles=('Classifier: train accuracy − test accuracy',
+                        'Regressor: test MAE − train MAE (points)'))
+    specs = [
+        ('classifier', lambda s: s['train_accuracy'] - s['test_accuracy'], 1),
+        ('regressor', lambda s: s['test_mae'] - s['train_mae'], 2),
+    ]
+    for task, gap_fn, row in specs:
+        sub_task = reg[(reg['task'] == task) & reg['family'].isin(families)
+                       & (reg['run_kind'] == 'train')]
+        for family, sub in sub_task.groupby('family'):
+            sub = sub.sort_values(['training_date', 'registry_id'])
+            gap = gap_fn(sub)
+            keep = gap.notna()
+            if not keep.any():
+                continue
+            sub, gap = sub[keep], gap[keep]
+            x = sub['iteration'] if x_mode == 'iteration' else sub['training_date']
+            fig.add_trace(go.Scatter(
+                x=x, y=gap,
+                mode='lines+markers',
+                name=family.upper(), legendgroup=family, showlegend=(row == 1),
+                line=dict(color=_evo_color(family), width=2),
+                marker=dict(size=8),
+                customdata=_evo_customdata(sub),
+                hovertemplate=_EVO_HOVER,
+            ), row=row, col=1)
+        fig.add_hline(y=0, line_dash='dash', line_color='gray', row=row, col=1,
+                      annotation_text='no gap', annotation_position='bottom right')
+    fig.update_layout(
+        template='plotly_dark', height=620, hovermode='closest',
+        title='Overfit gap across iterations (training runs only) — closer to 0 is better',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+    )
+    fig.update_xaxes(title_text='Iteration # (per model family)' if x_mode == 'iteration'
+                     else 'Training date', row=2, col=1)
+    return fig
+
+
+def _evo_feature_figure(reg, metric, families):
+    """Chart 3: feature count vs the selected metric — each point one training run.
+    Answers "did adding features buy anything?" at a glance."""
+    fig = go.Figure()
+    task = 'classifier' if metric in _EVO_CLF_METRICS else 'regressor'
+    sub_task = reg[(reg['task'] == task) & reg['family'].isin(families)
+                   & (reg['run_kind'] == 'train') & reg[metric].notna()
+                   & reg['feature_count'].notna()]
+    for family, sub in sub_task.groupby('family'):
+        fig.add_trace(go.Scatter(
+            x=sub['feature_count'], y=sub[metric],
+            mode='markers',
+            name=family.upper(),
+            marker=dict(size=10, color=_evo_color(family),
+                        line=dict(width=1, color='#222')),
+            customdata=_evo_customdata(sub),
+            hovertemplate=_EVO_HOVER,
+        ))
+    fig.update_layout(
+        template='plotly_dark', height=420,
+        title=f'Feature count vs {_EVO_METRIC_LABELS[metric]} — one point per training run',
+        xaxis_title='Feature count',
+        yaxis_title=_EVO_METRIC_LABELS[metric],
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+    )
+    return fig
+
+
+def _evo_live_figure(engine, families):
+    """Chart 4: live graded performance by month — winner accuracy (top) and margin
+    MAE vs the Vegas closing/pregame line (bottom). Vegas traces are computed only on
+    games that have a matched line (deduped to the best-priority source per game)."""
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.10,
+                        subplot_titles=('Winner accuracy by month',
+                                        'Margin MAE by month (points) — Vegas-paired games only'))
+    try:
+        preds = pd.read_sql(_sql_text(
+            "SELECT game_id, game_date, model_type, predicted_margin, actual_margin, is_correct "
+            "FROM model_predictions WHERE actual_winner IS NOT NULL"
+        ), engine)
+        paired = pd.read_sql(_sql_text(
+            "SELECT mp.game_id, mp.game_date, mp.model_type, mp.predicted_margin, "
+            "mp.actual_margin, vl.home_spread, vl.source AS vegas_source "
+            "FROM model_predictions mp "
+            "JOIN vegas_lines vl ON vl.game_date = mp.game_date "
+            " AND vl.home_team_abbrev = mp.home_team AND vl.away_team_abbrev = mp.away_team "
+            "WHERE mp.actual_winner IS NOT NULL AND mp.actual_margin IS NOT NULL "
+            " AND vl.home_spread IS NOT NULL"
+        ), engine)
+    except Exception as e:
+        print(f"[model_evo] live load failed: {e}")
+        fig.update_layout(template='plotly_dark', title=f'Live data unavailable: {e}')
+        return fig
+    if preds.empty:
+        fig.update_layout(template='plotly_dark', title='No graded predictions in model_predictions yet')
+        return fig
+
+    preds = preds[preds['model_type'].isin(families)]
+    preds['month'] = pd.to_datetime(preds['game_date']).dt.to_period('M').dt.to_timestamp()
+
+    # One Vegas line per (game, model): best-priority source wins; then MAE is computed
+    # for model and Vegas on the SAME paired game set so the comparison is fair.
+    if not paired.empty:
+        paired = paired[paired['model_type'].isin(families)]
+        paired['prio'] = paired['vegas_source'].map(_EVO_VEGAS_PRIORITY).fillna(9)
+        paired = (paired.sort_values('prio')
+                  .drop_duplicates(subset=['game_id', 'model_type'], keep='first'))
+        paired['month'] = pd.to_datetime(paired['game_date']).dt.to_period('M').dt.to_timestamp()
+        paired['vegas_margin'] = -paired['home_spread']
+        paired['model_err'] = (paired['predicted_margin'] - paired['actual_margin']).abs()
+        paired['vegas_err'] = (paired['vegas_margin'] - paired['actual_margin']).abs()
+
+    # Row 1: winner accuracy per model (all graded games)
+    for model_type, sub in preds.groupby('model_type'):
+        acc = sub.groupby('month').agg(accuracy=('is_correct', 'mean'),
+                                       n=('is_correct', 'size')).reset_index()
+        fig.add_trace(go.Scatter(
+            x=acc['month'], y=acc['accuracy'],
+            mode='lines+markers', name=model_type.upper(), legendgroup=model_type,
+            line=dict(color=_evo_color(model_type), width=2),
+            marker=dict(size=8),
+            customdata=acc[['n']],
+            hovertemplate='%{x|%Y-%m}<br>accuracy: %{y:.3f}<br>games: %{customdata[0]}<extra></extra>',
+        ), row=1, col=1)
+    # Vegas implied winner accuracy (unique games with a non-pick'em line)
+    if not paired.empty:
+        vg = paired.drop_duplicates(subset='game_id')
+        vg = vg[vg['vegas_margin'] != 0]
+        vg_acc = ((vg['vegas_margin'] > 0) == (vg['actual_margin'] > 0))
+        vga = (pd.DataFrame({'month': vg['month'], 'ok': vg_acc.astype(float)})
+               .groupby('month').agg(accuracy=('ok', 'mean'), n=('ok', 'size')).reset_index())
+        fig.add_trace(go.Scatter(
+            x=vga['month'], y=vga['accuracy'],
+            mode='lines+markers', name='VEGAS', legendgroup='vegas',
+            line=dict(color='gold', width=2),
+            marker=dict(size=8, symbol='star'),
+            customdata=vga[['n']],
+            hovertemplate='%{x|%Y-%m}<br>Vegas accuracy: %{y:.3f}<br>games: %{customdata[0]}<extra></extra>',
+        ), row=1, col=1)
+    fig.add_hline(y=0.5, line_dash='dash', line_color='gray', row=1, col=1,
+                  annotation_text='coin flip', annotation_position='bottom right')
+
+    # Row 2: margin MAE per model vs Vegas, on the paired set
+    if not paired.empty:
+        for model_type, sub in paired.groupby('model_type'):
+            mae = sub.groupby('month').agg(mae=('model_err', 'mean'),
+                                           n=('model_err', 'size')).reset_index()
+            fig.add_trace(go.Scatter(
+                x=mae['month'], y=mae['mae'],
+                mode='lines+markers', name=model_type.upper(),
+                legendgroup=model_type, showlegend=False,
+                line=dict(color=_evo_color(model_type), width=2),
+                marker=dict(size=8),
+                customdata=mae[['n']],
+                hovertemplate='%{x|%Y-%m}<br>MAE: %{y:.2f} pts<br>games: %{customdata[0]}<extra></extra>',
+            ), row=2, col=1)
+        vmae = (paired.drop_duplicates(subset='game_id')
+                .groupby('month').agg(mae=('vegas_err', 'mean'),
+                                      n=('vegas_err', 'size')).reset_index())
+        fig.add_trace(go.Scatter(
+            x=vmae['month'], y=vmae['mae'],
+            mode='lines+markers', name='VEGAS', legendgroup='vegas', showlegend=False,
+            line=dict(color='gold', width=2),
+            marker=dict(size=8, symbol='star'),
+            customdata=vmae[['n']],
+            hovertemplate='%{x|%Y-%m}<br>Vegas MAE: %{y:.2f} pts<br>games: %{customdata[0]}<extra></extra>',
+        ), row=2, col=1)
+
+    fig.update_layout(
+        template='plotly_dark', height=640, hovermode='closest',
+        title='Live graded performance by month vs Vegas baseline',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+    )
+    fig.update_xaxes(title_text='Month', row=2, col=1)
+    fig.update_yaxes(title_text='Accuracy', row=1, col=1)
+    fig.update_yaxes(title_text='MAE (points)', row=2, col=1)
+    return fig
+
+
+def _evo_summary_cards(reg, families):
+    """First-vs-latest iteration deltas per family, one card per family."""
+    cards = []
+    for family in families:
+        body = [html.H5(family.upper(), style={'color': _evo_color(family)})]
+        clf = reg[(reg['family'] == family) & (reg['task'] == 'classifier')
+                  & (reg['run_kind'] == 'train') & reg['test_accuracy'].notna()]
+        rgr = reg[(reg['family'] == family) & (reg['task'] == 'regressor')
+                  & (reg['run_kind'] == 'train') & reg['test_mae'].notna()]
+        if not clf.empty:
+            first, last = clf.iloc[0], clf.iloc[-1]
+            delta = last['test_accuracy'] - first['test_accuracy']
+            body.append(html.Div(
+                f"Accuracy: {last['test_accuracy']:.3f} latest "
+                f"(first {first['test_accuracy']:.3f}, {delta:+.3f})"))
+        if not rgr.empty:
+            first, last = rgr.iloc[0], rgr.iloc[-1]
+            delta = last['test_mae'] - first['test_mae']
+            body.append(html.Div(
+                f"Margin MAE: {last['test_mae']:.2f} latest "
+                f"(first {first['test_mae']:.2f}, {delta:+.2f})"))
+        if not clf.empty and pd.notna(clf.iloc[-1]['train_accuracy']):
+            gap = clf.iloc[-1]['train_accuracy'] - clf.iloc[-1]['test_accuracy']
+            body.append(html.Div(f"Latest overfit gap: {gap:+.3f} accuracy",
+                                 style={'color': '#e74c3c' if gap > 0.10 else '#2ecc71'}))
+        if len(body) == 1:
+            body.append(html.Div('No training runs in registry'))
+        cards.append(dbc.Col(dbc.Card(dbc.CardBody(body)), width=4))
+    return dbc.Row(cards)
+
+
+modelEvoMetric = html.Div([
+    dbc.Label('Registry metric'),
+    dcc.Dropdown(
+        id='modelEvoMetric',
+        options=[{'label': v, 'value': k} for k, v in _EVO_METRIC_LABELS.items()],
+        value='test_accuracy', clearable=False,
+        style={'color': '#000'},
+    ),
+])
+
+modelEvoFamilies = html.Div([
+    dbc.Label('Model families'),
+    dcc.Checklist(
+        id='modelEvoFamilies',
+        options=[
+            {'label': ' Random Forest (rf)', 'value': 'rf'},
+            {'label': ' XGBoost (xgb)', 'value': 'xgb'},
+            {'label': ' Neural Network (nn)', 'value': 'nn'},
+        ],
+        value=['rf', 'xgb', 'nn'],
+        inline=True,
+        inputStyle={'marginRight': '6px', 'marginLeft': '12px'},
+    ),
+])
+
+modelEvoRunKind = html.Div([
+    dbc.Label('Run kinds'),
+    dcc.Checklist(
+        id='modelEvoRunKind',
+        options=[
+            {'label': ' Training', 'value': 'train'},
+            {'label': ' Validation', 'value': 'validation'},
+            {'label': ' Backfill', 'value': 'backfill'},
+        ],
+        value=['train', 'validation'],
+        inline=True,
+        inputStyle={'marginRight': '6px', 'marginLeft': '12px'},
+    ),
+])
+
+modelEvoXAxis = html.Div([
+    dbc.Label('X axis'),
+    dcc.RadioItems(
+        id='modelEvoXAxis',
+        options=[
+            {'label': ' Iteration #', 'value': 'iteration'},
+            {'label': ' Date', 'value': 'date'},
+        ],
+        value='iteration',
+        inline=True,
+        inputStyle={'marginRight': '6px', 'marginLeft': '12px'},
+    ),
+])
+
+modelEvoRefreshBtn = html.Div([
+    dbc.Label(' '),
+    html.Br(),
+    dbc.Button('Refresh', id='modelEvoRefreshBtn', n_clicks=0, color='primary', size='sm'),
+])
+
+
+@app.callback(
+    [
+        Output('modelEvoSummary', 'children'),
+        Output('modelEvoMetricChart', 'figure'),
+        Output('modelEvoOverfitChart', 'figure'),
+        Output('modelEvoFeatureChart', 'figure'),
+        Output('modelEvoLiveChart', 'figure'),
+        Output('modelEvoStatus', 'children'),
+    ],
+    [
+        Input('modelEvoMetric', 'value'),
+        Input('modelEvoFamilies', 'value'),
+        Input('modelEvoRunKind', 'value'),
+        Input('modelEvoXAxis', 'value'),
+        Input('modelEvoRefreshBtn', 'n_clicks'),
+    ],
+)
+def update_model_evolution(metric, families, run_kinds, x_mode, _n):
+    families = families or []
+    run_kinds = run_kinds or ['train']
+    eng = _engine_for_queries()
+    try:
+        reg = _load_registry_evolution(eng)
+        if reg.empty:
+            empty = go.Figure().update_layout(template='plotly_dark',
+                                              title='model_registry unavailable')
+            status = dbc.Alert('Could not load model_registry — is the DB reachable?',
+                               color='warning')
+            return html.Div(), empty, empty, empty, empty, status
+        reg_kinds = reg[reg['run_kind'].isin(run_kinds)]
+        metric_fig = _evo_metric_figure(reg_kinds, metric, families, x_mode)
+        overfit_fig = _evo_overfit_figure(reg, families, x_mode)
+        feature_fig = _evo_feature_figure(reg, metric, families)
+        live_fig = _evo_live_figure(eng, families)
+        summary = _evo_summary_cards(reg, families)
+        n_runs = len(reg_kinds[reg_kinds['family'].isin(families)])
+        status = dbc.Alert(
+            f"Loaded {n_runs} registry rows for {', '.join(families)} "
+            f"({reg['training_date'].min().date()} → {reg['training_date'].max().date()}).",
+            color='info')
+        return summary, metric_fig, overfit_fig, feature_fig, live_fig, status
+    finally:
+        eng.dispose()
+
+
+#######################################################################################################################
 
 ########################################################################################################################
 # TAB 0: Operations — pipeline orchestrator + system status
@@ -3144,7 +3584,71 @@ app.layout = html.Div(
                 html.Div(id='modelPerfRegistryTable'),
             ]),
 
-            # TAB 8: Site Traffic - CloudFront access logs via Athena (INTERNAL only)
+            # TAB 8: Model Evolution — iteration-over-iteration improvement from model_registry
+            dbc.Tab(label='Model Evolution', children=[
+                html.Br(),
+                html.H4('Model Evolution: is each iteration actually better?'),
+                html.Div([
+                    'Every training, validation, and backfill run recorded in ',
+                    html.Code('model_registry'),
+                    ' plotted as a trajectory, so feature/tuning changes (E-experiments, retrains) '
+                    'show up as steps. Solid circles = training runs (in-file 80/20 temporal split); '
+                    'dashed diamonds = held-out validation runs. Registry metrics are optimistic '
+                    'relative to the walk-forward numbers in docs/ — trust direction here, '
+                    'magnitude there.',
+                ]),
+                html.Hr(),
+                dbc.Row([
+                    dbc.Col(modelEvoMetric, width=3),
+                    dbc.Col(modelEvoFamilies, width=3),
+                    dbc.Col(modelEvoRunKind, width=3),
+                    dbc.Col(modelEvoXAxis, width=2),
+                    dbc.Col(modelEvoRefreshBtn, width=1),
+                ]),
+                html.Div(id='modelEvoStatus', className='mt-2'),
+                html.Br(),
+                html.Div(id='modelEvoSummary'),
+                html.Br(),
+                dbc.Row([dbc.Col(dcc.Graph(id='modelEvoMetricChart'), width=12)]),
+                html.Div(
+                    'How to read: each point is one recorded run; the x position is the run\'s '
+                    'order within its model family (or its date). Hover shows the model version, '
+                    'feature count, sample size, and the run\'s notes — so a jump or drop can be '
+                    'traced to what changed.',
+                    style={'fontSize': '12px', 'color': '#aaa', 'padding': '0 12px'},
+                ),
+                html.Br(),
+                dbc.Row([dbc.Col(dcc.Graph(id='modelEvoOverfitChart'), width=12)]),
+                html.Div(
+                    'How to read: the gap between train-set and test-set performance for the same '
+                    'run. Near 0 = the model generalizes; large positive = memorizing the training '
+                    'set. The E1 regularization (2026-05-18) should be visible as a step down. '
+                    'XGBoost\'s train accuracy is ~1.0 by construction (boosting fits residuals '
+                    'to exhaustion), so watch its TEST curve in the chart above rather than '
+                    'expecting its gap to reach 0.',
+                    style={'fontSize': '12px', 'color': '#aaa', 'padding': '0 12px'},
+                ),
+                html.Br(),
+                dbc.Row([dbc.Col(dcc.Graph(id='modelEvoFeatureChart'), width=12)]),
+                html.Div(
+                    'How to read: if more features reliably helped, points would trend up-right '
+                    '(or down-right for MAE). A flat or noisy cloud means feature count is not '
+                    'the binding constraint.',
+                    style={'fontSize': '12px', 'color': '#aaa', 'padding': '0 12px'},
+                ),
+                html.Br(),
+                dbc.Row([dbc.Col(dcc.Graph(id='modelEvoLiveChart'), width=12)]),
+                html.Div(
+                    'How to read: monthly live (graded) results from model_predictions. The gold '
+                    'star line is the Vegas book line on the same games — winner accuracy from the '
+                    'spread\'s implied favorite, margin MAE from the implied margin (-home spread). '
+                    'MAE is computed only on games with a matched line so model and Vegas see the '
+                    'same slate. The distance between your lines and gold IS the Vegas gap.',
+                    style={'fontSize': '12px', 'color': '#aaa', 'padding': '0 12px'},
+                ),
+            ]),
+
+            # TAB 9: Site Traffic - CloudFront access logs via Athena (INTERNAL only)
             dbc.Tab(label='Site Traffic', children=[
                 html.Br(),
                 html.H4('Site Traffic - CloudFront logs via Athena'),

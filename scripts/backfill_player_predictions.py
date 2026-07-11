@@ -24,8 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.db import get_engine  # noqa: E402
 from data_engineering.player_dataset import TARGETS, build as build_dataset  # noqa: E402
 from modeling.player_predict import (  # noqa: E402
-    MODEL_TYPE, ensure_player_predictions_table, team_abbrev_map,
-    upsert_player_predictions)
+    MODEL_TYPE, context_values, ensure_player_predictions_table,
+    team_abbrev_map, upsert_player_predictions)
 from modeling.player_projection_models import TwoStageXGB  # noqa: E402
 
 MODEL_VERSION = 'p2_wf_20260710'
@@ -59,6 +59,7 @@ def build_rows(ds: pd.DataFrame, abbrevs: dict) -> list:
                 'model_type': MODEL_TYPE,
                 'model_version': MODEL_VERSION,
             }
+            row.update(context_values(t))
             for s in TARGETS:
                 v = p[f'pred_{s}']
                 row[f'pred_{s.lower()}'] = round(float(v), 2) if np.isfinite(v) else None

@@ -704,3 +704,26 @@ h2 {
   margin-top: 4px;
   color: var(--muted);
 }
+
+/* Sortable table headers (/players daily projections) */
+.sortable-th button {
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  white-space: nowrap;
+}
+.sortable-th button:hover {
+  color: var(--accent);
+}
+.controls input[type="date"] {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font: inherit;
+}

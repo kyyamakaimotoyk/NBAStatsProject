@@ -257,10 +257,36 @@ const en = {
     miss: "miss",
   },
 
+  playersDaily: {
+    title: "Player projections",
+    subtitle:
+      "Every rotation player's projected counting stats for one day's slate, next to the pace and defense context behind them. Click a column header to sort.",
+    exploreLink: "Deep-dive a single player →",
+    dateLabel: "Date:",
+    teamLabel: "Team:",
+    allTeams: "All teams",
+    modeLabel: "Values",
+    modePred: "Predicted",
+    modeActual: "Actual",
+    errLoad: (e: string) => `Couldn't load: ${e}`,
+    loading: "Loading…",
+    noData: "No player projections yet — they publish nightly during the season.",
+    noRows: "No rows for this date/team.",
+    tableHeading: (d: string, n: number) => `${d} — ${n} players`,
+    gradedNote:
+      "This slate is final: toggle between what the model predicted pregame and what actually happened.",
+    upcomingNote: "Projections are computed pregame from each player's recent form.",
+    contextNote:
+      "Context columns are rolling last-10-game values as of the game date: possessions per 48 (pace), opponent points allowed per 100 possessions (DRtg), and opponent three-point attempts conceded per game.",
+    playerCol: "Player",
+    matchupCol: "Matchup",
+  },
+
   playersExplore: {
     title: "Player explorer",
     subtitle:
       "Per-game counting stats for every rotation player, next to what our projection model predicted for that game. Pick a team, a player, a stat, and a window.",
+    dailyLink: "← Back to the daily projections table",
     teamLabel: "Team:",
     playerLabel: "Player:",
     statLabel: "Stat:",
@@ -644,8 +670,9 @@ const ja: Dict = {
   },
 
   // Deliberately NOT translated yet: the machine-drafted JA copy didn't read
-  // right (Kai transcreates JA himself). Mirrors the English namespace so the
-  // JA toggle shows English on this page until real copy replaces it.
+  // right (Kai transcreates JA himself). Mirrors the English namespaces so the
+  // JA toggle shows English on these pages until real copy replaces it.
+  playersDaily: en.playersDaily,
   playersExplore: en.playersExplore,
 
   drivers: {

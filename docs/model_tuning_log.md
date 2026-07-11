@@ -41,6 +41,7 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **E18** | **Calibration audit + logging fix + leakage guard** | User-surfaced bug: Game Predictions tab showed NYK winner for CLE@NYK 2026-05-25 while Model Evaluation tab showed CLE pick logged — same model, same game, different pick. Root cause: dashboard reads E13 isotonic-calibrated classifier; the logging path in `predict_games.py` still derived `predicted_winner` from the **regressor margin sign** (`result['win_prob']` = `np.mean(margin_samples > 0)`), an older signal that pre-dates E13. Two-headed model → two different picks near the boundary. Also surfaced: bundle metadata stored no `data_through_date`, so the backfill loop happily predicted for dates within the training window with no warning. | (1) Logging now uses calibrated classifier: `p_cal = result['win_prob_classifier']`; `predicted_winner = home if p_cal > 0.5 else away`. (2) New `home_win_probability_raw` column added via idempotent migration in `prediction_tracker.ensure_table_exists`; the pre-isotonic prob is logged alongside the calibrated one. NN/NN-embed have no isotonic wrapper → raw == calibrated. (3) Bundle metadata gains `train_start_date / train_end_date / eval_start_date / eval_end_date / data_through_date` (the latest GAME_DATE the production model saw). (4) Backfill loop in `predict_games.py` gates on `data_through_date`: dates ≤ that are skipped with a loud message; `--allow-leakage` overrides. (5) Model Evaluation per-game table now shows **Win% raw** + **Win% cal** side-by-side; for legacy rows raw is NULL. | Data fix only (no model retrain). Game Predictions and Model Evaluation now read the same field. Backfill predictions on training-window dates are refused by default — past metrics on those rows were optimistic by an unmeasured amount. **A/B comparison columns ready**: re-run `predict_games.py --start-date X --end-date Y --no-shap --no-plot` for `X > data_through_date` to populate `home_win_probability_raw` and start the raw-vs-calibrated comparison. | **Implemented 2026-05-26** — see "Calibration audit & leakage guard" section below. |
 | **P1** | **Player counting-stat projections** — dataset + baselines + two-stage XGB + 3-season validation/calibration report | New product surface (public `/players` projection table + Bedrock LLM fantasy advisor, docs/player_projections_plan.md) needs per-player MIN + PTS/REB/AST/STL/BLK/TOV/3PM/3PA/FTM/FTA. User-set ship gate: deep calibration + validation on the last 3 seasons before `/players` goes public. | `experiments/p1_player_dataset.py`: 57,854 top-8-by-rolling-MPG player-games (2023-24 → 2025-26 regular seasons, 2022-23 warm-up), ~150 leakage-safe shift-1 features incl. approved Tier-2 groups A/B/C/G (opportunity/hustle, vacated minutes/usage, Vegas spread/total/implied). `p1_player_models.py`: naive L10, Marcel shrinkage (must-beat), two-stage XGB (minutes model × per-36 rates; `count:poisson` with log-minutes exposure for STL/BLK/TOV/3PA/FTA; 3PM/FTM = attempts × shrunken make-rate). `p1_player_validation.py`: 2 season walk-forward folds, paired t-tests, decile reliability, Poisson frequency calibration, split-conformal coverage, minutes-vs-rate decomposition, slices, fantasy aggregates, feature-target correlation matrix. | **XGB beats Marcel on 10/11 targets in both folds, all p≤2.6e-11** (MIN MAE 4.93→4.63 / 4.87→4.59; PTS 5.23→5.03 / 5.17→4.96; 3PA −0.16; STL flat — R²≈0.08, near-noise). Decile calibration tight; conformal coverage 0.78-0.82 (80%) / 0.89-0.91 (90%); Poisson tails over-forecast elite STL/BLK bins; ~15% of PTS error attributable to the minutes model; fantasy-pts MAE 8.03 vs Marcel 8.41. Full report: docs/p1_player_validation_report.md. | **Baseline established 2026-07-09** — `/players` ship gate pending Kai's review; §P1 below |
 | **P2** | **Playoff support + 4th season** (extends P1) | Explore page showed playoff actuals with no predictions and no 2023-24 predictions; the nightly as first built would have predicted playoffs on features frozen at regular-season end. Kai: Option A (support playoffs) + extend backfill to 2023-24. | Season-year now spans regular+playoffs+play-in+Cup (`SEASON_YEAR` grouping key, `IS_PLAYOFF` feature, season-to-date accumulates through the postseason; preseason skipped via GAME_ID type digit). Warm-up 2021-22; train years 22-23..25-26 → 83,266 rows (5,708 playoff). Three walk-forward folds incl. new train-22-23→test-23-24. Harness unchanged → docs/p2_player_validation_report.md; backfill version `p2_wf_20260710`. | New fold 1 clears the gate (XGB beats Marcel 10/11, p≤5.6e-31; STL flat as in every fold). **Playoffs: XGB ≤ Marcel on 11/11 stats**; the regime shift lands in MINUTES (MAE 5.00 PO vs 4.54 reg) while PTS error *drops* in playoffs (4.79 vs 4.96 — healthy, stable-role rosters). Backfill 62,156 rows incl. postseason; 38,177 p1_wf rows retired. | **Implemented 2026-07-10** — §P2 below |
+| **P3** | **Prior-season Estimated RAPTOR as player-projection features** | Kai asked whether RAPTOR/LEBRON-class impact metrics improve the models. Sourcing: real RAPTOR dead (data ends 2021-22), LEBRON no export/API, DARKO DPM = only free daily point-in-time series covering 2023-26; Paine Estimated RAPTOR (0.89 corr w/ RAPTOR, thru 2024-25, `outputs/nba_estimated_RAPTOR.csv`) = the backtest source. P2 model had zero RAPM-family signal (only PIE_L10/USG_PCT_L10). | `experiments/p3_impact_metrics.py`: +PREV_ERAPTOR_{OFF,DEF,TOT,WAR82} (previous-season rating, minutes-weighted across stints, normalized-name join, 87.5% match every season, rookies NaN — point-in-time safe by construction). 3 seeds × the 3 P2 walk-forward folds, baseline-vs-augmented paired t-test on per-row \|error\|; keep-gate = ΔMAE<0 AND p<0.05 in all folds for ≥2/3 seeds. | **NULL: 0/11 stats keep, 0 seeds pass the gate anywhere.** Mean ΔMAE: PTS −0.0068, all others ≤ \|0.0013\|. The trees USED the features (gain rank 16-30 of 139 in MIN/PTS models) but zero out-of-sample gain — redundant with L5/L10 form + usage + PREV_*36 priors. Counting stats are the wrong target for a margin-impact metric. | **Rejected for player model 2026-07-10** — open follow-up: eRAPTOR/DARKO in the TEAM model (availability weighting in `player_impact.py` Approach B; roster-strength aggregate = E22 candidate); §P3 below |
 
 ---
 
@@ -1270,3 +1271,52 @@ preseason. Playoff MAEs ship as the postseason calibration reference in the P2 r
   Lesson: generated report prose must compute its comparators, not assume them.
 - STL stays at its noise floor in all three folds; the serve-Marcel-for-steals option
   from P1 remains open.
+
+## 2026-07-10 — Experiment P3: prior-season Estimated RAPTOR as player-projection features
+
+### Why
+Kai asked whether RAPTOR/LEBRON-class all-in-one impact metrics would improve the models.
+Sourcing research first (full table in `docs/model_assessment_2026-07.md` §5.1): real
+RAPTOR died with FiveThirtyEight (data ends 2021-22); LEBRON has no export/API; DARKO DPM
+is the only free *daily, point-in-time* series covering 2023-26 (darko.app, scrape-only);
+Neil Paine's Estimated RAPTOR (0.89 corr with real RAPTOR, seasons through 2024-25, free
+CSV, cached at `outputs/nba_estimated_RAPTOR.csv` — latin-1 encoded) is the practical
+backtest source. The P2 player model's only impact-flavored inputs are PIE_L10 and
+USG_PCT_L10 — zero RAPM-family signal — so this was greenfield.
+
+### Hypothesis
+A prior-season all-in-one rating (PREV_ERAPTOR_OFF/DEF/TOT/WAR82) gives the player model a
+better role/quality prior than PREV_*36 alone, improving counting-stat MAE — most
+plausibly early-season and for MIN/PTS.
+
+### Setup
+`experiments/p3_impact_metrics.py`. Join: previous season's Estimated RAPTOR
+(minutes-weighted across team stints, RS rows) by normalized name — point-in-time safe by
+construction; 87.5% row match rate in every season (unmatched ≈ rookies, left NaN for
+XGBoost). Arms: baseline (current 135 features) vs +4 eRAPTOR columns, same seed, same
+fold. Protocol per the E12/noise-aware standard: 3 seeds (42/7/202) × the 3 P2
+walk-forward folds, paired t-test on per-row |error|; keep-gate = ΔMAE<0 AND p<0.05 in
+all folds for ≥2/3 seeds.
+
+### Results
+**NULL across the board — 0 stats keep, 0 seeds pass the gate anywhere.** Mean ΔMAE
+(aug−base): PTS −0.0068, MIN −0.0013, all others ≤ |0.0007|. The augmented models *used*
+the features (gain ranks 16-30 of 139 in the MIN/PTS models) yet gained nothing
+out-of-sample — redundant-signal signature: L5/L10 form + usage + PREV_*36 priors already
+span what a prior-season rating knows about production level. Raw:
+`outputs/p3_impact_metrics.json`, `docs/p3_impact_metrics_report.md`.
+
+### Decision
+Do NOT add eRAPTOR features to the player projection model. The experiment cost nothing
+in prod complexity and cleanly falsifies "player projections are missing impact metrics."
+
+### Caveats / follow-ups
+- This tested counting stats. Impact metrics measure *margin per possession* — the team
+  model is the natural consumer. Open follow-up: eRAPTOR/DARKO as the availability weight
+  in `player_impact.py` Approach B (netRating only managed 0.14 corr vs WITH/WITHOUT's
+  0.35 on 8,823 games) and as a roster-strength aggregate feature (E22 candidate).
+- Static prior-season rating is the weakest form of the idea; DARKO's daily series would
+  help exactly where this can't (early season, post-trade). If a team-level experiment
+  clears the gate, build a nightly DARKO snapshot table rather than backfilling scrapes.
+- Name-join misses ~12.5% of rows (mostly rookies, correctly NaN); an ID crosswalk
+  (bbref↔NBA) would tighten this if the idea is ever revisited.

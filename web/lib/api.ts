@@ -251,3 +251,54 @@ export const getPlayerGamelog = (personId: number) =>
 
 export const getTeamContext = (teamId: number) =>
   getJSON<TeamContextResponse>(`/api/players/team-context?team_id=${teamId}`);
+
+// --- Daily projections table ---------------------------------------------------
+
+// One player's projection for one game, with own/opponent L10 context and
+// actuals once graded (null until then).
+export type PlayerDailyRow = {
+  game_date: string;
+  person_id: number;
+  player_name: string | null;
+  team_abbrev: string | null;
+  opp_abbrev: string | null;
+  is_home: number;
+  team_pace_l10: number | null;
+  opp_pace_l10: number | null;
+  opp_drtg_l10: number | null;
+  opp_3pa_allowed_l10: number | null;
+  pred_min: number | null;
+  pred_pts: number | null;
+  pred_reb: number | null;
+  pred_ast: number | null;
+  pred_stl: number | null;
+  pred_blk: number | null;
+  pred_tov: number | null;
+  pred_fg3m: number | null;
+  pred_fg3a: number | null;
+  pred_ftm: number | null;
+  pred_fta: number | null;
+  actual_min: number | null;
+  actual_pts: number | null;
+  actual_reb: number | null;
+  actual_ast: number | null;
+  actual_stl: number | null;
+  actual_blk: number | null;
+  actual_tov: number | null;
+  actual_fg3m: number | null;
+  actual_fg3a: number | null;
+  actual_ftm: number | null;
+  actual_fta: number | null;
+};
+
+export type PlayerDailyResponse = {
+  game_date: string | null;
+  count: number;
+  rows: PlayerDailyRow[];
+};
+
+export const getPlayerDailyLatest = () =>
+  getJSON<PlayerDailyResponse>("/api/players/predictions/latest");
+
+export const getPlayerDaily = (date: string) =>
+  getJSON<PlayerDailyResponse>(`/api/players/predictions?date=${date}`);

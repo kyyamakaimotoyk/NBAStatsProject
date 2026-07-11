@@ -228,3 +228,47 @@ class TeamContextResponse(BaseModel):
     team: TeamProfile
     next_game: Optional[NextGameInfo] = None  # null in the offseason
     opponent: Optional[TeamProfile] = None
+
+
+class PlayerDailyRow(BaseModel):
+    """One player's projection for one game on the daily /players table,
+    with own/opponent L10 context (as of the prediction date) and actuals
+    once the game is graded."""
+    game_date: date
+    person_id: int
+    player_name: Optional[str] = None
+    team_abbrev: Optional[str] = None
+    opp_abbrev: Optional[str] = None
+    is_home: int
+    team_pace_l10: Optional[float] = None
+    opp_pace_l10: Optional[float] = None
+    opp_drtg_l10: Optional[float] = None
+    opp_3pa_allowed_l10: Optional[float] = None
+    pred_min: Optional[float] = None
+    pred_pts: Optional[float] = None
+    pred_reb: Optional[float] = None
+    pred_ast: Optional[float] = None
+    pred_stl: Optional[float] = None
+    pred_blk: Optional[float] = None
+    pred_tov: Optional[float] = None
+    pred_fg3m: Optional[float] = None
+    pred_fg3a: Optional[float] = None
+    pred_ftm: Optional[float] = None
+    pred_fta: Optional[float] = None
+    actual_min: Optional[float] = None
+    actual_pts: Optional[float] = None
+    actual_reb: Optional[float] = None
+    actual_ast: Optional[float] = None
+    actual_stl: Optional[float] = None
+    actual_blk: Optional[float] = None
+    actual_tov: Optional[float] = None
+    actual_fg3m: Optional[float] = None
+    actual_fg3a: Optional[float] = None
+    actual_ftm: Optional[float] = None
+    actual_fta: Optional[float] = None
+
+
+class PlayerDailyResponse(BaseModel):
+    game_date: Optional[str]
+    count: int
+    rows: list[PlayerDailyRow]

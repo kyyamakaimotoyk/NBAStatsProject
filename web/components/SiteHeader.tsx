@@ -35,7 +35,7 @@ export default function SiteHeader() {
         <Link href="/performance">{t.nav.modelLab}</Link>
         <Link href="/explore">{t.nav.explore}</Link>
         <Link href="/scatter">{t.nav.scatter}</Link>
-        <Link href="/players/explore">{t.nav.players}</Link>
+        <Link href="/players">{t.nav.players}</Link>
         <Link href="/drivers">{t.nav.drivers}</Link>
         <Link href="/about">{t.nav.about}</Link>
       </nav>

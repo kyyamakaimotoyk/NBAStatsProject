@@ -743,3 +743,47 @@ def player_team_context(team_id: int) -> Optional[dict]:
         nxt = _next_game(conn, team_id)
         opp = _team_profile(conn, nxt['opp_team_id']) if nxt else None
     return {'team': team, 'next_game': nxt, 'opponent': opp}
+
+
+# Public columns for the daily projections table. model_version / model_type
+# and game_id stay internal (public-safe policy).
+_PLAYER_PRED_PUBLIC_COLS = """
+    game_date, person_id, player_name, team_abbrev, opp_abbrev, is_home,
+    team_pace_l10, opp_pace_l10, opp_drtg_l10, opp_3pa_allowed_l10,
+    pred_min, pred_pts, pred_reb, pred_ast, pred_stl, pred_blk, pred_tov,
+    pred_fg3m, pred_fg3a, pred_ftm, pred_fta,
+    actual_min, actual_pts, actual_reb, actual_ast, actual_stl, actual_blk,
+    actual_tov, actual_fg3m, actual_fg3a, actual_ftm, actual_fta
+"""
+
+
+def latest_player_prediction_date() -> Optional[str]:
+    """Most recent game_date with player projections. None if table empty."""
+    q = "SELECT MAX(game_date) AS d FROM player_predictions WHERE model_type = :mt"
+    with get_engine().connect() as conn:
+        d = conn.execute(sa.text(q), {'mt': _PLAYER_MODEL_TYPE}).scalar()
+    return d.isoformat() if d is not None else None
+
+
+def player_predictions_for_date(game_date: str) -> list[dict]:
+    """One row per (game, player) for a date's slate — most recent model
+    version wins (weekly retrains coexist with the walk-forward backfill).
+    actual_* are null until the game is graded."""
+    from datetime import date as _date
+    _date.fromisoformat(game_date)  # raises ValueError on junk
+    q = f"""
+        SELECT {_PLAYER_PRED_PUBLIC_COLS}
+        FROM (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY game_id, person_id
+                       ORDER BY prediction_timestamp DESC
+                   ) AS _rn
+            FROM player_predictions
+            WHERE model_type = :mt AND game_date = :d
+        ) x
+        WHERE _rn = 1
+        ORDER BY pred_pts DESC
+    """
+    with get_engine().connect() as conn:
+        return _rows(conn.execute(sa.text(q), {'mt': _PLAYER_MODEL_TYPE, 'd': game_date}))

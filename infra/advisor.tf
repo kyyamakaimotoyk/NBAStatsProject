@@ -47,6 +47,10 @@ data "aws_iam_policy_document" "advisor_bedrock" {
       "bedrock:InvokeModelWithResponseStream",
     ]
     resources = [
+      # Sonnet 4.6 (current, via us.* inference profile) + Sonnet 5 (kept for
+      # the flip-back once the entitlement bug is resolved).
+      "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6*",
+      "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*.anthropic.claude-sonnet-4-6*",
       "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5*",
       "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*.anthropic.claude-sonnet-5*",
     ]
@@ -186,7 +190,11 @@ resource "aws_ecs_task_definition" "advisor" {
         # Advisor-specific:
         { name = "ADVISOR_ENABLED", value = "1" },
         { name = "AWS_REGION_NAME", value = var.aws_region },
-        { name = "BEDROCK_MODEL_ID", value = "anthropic.claude-sonnet-5" },
+        # Sonnet 4.6 via inference profile, NOT Sonnet 5: the newest-gen models
+        # are blocked by a known Bedrock entitlement-sync bug (2026-07-13,
+        # "not available for this account" despite AUTHORIZED). Flip back to
+        # anthropic.claude-sonnet-5 + the Mantle client when AWS fixes it.
+        { name = "BEDROCK_MODEL_ID", value = "us.anthropic.claude-sonnet-4-6" },
         { name = "ADVISOR_DAILY_CAP", value = "300" },     # global requests/day
         { name = "ADVISOR_IP_DAILY_CAP", value = "20" },   # per-IP requests/day
         { name = "ADVISOR_MAX_CONCURRENCY", value = "4" }, # global in-flight ceiling

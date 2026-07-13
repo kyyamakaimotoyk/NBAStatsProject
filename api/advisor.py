@@ -382,12 +382,19 @@ def _make_record(outcome: str, req: AdvisorRequest, prompt: str, roster: str,
 
 
 def _call_bedrock(system_blocks: list, user_text: str) -> tuple:
-    from anthropic import AnthropicBedrockMantle  # lazy: advisor service only
-    client = AnthropicBedrockMantle(
+    # Legacy bedrock-runtime client, deliberately (2026-07-13): the newer
+    # Mantle endpoint only serves the newest model generation (Sonnet 5 etc.),
+    # and those are blocked account-wide by a known AWS/Anthropic
+    # entitlement-sync bug ("not available for this account" despite
+    # AUTHORIZED). Sonnet 4.6 via the us.* inference profile works. When the
+    # bug is fixed, switch back to AnthropicBedrockMantle + BEDROCK_MODEL_ID
+    # anthropic.claude-sonnet-5 (env change + this import).
+    from anthropic import AnthropicBedrock  # lazy: advisor service only
+    client = AnthropicBedrock(
         aws_region=os.environ.get("AWS_REGION_NAME",
                                   os.environ.get("AWS_REGION", "us-east-1")))
     resp = client.messages.create(
-        model=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-sonnet-5"),
+        model=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6"),
         max_tokens=int(os.environ.get("ADVISOR_MAX_TOKENS", "800")),
         system=system_blocks,
         messages=[{"role": "user", "content": user_text}],

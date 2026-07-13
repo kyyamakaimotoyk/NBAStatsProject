@@ -302,3 +302,43 @@ export const getPlayerDailyLatest = () =>
 
 export const getPlayerDaily = (date: string) =>
   getJSON<PlayerDailyResponse>(`/api/players/predictions?date=${date}`);
+
+// --- Fantasy advisor ------------------------------------------------------------
+
+export type AdvisorRequest = {
+  prompt: string;
+  roster?: string;
+  matchup_score?: string;
+  scoring_type: "points" | "category";
+  // Cloudflare Turnstile token; only sent when the widget is enabled.
+  turnstile_token?: string;
+};
+
+export type AdvisorResponse = {
+  advice: string;
+  slate_date: string | null;
+  dry_run: boolean;
+};
+
+async function postJSON<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    // Surface the API's own message (rate limit / kill switch) when present.
+    let detail = `API ${res.status} for ${path}`;
+    try {
+      const j = (await res.json()) as { detail?: string };
+      if (j.detail) detail = j.detail;
+    } catch {
+      /* keep the generic message */
+    }
+    throw new Error(detail);
+  }
+  return res.json() as Promise<T>;
+}
+
+export const getAdvice = (req: AdvisorRequest) =>
+  postJSON<AdvisorResponse>("/api/advisor", req);

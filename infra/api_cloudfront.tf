@@ -100,6 +100,20 @@ resource "aws_cloudfront_distribution" "api" {
     compress                 = true
   }
 
+  # The advisor is the ONLY path that accepts POST (CloudFront only offers the
+  # all-methods set once any write verb is needed). Never cached; the ALB
+  # listener rule routes it to the separate Bedrock-capable service.
+  ordered_cache_behavior {
+    path_pattern             = "/api/advisor*"
+    target_origin_id         = "alb-api"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods           = ["GET", "HEAD"]
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+    compress                 = true
+  }
+
   viewer_certificate {
     acm_certificate_arn      = aws_acm_certificate_validation.main.certificate_arn
     ssl_support_method       = "sni-only"

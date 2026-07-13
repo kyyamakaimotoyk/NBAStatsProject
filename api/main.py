@@ -58,7 +58,9 @@ _origins = os.environ.get(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in _origins if o.strip()],
-    allow_methods=["GET"],
+    # POST exists only on /api/advisor (mounted on the advisor service);
+    # the browser preflight needs it allowed here.
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -240,3 +242,11 @@ def players_predictions(date: str = Query(..., description="Game date YYYY-MM-DD
     except ValueError:
         raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
     return PlayerDailyResponse(game_date=date, count=len(rows), rows=rows)
+
+
+# The Bedrock-backed fantasy advisor mounts ONLY on the dedicated advisor
+# service (ADVISOR_ENABLED=1 in its task definition). The main API service
+# never imports the module and its task role has no Bedrock permissions.
+if os.environ.get("ADVISOR_ENABLED") == "1":
+    from api.advisor import router as advisor_router
+    app.include_router(advisor_router)

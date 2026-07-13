@@ -306,7 +306,51 @@ production error is flat-to-lower. Full detail: model_tuning_log §P2.
     file://tmp/run_backfill_task.json` — the file:// form avoids PowerShell 5.1's
     inline-JSON quote-stripping). RDS `player_predictions` is populated; /players/explore
     is live end-to-end.
-- **Phase D — advisor** (§5): IAM + Bedrock access, endpoint, guardrails, UI.
+- **Phase D — advisor** (§5). **BUILT 2026-07-11** (deploy pending: Bedrock model-access
+  console step, push, terraform apply). Implementation notes vs the §5 design:
+  - Separate ECS service `advisor` runs the SAME api image with the router gated behind
+    `ADVISOR_ENABLED=1`; isolation is enforced by IAM (only `advisor_task` role has
+    `bedrock:InvokeModel`, scoped to the Sonnet model + inference-profile ARNs) and by
+    routing (ALB listener rule + CloudFront behavior for `/api/advisor*` — the only path
+    with POST). One CI pipeline rolls both services.
+  - `api/advisor.py`: input caps + control-char stripping + `<user_input>` delimiting;
+    context = latest slate + injuries + next-7-day schedule counts, all fetched
+    server-side; per-IP token bucket (5 burst / 1 per 30s), global daily cap
+    (`ADVISOR_DAILY_CAP`, default 300 ≈ $9/day worst-case ceiling at Sonnet intro
+    pricing), `ADVISOR_DISABLED` kill switch, `max_tokens` cap, `ADVISOR_OK` token-count
+    log line for CloudWatch metrics. Prompt caching: system prompt + day's data block
+    behind an explicit `cache_control` breakpoint (Bedrock has no automatic caching).
+  - `ADVISOR_DRY_RUN=1` skips Bedrock for local/CI testing — full request path verified
+    locally (context assembly, validation 400s, burst → 429s).
+  - Web: `/advisor` page (prompt/roster/matchup/scoring), output rendered as plain text
+    only, disclaimer; nav "Advisor"; EN copy with ja = en mirror.
+  - **Deploy order matters**: push FIRST (CI builds the api image with
+    `anthropic[bedrock]`), THEN `terraform apply` (the new service then starts on the
+    fresh image), after enabling Anthropic model access in the Bedrock console (Lab 0).
+  - **Hardening pass (2026-07-11)**, layered cheapest-first (principle: prompt rules
+    reduce the VALUE of abuse, code rules reduce ACCESS; the boundary is IAM + caps):
+    (1) Cloudflare Turnstile, feature-flagged — widget renders only when
+    `NEXT_PUBLIC_TURNSTILE_SITEKEY` is set at site build; backend verifies via
+    siteverify only when `TURNSTILE_SECRET_ARN` (Secrets Manager, Kai-created) is set;
+    fail-open on Cloudflare outage (friction, not auth). (2) Topical gate before any
+    Bedrock spend: fantasy lexicon + current-slate player/team names; misses → 400 with
+    the fixed refusal string, `ADVISOR_GATED` logged. Prompt hardening pins the exact
+    refusal sentence (`REFUSAL_TEXT`), ≤250-word answers, `ADVISOR_REFUSED` logged when
+    it fires. (3) Bedrock spend observability: `ADVISOR_TOKENS <in> <out>` metric-filter
+    line → CloudWatch alarm at >2M input tokens/day → SNS, plus a $10/mo Bedrock-scoped
+    AWS Budget. (4) Per-IP daily cap (20/day) — and the X-Forwarded-For parse is now
+    RIGHT-anchored (`ips[-2]` behind CloudFront→ALB); the first XFF entry is
+    attacker-controlled and the old parse trusted it. (5) One in-flight request per IP +
+    global concurrency ceiling (4). Output cap lowered 1200→800 tokens.
+  - **Advisor input corpus (option B)**: every request archives one JSON record
+    (hashed IP, prompt/roster/matchup, outcome ok|gated|refused, token counts) to
+    `s3://<logs-bucket>/advisor_inputs/year=/month=/day=/` via FastAPI BackgroundTasks
+    (never blocks or breaks advice; gated requests archive synchronously). Queryable in
+    Athena via the `advisor_inputs` Glue table (partition projection — no crawler);
+    write-only IAM on that prefix; 180-day S3 lifecycle (the logs bucket's old
+    bucket-wide 90-day rule is now prefix-scoped: cf-site/ 90d, athena-results/ 30d,
+    advisor_inputs/ 180d). Site disclaimer now discloses storage and asks users not to
+    submit personal information.
 - **Phase E (optional/parked):** NN-embed experiment (B), distributional outputs (D), MCP
   tool loop, Tier-2 feature ablation rounds.
 

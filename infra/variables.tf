@@ -51,3 +51,8 @@ variable "db_username" {
   default     = "nbaadmin"
   description = "RDS master username"
 }
+variable "turnstile_secret_arn" {
+  type        = string
+  default     = ""
+  description = "Secrets Manager ARN holding the Cloudflare Turnstile secret key. Empty disables Turnstile verification on the advisor. Create the secret manually (never inline the key)."
+}

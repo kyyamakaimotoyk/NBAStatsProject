@@ -112,3 +112,6 @@ infra/nba_data.sql
 
 # Claude Code local settings - session-approved commands can embed sensitive strings
 .claude/settings.local.json
+
+# Datasets
+outputs/p1_player_dataset.pkl

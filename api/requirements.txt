@@ -8,3 +8,6 @@ PyMySQL>=1.1
 python-dotenv>=1.0
 pydantic>=2.6
 boto3>=1.34  # rotation-aware DB auth: re-reads the RDS secret at connect time
+
+# Fantasy advisor (advisor service only; harmless on the API service)
+anthropic[bedrock]

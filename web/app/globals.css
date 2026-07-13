@@ -727,3 +727,50 @@ h2 {
   padding: 4px 8px;
   font: inherit;
 }
+
+/* Fantasy advisor form + answer */
+.advisor-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 16px 0;
+  max-width: 720px;
+}
+.advisor-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.advisor-form textarea,
+.advisor-form input[type="text"] {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+  resize: vertical;
+}
+.advisor-form button {
+  background: var(--accent);
+  color: #10141f;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 18px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.advisor-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.advisor-answer {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 18px;
+  max-width: 720px;
+}

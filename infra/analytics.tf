@@ -191,3 +191,93 @@ resource "aws_athena_workgroup" "main" {
     }
   }
 }
+
+
+# -----------------------------------------------------------------------------
+# Advisor input corpus — JSON records written by api/advisor.py, one per
+# request, under advisor_inputs/year=/month=/day=/. Partition projection means
+# no crawler and no MSCK REPAIR: Athena derives partitions from the key layout.
+# -----------------------------------------------------------------------------
+resource "aws_glue_catalog_table" "advisor_inputs" {
+  name          = "advisor_inputs"
+  database_name = aws_glue_catalog_database.logs.name
+  table_type    = "EXTERNAL_TABLE"
+
+  parameters = {
+    EXTERNAL                    = "TRUE"
+    "projection.enabled"        = "true"
+    "projection.year.type"      = "integer"
+    "projection.year.range"     = "2026,2035"
+    "projection.month.type"     = "integer"
+    "projection.month.range"    = "1,12"
+    "projection.month.digits"   = "2"
+    "projection.day.type"       = "integer"
+    "projection.day.range"      = "1,31"
+    "projection.day.digits"     = "2"
+    "storage.location.template" = "s3://${aws_s3_bucket.logs.bucket}/advisor_inputs/year=$${year}/month=$${month}/day=$${day}/"
+  }
+
+  partition_keys {
+    name = "year"
+    type = "string"
+  }
+  partition_keys {
+    name = "month"
+    type = "string"
+  }
+  partition_keys {
+    name = "day"
+    type = "string"
+  }
+
+  storage_descriptor {
+    location      = "s3://${aws_s3_bucket.logs.bucket}/advisor_inputs/"
+    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+
+    ser_de_info {
+      serialization_library = "org.openx.data.jsonserde.JsonSerDe"
+    }
+
+    columns {
+      name = "ts"
+      type = "string"
+    }
+    columns {
+      name = "outcome"
+      type = "string"
+    }
+    columns {
+      name = "ip_hash"
+      type = "string"
+    }
+    columns {
+      name = "scoring_type"
+      type = "string"
+    }
+    columns {
+      name = "slate_date"
+      type = "string"
+    }
+    columns {
+      name = "prompt"
+      type = "string"
+    }
+    columns {
+      name = "roster"
+      type = "string"
+    }
+    columns {
+      name = "matchup_score"
+      type = "string"
+    }
+    columns {
+      name = "tokens_in"
+      type = "bigint"
+    }
+    columns {
+      name = "tokens_out"
+      type = "bigint"
+    }
+  }
+}

@@ -57,3 +57,14 @@ jobs:
             --cluster "${ECS_CLUSTER}" \
             --service "${ECS_SERVICE}" \
             --force-new-deployment
+
+      # The advisor runs the same image as its own service (own task role with
+      # Bedrock access). continue-on-error: the service only exists after the
+      # advisor.tf terraform apply.
+      - name: Roll the advisor service
+        continue-on-error: true
+        run: |
+          aws ecs update-service \
+            --cluster "${ECS_CLUSTER}" \
+            --service "nba-game-predictor-advisor" \
+            --force-new-deployment

@@ -76,9 +76,34 @@ resource "aws_s3_bucket_lifecycle_configuration" "logs" {
   rule {
     id     = "expire-cf-logs"
     status = "Enabled"
-    filter {}
+    # Scoped to the CF-log prefixes so the advisor rule below owns its own TTL.
+    filter {
+      prefix = "cf-site/"
+    }
     expiration {
       days = 90
+    }
+  }
+  # User-submitted advisor prompts are retained data, not logs — keep the
+  # corpus bounded (site disclaimer says questions may be stored).
+  rule {
+    id     = "expire-advisor-inputs"
+    status = "Enabled"
+    filter {
+      prefix = "advisor_inputs/"
+    }
+    expiration {
+      days = 180
+    }
+  }
+  rule {
+    id     = "expire-athena-results"
+    status = "Enabled"
+    filter {
+      prefix = "athena-results/"
+    }
+    expiration {
+      days = 30
     }
   }
 }

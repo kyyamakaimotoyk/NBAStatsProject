@@ -47,6 +47,9 @@ jobs:
         run: npm run build
         env:
           NEXT_PUBLIC_API_URL: https://api.hoopmodel.com
+          # Turnstile SITE key (public by design — the secret key lives in
+          # Secrets Manager). From the Cloudflare dashboard -> Turnstile.
+          NEXT_PUBLIC_TURNSTILE_SITEKEY: 0x4AAAAAAD02XoWnx849Qeb_
 
       # Exchange the OIDC token for temporary AWS credentials (no stored keys).
       - uses: aws-actions/configure-aws-credentials@v4

@@ -28,10 +28,18 @@ resource "aws_iam_role_policy" "advisor_task_secret" {
   policy = data.aws_iam_policy_document.api_task_secret.json
 }
 
-# Bedrock: exactly one model, invoke-only. Region is wildcarded because
-# cross-region inference profiles route to sibling regions' foundation models;
-# the model name keeps the grant narrow.
+# Bedrock, invoke-only. The Anthropic SDK's Mantle client (the Messages-API
+# Bedrock endpoint) authorizes bedrock-mantle:CreateInference against a
+# project resource — model-level scoping is not expressible there, so the
+# model constraint is enforced by BEDROCK_MODEL_ID in the task env. The
+# classic bedrock:InvokeModel statement stays for the legacy runtime surface.
 data "aws_iam_policy_document" "advisor_bedrock" {
+  statement {
+    sid       = "MantleInference"
+    actions   = ["bedrock-mantle:CreateInference"]
+    resources = ["arn:aws:bedrock-mantle:*:${data.aws_caller_identity.current.account_id}:project/default"]
+  }
+
   statement {
     sid = "InvokeSonnetOnly"
     actions = [

@@ -33,9 +33,32 @@ export default function SiteHeader() {
         <Link href="/">{t.nav.tonight}</Link>
         <Link href="/accuracy">{t.nav.trackRecord}</Link>
         <Link href="/performance">{t.nav.modelLab}</Link>
-        <Link href="/explore">{t.nav.explore}</Link>
-        <Link href="/scatter">{t.nav.scatter}</Link>
-        <Link href="/players">{t.nav.players}</Link>
+        <div className="nav-group">
+          <Link href="/explore" aria-haspopup="true">
+            {t.nav.teams}
+            <span className="nav-caret" aria-hidden="true">
+              {" "}
+              ▾
+            </span>
+          </Link>
+          <div className="nav-menu">
+            <Link href="/explore">{t.nav.teamsTrends}</Link>
+            <Link href="/scatter">{t.nav.scatter}</Link>
+          </div>
+        </div>
+        <div className="nav-group">
+          <Link href="/players" aria-haspopup="true">
+            {t.nav.players}
+            <span className="nav-caret" aria-hidden="true">
+              {" "}
+              ▾
+            </span>
+          </Link>
+          <div className="nav-menu">
+            <Link href="/players">{t.nav.playersProjections}</Link>
+            <Link href="/players/explore">{t.nav.playersDeepDive}</Link>
+          </div>
+        </div>
         <Link href="/advisor">{t.nav.advisor}</Link>
         <Link href="/drivers">{t.nav.drivers}</Link>
         <Link href="/about">{t.nav.about}</Link>

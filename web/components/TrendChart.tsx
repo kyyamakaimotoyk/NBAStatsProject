@@ -24,6 +24,7 @@ export type TrendSeries = {
 export default function TrendChart({
   data,
   series,
+  xKey = "date",
   yUnit,
   yDomain,
   refY,
@@ -33,6 +34,7 @@ export default function TrendChart({
 }: {
   data: TrendRow[];
   series: TrendSeries[];
+  xKey?: string; // category x-axis key; dates by default, any ordered labels work
   yUnit?: string;
   yDomain?: [number, number];
   refY?: number; // horizontal reference (e.g. 50% = coin flip)
@@ -60,7 +62,7 @@ export default function TrendChart({
       <LineChart data={data} margin={{ top: 8, right: 16, bottom: 22, left: 8 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#243049" />
         <XAxis
-          dataKey="date"
+          dataKey={xKey}
           tick={{ fontSize: 12, fill: "#9aa6c0" }}
           minTickGap={40}
           label={

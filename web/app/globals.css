@@ -60,6 +60,51 @@ p a:hover {
 .site-header nav a:hover {
   color: var(--text);
 }
+
+/* "Players ▾" dropdown. CSS-only: opens on hover for pointers and on
+   :focus-within for keyboards, so no JS state is needed. The menu sits at
+   top: 100% with no gap — a gap would close it while the cursor crosses. */
+.site-header nav .nav-group {
+  position: relative;
+  display: inline-block;
+  margin-left: 1.25rem;
+}
+.site-header nav .nav-group > a {
+  margin-left: 0;
+}
+.nav-caret {
+  font-size: 0.7em;
+}
+.nav-menu {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: 100%;
+  min-width: 11rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.35rem 0;
+  z-index: 20;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+}
+/* Open rules stay desktop-only: below 640px the strip flattens the menu
+   with display: contents, and tap-induced :hover must not undo that. */
+@media (min-width: 641px) {
+  .nav-group:hover .nav-menu,
+  .nav-group:focus-within .nav-menu {
+    display: block;
+  }
+}
+.site-header nav .nav-menu a {
+  display: block;
+  margin-left: 0;
+  padding: 0.45rem 0.9rem;
+  white-space: nowrap;
+}
+.site-header nav .nav-menu a:hover {
+  background: rgba(138, 180, 248, 0.08);
+}
 .brand-row {
   display: flex;
   align-items: center;
@@ -118,6 +163,19 @@ p a:hover {
     margin-left: 0; /* spacing comes from gap now */
     flex: 0 0 auto;
     font-size: 0.92rem;
+  }
+  /* A dropdown would clip inside the overflow-x strip, so flatten it:
+     hide the "Players ▾" trigger and let the two menu links flow inline
+     as ordinary strip items (labels are written to stand alone). */
+  .site-header nav .nav-group,
+  .site-header nav .nav-menu {
+    display: contents;
+  }
+  .site-header nav .nav-group > a[aria-haspopup] {
+    display: none;
+  }
+  .site-header nav .nav-menu a {
+    padding: 0;
   }
   /* Brand left, language toggle right, on the same row */
   .brand-row {

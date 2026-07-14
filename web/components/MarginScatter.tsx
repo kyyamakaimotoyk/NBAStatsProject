@@ -8,6 +8,7 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
+  ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
 } from "recharts";
@@ -89,10 +90,70 @@ export default function MarginScatter({ rows }: { rows: Prediction[] }) {
   const minors: number[] = [];
   for (let v = lo + 10; v < hi; v += 20) minors.push(v);
 
+  // Least-squares fit of actual on predicted, clipped to the plot box. Riding
+  // the y=x diagonal means margins are unbiased on average; a flatter slope
+  // means the model's confident calls overshoot reality.
+  const fit = (() => {
+    if (pts.length < 10) return null; // a line through a handful of games is noise
+    const n = pts.length;
+    const mx = pts.reduce((s, p) => s + p.x, 0) / n;
+    const my = pts.reduce((s, p) => s + p.y, 0) / n;
+    const sxx = pts.reduce((s, p) => s + (p.x - mx) * (p.x - mx), 0);
+    if (sxx === 0) return null;
+    const slope = pts.reduce((s, p) => s + (p.x - mx) * (p.y - my), 0) / sxx;
+    const icept = my - slope * mx;
+    const yAt = (x: number) => icept + slope * x;
+    let x1 = lo;
+    let x2 = hi;
+    if (slope !== 0) {
+      const cross = [(lo - icept) / slope, (hi - icept) / slope].sort((a, b) => a - b);
+      x1 = Math.max(x1, cross[0]);
+      x2 = Math.min(x2, cross[1]);
+    }
+    if (!(x1 < x2)) return null;
+    return [
+      { x: x1, y: yAt(x1) },
+      { x: x2, y: yAt(x2) },
+    ] as const;
+  })();
+
   return (
     <ResponsiveContainer width="100%" height={440}>
       <ScatterChart margin={{ top: 8, right: 20, bottom: 24, left: 8 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#243049" />
+        {/* Wrong-winner quadrants, tinted so the geometry tells the story:
+            any point on a tinted field is a missed call. Labels sit in the
+            outer corners, where extreme mispredictions are rarest. */}
+        <ReferenceArea
+          x1={lo}
+          x2={0}
+          y1={0}
+          y2={hi}
+          fill="#ef4444"
+          fillOpacity={0.07}
+          stroke="none"
+          label={{
+            value: t.marginScatter.quadAwayPick,
+            position: "insideTopLeft",
+            fill: "#9aa6c0",
+            fontSize: 11,
+          }}
+        />
+        <ReferenceArea
+          x1={0}
+          x2={hi}
+          y1={lo}
+          y2={0}
+          fill="#ef4444"
+          fillOpacity={0.07}
+          stroke="none"
+          label={{
+            value: t.marginScatter.quadHomePick,
+            position: "insideBottomRight",
+            fill: "#9aa6c0",
+            fontSize: 11,
+          }}
+        />
         <XAxis
           type="number"
           dataKey="x"
@@ -151,6 +212,8 @@ export default function MarginScatter({ rows }: { rows: Prediction[] }) {
         />
         <ReferenceLine x={0} stroke="#555" />
         <ReferenceLine y={0} stroke="#555" />
+        {/* OLS fit; the caption names it (the only solid orange line here). */}
+        {fit && <ReferenceLine segment={fit} stroke="#f97316" strokeWidth={1.5} />}
         <Scatter name={t.marginScatter.winnerCalled} data={hits} fill="#22c55e" fillOpacity={0.55} />
         <Scatter name={t.marginScatter.missed} data={misses} fill="#ef4444" fillOpacity={0.55} />
       </ScatterChart>

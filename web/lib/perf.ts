@@ -206,6 +206,45 @@ export function marginErrorHist(rows: Prediction[], binWidth = 5, clampAt = 30):
     });
 }
 
+/**
+ * Cumulative miss-size distribution: for thresholds 0..maxPts, the share (%) of
+ * games whose margin miss |predicted - actual| is within the threshold, per
+ * model plus the market closing line under `market`. Every series counts only
+ * games with a line (same-footing, like skillCurve); the market is deduped by
+ * game so multi-model rows don't triple-count it.
+ */
+export function missCdf(rows: Prediction[], maxPts = 30, step = 2): Pivot {
+  const lined = rows.filter((r) => r.market_margin != null && r.actual_margin !== null);
+  if (lined.length === 0) return { data: [], models: [] };
+  const models = [...new Set(lined.map((r) => r.model_type))].sort();
+  const byModel = new Map<string, number[]>();
+  for (const r of lined) {
+    (byModel.get(r.model_type) ?? byModel.set(r.model_type, []).get(r.model_type)!).push(
+      Math.abs(r.predicted_margin - (r.actual_margin as number)),
+    );
+  }
+  const seen = new Set<string>();
+  const marketErrs: number[] = [];
+  for (const r of lined) {
+    if (seen.has(r.game_id)) continue;
+    seen.add(r.game_id);
+    marketErrs.push(Math.abs((r.market_margin as number) - (r.actual_margin as number)));
+  }
+  const within = (errs: number[], x: number) =>
+    Math.round((errs.filter((e) => e <= x).length / errs.length) * 1000) / 10;
+  const data: Record<string, number | string>[] = [];
+  for (let x = 0; x <= maxPts; x += step) {
+    const row: Record<string, number | string> = { x };
+    for (const m of models) {
+      const errs = byModel.get(m)!;
+      if (errs.length > 0) row[m] = within(errs, x);
+    }
+    if (marketErrs.length > 0) row.market = within(marketErrs, x);
+    data.push(row);
+  }
+  return { data, models };
+}
+
 const dayNum = (iso: string) => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 86_400_000);
 
 export type TrendRow = Record<string, number | string>;

@@ -9,6 +9,8 @@ import {
   marketCompare,
   spreadRecord,
   classificationRates,
+  skillCurve,
+  missCdf,
 } from "@/lib/perf";
 import { useLang } from "@/lib/i18n";
 import TrendChart, { type TrendSeries } from "@/components/TrendChart";
@@ -55,6 +57,8 @@ export default function AccuracyPage() {
   const duel = useMemo(() => spreadRecord(featuredRows), [featuredRows]);
   const split = useMemo(() => homeAwaySplit(featuredRows), [featuredRows]);
   const trend = useMemo(() => (rows ? trendSeries(rows) : { data: [], models: [] }), [rows]);
+  const skill = useMemo(() => (rows ? skillCurve(rows) : { data: [], models: [] }), [rows]);
+  const cdf = useMemo(() => (rows ? missCdf(rows) : { data: [], models: [] }), [rows]);
   const cls = useMemo(() => (rows ? classificationRates(rows) : []), [rows]);
   const clsBars = cls.map((c) => ({
     name: c.key === "market" ? t.accuracy.marketFavorite : (t.models[c.key] ?? c.key),
@@ -80,6 +84,31 @@ export default function AccuracyPage() {
     })),
     { key: "market_mae", name: t.accuracy.marketSeries, color: MARKET_COLOR, dashed: true },
   ];
+  const skillSeries: TrendSeries[] = [
+    ...skill.models.map((m) => ({
+      key: m,
+      name: t.models[m] ?? m,
+      color: COLORS[m] ?? "#888",
+    })),
+    { key: "market", name: t.accuracy.marketFavorite, color: MARKET_COLOR, dashed: true },
+  ];
+  // Snap the skill-curve y-domain outward to 5s so the zero line sits on a tick.
+  const skillVals = skill.data.flatMap((d) =>
+    skillSeries.map((s) => Number(d[s.key])).filter(Number.isFinite),
+  );
+  const skillDomain: [number, number] = [
+    Math.min(0, Math.floor(Math.min(...skillVals, 0) / 5) * 5),
+    Math.max(5, Math.ceil(Math.max(...skillVals, 0) / 5) * 5),
+  ];
+  const cdfSeries: TrendSeries[] = [
+    ...cdf.models.map((m) => ({
+      key: m,
+      name: t.models[m] ?? m,
+      color: COLORS[m] ?? "#888",
+    })),
+    { key: "market", name: t.accuracy.marketSeries, color: MARKET_COLOR, dashed: true },
+  ];
+  const cdfData = cdf.data.map((d) => ({ ...d, x: t.accuracy.cdfTick(d.x as number) }));
 
   if (error) return <p className="status error">{t.accuracy.errLoad(error)}</p>;
   if (!rows) return <p className="status">{t.accuracy.loading}</p>;
@@ -185,6 +214,20 @@ export default function AccuracyPage() {
           />
           <p className="caption">{t.accuracy.accCaption}</p>
 
+          {/* The cumulative counterpart to the noisy trailing rate above: gaps
+              between models accumulate instead of washing out week to week.
+              Shared with /performance — headings and caption live under t.perf. */}
+          <h2>{t.perf.skillTitle}</h2>
+          <TrendChart
+            data={skill.data}
+            series={skillSeries}
+            yDomain={skillDomain}
+            refY={0}
+            xLabel={t.charts.gameDate}
+            yLabel={t.perf.skillYLabel}
+          />
+          <p className="caption">{t.perf.skillCaption}</p>
+
           <h2>{t.accuracy.maeOverTime}</h2>
           <TrendChart
             data={trend.data}
@@ -194,6 +237,18 @@ export default function AccuracyPage() {
             yTickStep={5}
           />
           <p className="caption">{t.accuracy.maeCaption}</p>
+
+          <h2>{t.accuracy.cdfTitle}</h2>
+          <TrendChart
+            data={cdfData}
+            series={cdfSeries}
+            xKey="x"
+            yUnit="%"
+            yDomain={[0, 100]}
+            xLabel={t.accuracy.cdfXLabel}
+            yLabel={t.accuracy.cdfYLabel}
+          />
+          <p className="caption">{t.accuracy.cdfCaption}</p>
 
           <h2>{t.accuracy.predVsActual}</h2>
           <MarginScatter rows={featuredRows} />

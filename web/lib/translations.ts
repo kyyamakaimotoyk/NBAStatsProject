@@ -10,6 +10,8 @@
 //   market closing line / closing spread → 市場の最終予想点差（クロージングライン・スプレッドとしない）
 //   betting            → 賭け（ベッティングとしない）
 //   even / pick'em     → 互角（イーブン・ピックエムとしない）
+//   against the spread → 点差込みの採点（ATS）／push → 引き分け扱い（対スプレッド・プッシュとしない）
+//   player projections → 選手の成績予想（プロジェクションとしない）。ファンタジー用語（ロスター・ウェイバー等）は慣用のカタカナ語のままでよい。
 //   trendline (OLS)    → 回帰直線 / rolling average → 移動平均
 //   register           → 丁寧体（です・ます）。直訳調・過剰なカタカナ語は避ける。
 // Team codes, stat keys (PTS, FG_PCT, …) and dates stay untranslated by design.
@@ -20,11 +22,11 @@ const en = {
   nav: {
     tonight: "Tonight",
     trackRecord: "Track record",
-    modelLab: "Model lab",
-    explore: "Explore",
-    scatter: "Scatter",
+    modelLab: "Compare models",
+    explore: "Team stats",
+    scatter: "Stat scatter",
     players: "Players",
-    advisor: "Advisor",
+    advisor: "Fantasy advisor",
     drivers: "What wins games",
     about: "About",
   },
@@ -73,7 +75,7 @@ const en = {
     offseasonBody:
       "Nightly picks return when the season tips off in October. Until then, the whole track record stays up — every prediction we've made, scored against what actually happened.",
     offseasonLinkRecord: "Last season's report card →",
-    offseasonLinkExplore: "Explore the data →",
+    offseasonLinkExplore: "Browse team stats →",
     latestSlate: (date: string) => `Latest slate — ${date}`,
     predictionsFor: (date: string) => `Predictions for ${date}`,
     staleNote: "No games tonight — this is the most recent slate the models predicted.",
@@ -303,6 +305,12 @@ const en = {
       "Context columns are rolling last-10-game values as of the game date: possessions per 48 (pace), opponent points allowed per 100 possessions (DRtg), and opponent three-point attempts conceded per game.",
     playerCol: "Player",
     matchupCol: "Matchup",
+    ctxCols: {
+      team_pace_l10: "Team pace",
+      opp_pace_l10: "Opp pace",
+      opp_drtg_l10: "Opp DRtg",
+      opp_3pa_allowed_l10: "Opp 3PA allowed",
+    } as Record<string, string>,
   },
 
   playersExplore: {
@@ -345,6 +353,18 @@ const en = {
     statCol: "Stat",
     teamCol: "Team",
     oppCol: "Opponent",
+    rowLabels: {
+      pace: "Pace",
+      off_rtg: "Off. rating",
+      def_rtg: "Def. rating",
+      efg_pct: "eFG%",
+      oreb_pct: "OREB%",
+      dreb_pct: "DREB%",
+      ast_pct: "AST%",
+      fg3a_pg: "3PA / game",
+      fta_pg: "FTA / game",
+      pts_pg: "PTS / game",
+    } as Record<string, string>,
     compareCaption:
       "Rolling averages over each team's last 10 games. Pace and opponent defense are the context the projections lean on most.",
   },
@@ -373,7 +393,7 @@ const en = {
   },
 
   explore: {
-    title: "Explore the data",
+    title: "Team stats",
     subtitle:
       "Track any team's rolling form (last 5 or 10 games) for a chosen stat across the season.",
     statLabel: "Stat:",
@@ -453,11 +473,11 @@ const ja: Dict = {
   nav: {
     tonight: "今夜の予想",
     trackRecord: "的中実績",
-    modelLab: "モデルラボ",
-    explore: "データ探索",
-    scatter: "散布図",
-    players: "Players", // untranslated with the rest of playersExplore (see below)
-    advisor: "Advisor", // untranslated with the rest of the advisor page
+    modelLab: "モデル比較",
+    explore: "チーム統計",
+    scatter: "統計値の散布図",
+    players: "選手予想",
+    advisor: "ファンタジー相談室",
     drivers: "勝敗を分けるもの",
     about: "このサイトについて",
   },
@@ -507,7 +527,7 @@ const ja: Dict = {
     offseasonBody:
       "毎晩の予想は、10月のシーズン開幕とともに再開します。オフシーズン中も、これまでのすべての予想と採点結果は引き続き公開しています。",
     offseasonLinkRecord: "昨シーズンの成績を見る →",
-    offseasonLinkExplore: "データを見てみる →",
+    offseasonLinkExplore: "チーム統計を見てみる →",
     latestSlate: (date: string) => `直近の予想 — ${date}`,
     predictionsFor: (date: string) => `${date}の予想`,
     staleNote: "今夜は試合がありません。直近に予想した試合を表示しています。",
@@ -574,22 +594,22 @@ const ja: Dict = {
     cardMarket: "市場の最終予想点差",
     cardMarketSub: (modelMae: string, n: string, total: string, closerPct: number) =>
       `当モデルは±${modelMae}。市場の予想点差がある${n}試合（採点済み${total}試合中）で比較すると、${closerPct}%の試合で当モデルの方が実際の点差に近い予想でした`,
-    cardSpread: "対スプレッド（ATS）",
+    cardSpread: "点差込みの勝敗（ATS）",
     cardSpreadSub: (w: number, l: number, ties: number) =>
-      `${w}勝${l}敗${ties > 0 ? `${ties}分` : ""} — モデル自身の予想点差をラインとして最終スコアで採点し、示したチームがその点差より大きく勝てば的中です`,
+      `${w}勝${l}敗${ties > 0 ? `${ties}分` : ""} — モデル自身の予想点差を基準に最終スコアで採点し、示したチームがその点差より大きく勝てば的中です`,
     cardGraded: "採点済みの試合",
     cardGradedSub: "この期間の合計",
     marketSeries: "市場の最終予想点差",
     clsTitle: "勝敗的中率 — 市場とモデルの比較",
     clsCaption:
-      "公平な比較のため、クロージングラインが存在する採点済みの試合だけで集計しています。市場の「予想」はフェイバリット(ライン上有利とされた側)です。イーブン(どちらが有利とも言えない)の試合は予想なしとして除外しています。バーをタップすると試合数が表示されます。",
-    marketFavorite: "市場フェイバリット",
+      "公平な比較のため、市場の最終予想点差が存在する採点済みの試合だけで集計しています。市場の「予想」は本命(有利と見られた側)です。どちらが有利とも言えない互角の試合は、予想なしとして除外しています。バーをタップすると試合数が表示されます。",
+    marketFavorite: "市場の本命",
     recentPicks: (model: string) => `直近の予想 — ${model}`,
     picksCaption: (n: number) =>
       `直近${n}件の採点済み予想です(左から古い順)。マスをタップすると試合の詳細が表示されます。`,
     accOverTime: "勝敗的中率の推移",
     accCaption:
-      "各点は、その日までの7日間の成績を示します。薄い破線は同じ試合における市場フェイバリットの的中率。",
+      "各点は、その日までの7日間の成績を示します。薄い破線は同じ試合における市場の本命の的中率。",
     maeOverTime: "点差誤差の推移",
     maeCaption:
       "その日までの7日間で、予想が実際の点差から平均何点ずれていたかを示します(小さいほど優秀です)。破線は同じ試合に対してブックメーカーが試合直前に示した最終予想点差で、点差予想の基準としては最も厳しい公開ベンチマークです。自己評価のために掲載しているもので、予想の宣伝が目的ではありません。",
@@ -636,7 +656,7 @@ const ja: Dict = {
     skillTitle: "スキルカーブ — コイン投げを上回る的中数",
     skillYLabel: "コイン投げ超過の的中数",
     skillCaption:
-      "（的中数 − 試合数の半分）の累計です。コイン投げなら0付近を漂い、実力があれば右肩上がりになります。すべての系列は市場の最終予想点差がある試合だけを対象にしているため、破線の市場フェイバリットと同じ土俵で比較できます。",
+      "（的中数 − 試合数の半分）の累計です。コイン投げなら0付近を漂い、実力があれば右肩上がりになります。すべての系列は市場の最終予想点差がある試合だけを対象にしているため、破線で示した市場の本命と同じ土俵で比較できます。",
     histTitle: "点差誤差の分布",
     histXLabel: "予想点差 − 実際の点差（点）",
     histCaption:
@@ -649,7 +669,7 @@ const ja: Dict = {
       "見方: 曲線上の各点は、どこまで確信があれば「ホーム勝利」と判定するか、そのしきい値を変えたときの結果に対応します。曲線が破線の対角線(コイン投げと同等)より上に膨らむほど、そのモデルは勝敗の見極めに優れています。AUCは0.5で予測力なし、1.0で完全な予測です。的中率と異なり、予想の当たり外れではなく、出力された確率そのものを評価する指標です。",
     confusion: "混同行列 — どんな外し方をしているか",
     confusionCaption:
-      "見方: 行が実際の結果、列がモデルの予想です。対角線上の緑の2マスが正解、残りの2マスが不正解です。TNはアウェイ勝利の的中、TPはホーム勝利の的中、FPはホーム勝利と予想して外れた試合、FNはアウェイ勝利と予想して外れた試合を表します。FPとFNを比較すると、モデルがホーム側に偏っていないかを確認できます。市場の行列は各試合を1回だけ集計し、市場の最終予想点差で優勢とされた側をその予想として扱います。互角のライン（優勢なし）の試合は除外しています。",
+      "見方: 行が実際の結果、列がモデルの予想です。対角線上の緑の2マスが正解、残りの2マスが不正解です。TNはアウェイ勝利の的中、TPはホーム勝利の的中、FPはホーム勝利と予想して外れた試合、FNはアウェイ勝利と予想して外れた試合を表します。FPとFNを比較すると、モデルがホーム側に偏っていないかを確認できます。市場の行列は各試合を1回だけ集計し、市場の最終予想点差で優勢とされた側をその予想として扱います。どちらが有利とも言えない互角の試合は除外しています。",
     gameByGame: "試合ごとの結果",
   },
 
@@ -669,17 +689,17 @@ const ja: Dict = {
     cellPick: (team: string, margin: string) => `${team} ${margin}点差`,
     gradeLabel: "採点基準:",
     modeSu: "勝敗の分類",
-    modeAts: "対スプレッド（ATS）",
+    modeAts: "点差込みの採点（ATS）",
     market: "市場",
-    marketTitle: (line: string) => `市場の最終ライン: ${line}`,
+    marketTitle: (line: string) => `市場の最終予想点差: ${line}`,
     cellTitleAts: (team: string, num: string) =>
       `最終スコアのみで採点: ${team}が${num}点差より大きく勝てば的中`,
     noCallTitle: "モデルの予想点差が0のため、採点対象外です",
     pushTitle: "実際の点差が示された数字とちょうど同じだった試合（勝敗なし）",
     captionSu:
-      "勝敗の分類: 各欄には市場（最終ラインで優勢とされた側）と各モデルの予想勝者を表示し、そのチームが勝てば緑、負ければ赤になります。新しい試合が上で、表内をスクロールできます。モデルの欄にカーソルを合わせると勝率と予想点差が表示されます。「—」は市場のラインがない、または予想がない試合です。",
+      "勝敗の分類: 各欄には市場（最終予想点差で優勢とされた側）と各モデルの予想勝者を表示し、そのチームが勝てば緑、負ければ赤になります。新しい試合が上で、表内をスクロールできます。モデルの欄にカーソルを合わせると勝率と予想点差が表示されます。「—」は市場の予想点差がない、または予想がない試合です。",
     captionAts:
-      "対スプレッド: 各欄はその予想者自身のラインです。市場の「SAS -6.5」はSASが6.5点差で優勢という意味で、モデルの「SAS -1.7」はSASが1.7点差で勝つという予想です。採点は最終スコアだけと比較して行います。示されたチームがその数字より大きい点差で勝てば緑、そうでなければ赤、ちょうどその点差なら灰色（プッシュ）です。モデルは市場のラインではなく、自分自身の数字に対して採点されます。",
+      "点差込みの採点: 各欄にはその予想者自身の予想点差を表示します。市場の「SAS -6.5」はSASが6.5点差で優勢という意味で、モデルの「SAS -1.7」はSASが1.7点差で勝つという予想です。採点は最終スコアだけと比較して行います。示されたチームがその数字より大きい点差で勝てば緑、そうでなければ赤、ちょうどその点差なら灰色（引き分け扱い）です。モデルは市場の数字ではなく、自分自身の予想点差に対して採点されます。",
   },
 
   picksStrip: {
@@ -693,12 +713,114 @@ const ja: Dict = {
     miss: "外れ",
   },
 
-  // Deliberately NOT translated yet: the machine-drafted JA copy didn't read
-  // right (Kai transcreates JA himself). Mirrors the English namespaces so the
-  // JA toggle shows English on these pages until real copy replaces it.
-  advisor: en.advisor,
-  playersDaily: en.playersDaily,
-  playersExplore: en.playersExplore,
+  advisor: {
+    title: "ファンタジー相談室",
+    subtitle:
+      "スタメンの決定や選手の入れ替え、ストリーミング、ウェイバー補強といった質問にAIが回答します。根拠となる成績予想はこちら:",
+    tableLink: "日別予想の一覧",
+    promptLabel: "質問",
+    promptPlaceholder:
+      "例: 今夜ガードで先発させるべきなのは? 今週ストリーミングで拾う価値のあるウェイバー選手はいる?",
+    rosterLabel: "ロスター（任意）",
+    rosterPlaceholder: "ロスターを1行に1人ずつ貼り付けてください。",
+    matchupLabel: "対戦スコア（任意）:",
+    matchupPlaceholder: "例: 12ポイントリード / 2カテゴリービハインド",
+    scoringLabel: "リーグ形式:",
+    scoringPoints: "ポイントリーグ",
+    scoringCategory: "カテゴリーリーグ",
+    submit: "相談する",
+    thinking: "考えています…",
+    errLoad: (e: string) => `回答を取得できませんでした: ${e}`,
+    answerHeading: (d: string) => `回答（${d}の成績予想に基づく）`,
+    disclaimer:
+      "回答は、HoopModelの統計的な成績予想をもとにAIモデルが生成しています。内容が誤っている可能性があり、賭けを推奨するものでもありません。送信された質問はサービス改善のために保存されることがあります。個人情報は入力しないでください。",
+  },
+
+  playersDaily: {
+    title: "選手の成績予想",
+    subtitle:
+      "その日の全試合について、ローテーション選手の主要統計値の予想を、根拠となるペースや守備の状況とあわせて一覧にしています。列の見出しをクリックすると並べ替えられます。",
+    exploreLink: "選手ごとの詳細を見る →",
+    dateLabel: "日付:",
+    teamLabel: "チーム:",
+    allTeams: "全チーム",
+    modeLabel: "表示する値",
+    modePred: "予想値",
+    modeActual: "実際の値",
+    errLoad: (e: string) => `読み込めませんでした: ${e}`,
+    loading: "読み込んでいます…",
+    noData: "選手の成績予想はまだありません。シーズン中は毎晩更新されます。",
+    noRows: "この日付・チームに該当する選手がいません。",
+    tableHeading: (d: string, n: number) => `${d} — ${n}人`,
+    gradedNote:
+      "この日の試合はすべて終了しています。試合前の予想値と実際の値を切り替えて確認できます。",
+    upcomingNote: "予想値は、各選手の直近の調子をもとに試合前に算出しています。",
+    contextNote:
+      "状況の列は、試合日時点の直近10試合平均です。ペースは48分あたりのポゼッション数、相手DRtgは対戦相手の守備が100ポゼッションあたりに許す失点、相手被3PAは対戦相手が1試合に許す3ポイント試投数を表します。",
+    playerCol: "選手",
+    matchupCol: "対戦",
+    ctxCols: {
+      team_pace_l10: "チームペース",
+      opp_pace_l10: "相手ペース",
+      opp_drtg_l10: "相手DRtg",
+      opp_3pa_allowed_l10: "相手被3PA",
+    } as Record<string, string>,
+  },
+
+  playersExplore: {
+    title: "選手の詳細分析",
+    subtitle:
+      "ローテーション選手の試合ごとの統計値を、モデルが試合前に出した予想値と並べて表示します。チーム、選手、統計値、期間を選んでください。",
+    dailyLink: "← 日別予想の一覧に戻る",
+    teamLabel: "チーム:",
+    playerLabel: "選手:",
+    statLabel: "統計値:",
+    windowLabel: "期間:",
+    windows: {
+      L5: "直近5試合",
+      L10: "直近10試合",
+      season: "今シーズン",
+      three: "過去3シーズン",
+    } as Record<string, string>,
+    errLoad: (e: string) => `読み込めませんでした: ${e}`,
+    loading: "読み込んでいます…",
+    noData: "選手の成績予想はまだありません。",
+    noPreds: "この期間にはモデルの予想値がありません。予想の対象は2023-24シーズン以降です。",
+    chartHeading: (name: string, stat: string) => `${name} — ${stat}の推移（試合ごと）`,
+    backtestNote:
+      "予想値はバックテストによるもので、いずれも対象シーズンより前のデータだけで学習したモデルの出力です。結果を知った上での後づけ予想ではありません。",
+    distHeading: (stat: string) => `${stat}の分布`,
+    distPoissonNote:
+      "点線は、モデルのポアソン分布が示す理論上の頻度です。棒が点線から大きく離れている場合、この統計値のムラをモデルがうまく捉えられていないことを意味します。",
+    errHeading: (stat: string) => `予想誤差（予想値 − 実際の${stat}）`,
+    errSummary: (n: number, mae: number, bias: number) =>
+      `予想対象${n}試合 · 平均誤差 ${mae.toFixed(2)} · 偏り ${bias >= 0 ? "+" : ""}${bias.toFixed(2)}（正の値はモデルの過大評価）`,
+    shareOfGames: "試合の割合",
+    poissonExpected: "モデルの理論値",
+    predicted: "予想",
+    actual: "実際",
+    teamCompareHeading: "チームと次の対戦相手の比較（直近10試合）",
+    nextGame: (date: string, isHome: boolean, opp: string) =>
+      `次の試合: ${date} ${isHome ? "vs." : "@"} ${opp}`,
+    noNextGame: "予定されている試合はありません（オフシーズン）。チームの数値のみ表示しています。",
+    statCol: "統計値",
+    teamCol: "チーム",
+    oppCol: "相手",
+    rowLabels: {
+      pace: "ペース",
+      off_rtg: "攻撃効率（ORtg）",
+      def_rtg: "守備効率（DRtg）",
+      efg_pct: "eFG%",
+      oreb_pct: "OREB%",
+      dreb_pct: "DREB%",
+      ast_pct: "AST%",
+      fg3a_pg: "3PA/試合",
+      fta_pg: "FTA/試合",
+      pts_pg: "PTS/試合",
+    } as Record<string, string>,
+    compareCaption:
+      "各チームの直近10試合の平均です。成績予想が特に重視しているのは、ペースと相手の守備です。",
+  },
 
   drivers: {
     title: "勝敗を分けるもの",
@@ -724,7 +846,7 @@ const ja: Dict = {
   },
 
   explore: {
-    title: "データ探索",
+    title: "チーム統計",
     subtitle:
       "統計値をひとつ選ぶと、各チームの調子（直近5試合または10試合の移動平均）がシーズンを通してどう推移したかを確認できます。",
     statLabel: "統計値:",

@@ -35,7 +35,7 @@ function AboutEnglish() {
         team&apos;s recent play is distilled into rolling features: how they&apos;ve
         shot, rebounded, defended, and won over their last 5/10 games, at home and
         on the road. You can poke at the same data on the{" "}
-        <Link href="/explore">Explore</Link> and <Link href="/scatter">Scatter</Link>{" "}
+        <Link href="/explore">Team stats</Link> and <Link href="/scatter">Stat scatter</Link>{" "}
         pages, and see which of these signals actually track winning on{" "}
         <Link href="/drivers">What wins games</Link>.
       </p>
@@ -44,7 +44,7 @@ function AboutEnglish() {
       <p>
         Three independent models make every pick: a random-forest ensemble, a gradient boosting model, and a neural
         network. Each predict a home-team win probability, and an expected point margin. The models don&apos;t always agree.
-        Their strengths and weaknesses are compared openly on the <Link href="/performance">Model lab</Link> page.
+        Their strengths and weaknesses are compared openly on the <Link href="/performance">Compare models</Link> page.
       </p>
 
       <h2>The nightly cycle</h2>
@@ -107,7 +107,7 @@ function AboutJapanese() {
         基本的な統計値に加え、フォーファクター統計、ハッスル系、プレイヤートラッキング、得点の内訳なども
         利用しています。試合前には、各チームの直近5試合・10試合の傾向（シュートの調子、リバウンド、
         守備、勝敗など）をホーム・アウェイ別に集計し、特徴量として整理します。これらのデータは
-        <Link href="/explore">データ探索</Link>や<Link href="/scatter">散布図</Link>のページで
+        <Link href="/explore">チーム統計</Link>や<Link href="/scatter">統計値の散布図</Link>のページで
         実際に確認できます。また、どの統計値が勝敗に結びついているかは
         <Link href="/drivers">勝敗を分けるもの</Link>のページで見ることができます。
       </p>
@@ -116,8 +116,8 @@ function AboutJapanese() {
       <p>
         予想には、互いに独立した3つのモデルを使っています。ランダムフォレスト、勾配ブースティング、
         ニューラルネットワークの3つです。各モデルはホームチームの勝率と予想点差を出力します。
-        3つの予想は一致しないことも多く、それぞれの得意・不得意は<Link href="/performance">モデルラボ</Link>
-        のページで比較できます。
+        3つの予想は一致しないことも多く、それぞれの得意・不得意は<Link href="/performance">モデル比較</Link>
+        のページで確認できます。
       </p>
 
       <h2>毎晩の処理</h2>

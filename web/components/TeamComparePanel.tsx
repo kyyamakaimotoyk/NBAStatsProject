@@ -46,7 +46,7 @@ export default function TeamComparePanel({ ctx }: { ctx: TeamContextResponse }) 
         <tbody>
           {ROWS.map((r) => (
             <tr key={r.key}>
-              <td>{r.label}</td>
+              <td>{t.playersExplore.rowLabels[String(r.key)] ?? r.label}</td>
               <td>{ctx.team[r.key] != null ? ctx.team[r.key] : "—"}</td>
               {opp && <td>{opp[r.key] != null ? opp[r.key] : "—"}</td>}
             </tr>

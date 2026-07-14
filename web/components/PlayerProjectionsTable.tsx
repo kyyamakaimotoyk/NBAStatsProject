@@ -106,7 +106,7 @@ export default function PlayerProjectionsTable({
             {header("player", t.playersDaily.playerCol)}
             {header("matchup", t.playersDaily.matchupCol)}
             {STAT_COLS.map((c) => header(c.key, c.label))}
-            {CTX_COLS.map((c) => header(c.key, c.label))}
+            {CTX_COLS.map((c) => header(c.key, t.playersDaily.ctxCols[String(c.key)] ?? c.label))}
           </tr>
         </thead>
         <tbody>

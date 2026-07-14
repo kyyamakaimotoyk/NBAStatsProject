@@ -51,6 +51,28 @@ HOME PC (residential IP)                AWS (us-east-1)
 - **Working notes** live in `docs/`: `aws_deployment_plan.md`, `terraform_lab.md`, `docker_lab.md`, `cicd_lab.md`, `ops_lab.md`, `traffic_lab.md`, `frontend_lab.md`, `troubleshooting_lab.md`, `bedrock_lab.md` (hands-on Bedrock/LLM labs for the fantasy advisor), plus `preseason_checklist.md` for calendar-bound ops.
 - **Player projections initiative** (P-series): plan in `docs/player_projections_plan.md` (per-player counting-stat model → public `/players` table → Bedrock LLM fantasy advisor); current validation/calibration report in `docs/p2_player_validation_report.md` (P2 = playoffs + 4 seasons; `p1_player_validation_report.md` is the frozen pre-playoff baseline).
 
+### The LLM fantasy advisor (`api/advisor.py`)
+
+`POST /api/advisor` answers fantasy-basketball questions with Claude Sonnet on Bedrock, grounded in the day's projection slate. It runs as a **separate ECS service** (`ADVISOR_ENABLED=1`) with its own task role — the main API service never imports the module and has no Bedrock permissions.
+
+**Stateless, single-turn — there are no sessions.** Every request sends exactly one user message with no conversation history; nothing is remembered between calls. The closest thing to a "session" limit is the concurrency gate: one in-flight request per IP, four globally.
+
+**Context & token limits.** There is no explicit input-token limit; input is bounded indirectly by character caps on everything user-controlled — prompt 2,000 chars, roster 2,500, matchup score 500. The rest of the context is assembled server-side (day's projections, injury report capped at 80 rows, 7-day schedule counts), is stable for the whole day, and sits behind a prompt-cache breakpoint so repeat calls are mostly cache reads. Output is hard-capped at `ADVISOR_MAX_TOKENS` (800), with the system prompt additionally asking for <250 words.
+
+**Rate limiting** (in-process, evaluated cheapest-first before any token is spent):
+
+| Gate | Limit | Env var |
+|---|---|---|
+| Kill switch | 503 when set | `ADVISOR_DISABLED=1` |
+| Global daily cap | 300 requests/day | `ADVISOR_DAILY_CAP` |
+| Per-IP daily cap | 20 requests/day | `ADVISOR_IP_DAILY_CAP` |
+| Per-IP burst bucket | 5-request burst, refills 1 per 30 s | (constants in code) |
+| Concurrency | 1 in-flight per IP, 4 global | `ADVISOR_MAX_CONCURRENCY` |
+
+After the rate gates: optional Cloudflare Turnstile check (inert unless `TURNSTILE_SECRET_ARN` is set), then a **topical gate** — requests with no basketball signal (fantasy lexicon or current-slate player/team names) are rejected before any Bedrock spend. The client IP comes from the second-from-last `X-Forwarded-For` entry (leading entries are spoofable behind CloudFront → ALB) and only a truncated SHA-256 hash is ever logged. Every request is archived as JSON to S3 (`advisor_inputs/`, hashed IP only) for Athena analysis.
+
+**Caveat:** all counters live in process memory, so they reset when the ECS task restarts, and each task enforces its own caps if the service is ever scaled beyond one task.
+
 ---
 
 ## Quick Start
@@ -1087,7 +1109,7 @@ python modeling/prediction_tracker.py --backfill --lookback 200
 
 ## Database Connection
 
-The project connects to a local MySQL database. Configuration is **read from environment variables** (see [Database Setup](#database-setup-env-vars) above). Defaults expected:
+The same env-var contract serves both halves of the project: locally the research bench talks to your own MySQL; in the cloud the task definitions point the identical variables at RDS. Configuration is **read from environment variables** (see [Database Setup](#database-setup-env-vars) above). Local defaults:
 
 - Host: `localhost`
 - Port: `3306`

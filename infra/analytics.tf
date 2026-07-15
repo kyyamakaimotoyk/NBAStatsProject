@@ -279,5 +279,12 @@ resource "aws_glue_catalog_table" "advisor_inputs" {
       name = "tokens_out"
       type = "bigint"
     }
+    # Model response text (added 2026-07-15). NULL for gated requests and for
+    # records written before api/advisor.py started archiving it — the JSON
+    # SerDe returns NULL for keys absent from a record, so old rows still read.
+    columns {
+      name = "advice"
+      type = "string"
+    }
   }
 }

@@ -366,7 +366,8 @@ def _archive_to_s3(record: dict) -> None:
 
 def _make_record(outcome: str, req: AdvisorRequest, prompt: str, roster: str,
                  matchup: str, slate_date: Optional[str], ip: str,
-                 usage: Optional[dict] = None) -> dict:
+                 usage: Optional[dict] = None,
+                 advice: Optional[str] = None) -> dict:
     return {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "outcome": outcome,  # ok | gated | refused
@@ -378,6 +379,9 @@ def _make_record(outcome: str, req: AdvisorRequest, prompt: str, roster: str,
         "matchup_score": matchup or None,
         "tokens_in": (usage or {}).get("in"),
         "tokens_out": (usage or {}).get("out"),
+        # Model response (None for gated requests, which never reach Bedrock).
+        # Bounded by ADVISOR_MAX_TOKENS, so a few KB at most.
+        "advice": advice,
     }
 
 
@@ -448,7 +452,7 @@ def advisor(req: AdvisorRequest, request: Request, background_tasks: BackgroundT
             print(f"ADVISOR_OK dry_run=1 slate={slate_date}")
             background_tasks.add_task(
                 _archive_to_s3, _make_record("ok", req, prompt, roster, matchup,
-                                             slate_date, ip))
+                                             slate_date, ip, advice=advice))
             return AdvisorResponse(advice=advice, slate_date=slate_date, dry_run=True)
 
         # Stable prefix (system prompt + day's data) before the cache breakpoint;
@@ -474,5 +478,5 @@ def advisor(req: AdvisorRequest, request: Request, background_tasks: BackgroundT
           f"at={datetime.now().isoformat(timespec='seconds')}")
     background_tasks.add_task(
         _archive_to_s3, _make_record(outcome, req, prompt, roster, matchup,
-                                     slate_date, ip, usage))
+                                     slate_date, ip, usage, advice=advice))
     return AdvisorResponse(advice=advice, slate_date=slate_date)

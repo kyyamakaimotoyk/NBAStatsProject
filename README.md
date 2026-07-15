@@ -69,6 +69,7 @@ The README is the map; the deep dives live in `docs/`. The ones worth knowing ab
 | [`docs/model_tuning_log.md`](docs/model_tuning_log.md) | ⭐ **The canonical experiment log (E1–E21)** — append-only; every modeling decision traces back to an entry here |
 | [`docs/model_assessment_2026-07.md`](docs/model_assessment_2026-07.md) | July 2026 full-model assessment (premise checks, feature saturation, impact-metric adoption targets) |
 | [`docs/player_projections_plan.md`](docs/player_projections_plan.md) | P-series plan: player counting-stat models → public `/players` pages → the LLM fantasy advisor (§5) |
+| [`docs/advisor_scope_plan.md`](docs/advisor_scope_plan.md) | Plan to widen the advisor beyond tonight's slate (season-wide grounding → week-ahead projections → copy) |
 | [`docs/aws_deployment_plan.md`](docs/aws_deployment_plan.md) | The plan that took the project public on AWS |
 | [`docs/playoff_improvement_plan.md`](docs/playoff_improvement_plan.md) | Playoff-specific modeling improvements |
 | [`docs/preseason_checklist.md`](docs/preseason_checklist.md) | Calendar-bound ops — what must happen before opening night |

@@ -3693,6 +3693,53 @@ app.layout = html.Div(
                     dbc.Col(dcc.Graph(id='trafficStatusChart'), width=4),
                     dbc.Col(dcc.Graph(id='trafficGeoChart'), width=4),
                 ]),
+
+                # --- LLM advisor request/response feed -----------------------
+                html.Hr(),
+                html.H4('LLM advisor - prompts & responses'),
+                html.Div([
+                    'Every advisor request the API archived to S3 (',
+                    html.Code('advisor_inputs/'), '), read through Athena table ',
+                    html.Code('hoopmodel_logs.advisor_inputs'),
+                    '. Responses exist only on records written after 2026-07-15 '
+                    '(when the API started archiving them) - older rows show '
+                    'the prompt only. IPs are stored hashed.',
+                ]),
+                html.Br(),
+                dbc.Row([
+                    dbc.Col([
+                        html.Label('Window'),
+                        dcc.Dropdown(
+                            id='advisorWindow',
+                            options=[
+                                {'label': 'Last 7 days', 'value': 7},
+                                {'label': 'Last 30 days', 'value': 30},
+                                {'label': 'Last 90 days', 'value': 90},
+                            ],
+                            value=30, clearable=False,
+                        ),
+                    ], width=3),
+                    dbc.Col([
+                        html.Label('Outcome'),
+                        dcc.Dropdown(
+                            id='advisorOutcome',
+                            options=[
+                                {'label': 'All', 'value': 'all'},
+                                {'label': 'Answered (ok)', 'value': 'ok'},
+                                {'label': 'Gated (no tokens spent)', 'value': 'gated'},
+                                {'label': 'Refused by the model', 'value': 'refused'},
+                            ],
+                            value='all', clearable=False,
+                        ),
+                    ], width=3),
+                    dbc.Col(dbc.Button('Refresh', id='advisorRefreshBtn',
+                                       color='primary', className='mt-4'), width=2),
+                ]),
+                html.Div(id='advisorStatus', className='mt-2'),
+                html.Br(),
+                html.Div(id='advisorHeadline'),
+                html.Br(),
+                html.Div(id='advisorFeed'),
             ]),
         ])
     ]
@@ -3869,6 +3916,163 @@ def _update_traffic(_n_clicks, days, exclude_bots):
                           style={'color': '#7CFC00', 'fontSize': '12px'})
     return (fig_req, fig_pages, fig_ref, fig_cache, fig_status, fig_geo,
             headline, status_msg)
+
+
+# =============================================================================
+# LLM advisor feed: request/response records written by api/advisor.py to
+# s3://.../advisor_inputs/, read via the same Athena setup as the traffic tab
+# (Glue table hoopmodel_logs.advisor_inputs, infra/analytics.tf).
+# =============================================================================
+_ADVISOR_FEED_LIMIT = 200
+_ADVISOR_OUTCOME_COLORS = {'ok': '#7CFC00', 'gated': '#FFA500', 'refused': 'salmon'}
+_ADVISOR_LABEL_STYLE = {'fontSize': '11px', 'color': '#888',
+                        'textTransform': 'uppercase', 'letterSpacing': '0.5px',
+                        'margin': '6px 0 3px'}
+
+
+def _advisor_where(days):
+    """Time filter with explicit partition pruning. The table uses partition
+    projection over year/month/day strings, so predicates on the partition
+    columns themselves keep Athena from listing every projected prefix (the
+    projection ranges run to 2035). Month granularity over-scans at most a few
+    weeks of tiny JSON files; the ts predicate applies the exact day cut."""
+    today = date.today()
+    start = today - timedelta(days=days)
+    months, y, m = [], start.year, start.month
+    while (y, m) <= (today.year, today.month):
+        months.append(f"(year = '{y}' AND month = '{m:02d}')")
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return f"({' OR '.join(months)}) AND ts >= '{start.isoformat()}'"
+
+
+def _advisor_textbox(text, max_height=170):
+    """A text block that scrolls within itself instead of stretching the card."""
+    return html.Div(text, style={
+        'whiteSpace': 'pre-wrap', 'overflowWrap': 'anywhere',
+        'maxHeight': f'{max_height}px', 'overflowY': 'auto',
+        'backgroundColor': '#111', 'padding': '8px 10px',
+        'borderRadius': '6px', 'fontSize': '13px',
+    })
+
+
+def _advisor_card(rec):
+    """One request rendered as a card: metadata line, prompt, optional roster/
+    matchup (collapsed), and the model response."""
+    def val(k):
+        v = rec.get(k)
+        if v is None or (isinstance(v, float) and pd.isna(v)) or v == '':
+            return None
+        return v
+
+    outcome = val('outcome') or '?'
+    tokens = ''
+    if val('tokens_in') is not None and val('tokens_out') is not None:
+        tokens = f"{int(rec['tokens_in']):,} in / {int(rec['tokens_out']):,} out tok"
+    header = html.Div([
+        html.Span(outcome.upper(), style={
+            'color': _ADVISOR_OUTCOME_COLORS.get(outcome, '#aaa'),
+            'fontWeight': 'bold', 'marginRight': '12px'}),
+        html.Span((val('ts') or '')[:19].replace('T', ' ') + ' UTC',
+                  style={'marginRight': '12px'}),
+        html.Span(f"scoring: {val('scoring_type') or '-'}",
+                  style={'marginRight': '12px'}),
+        html.Span(f"slate: {val('slate_date') or '-'}",
+                  style={'marginRight': '12px'}),
+        html.Span(f"ip: {val('ip_hash') or '-'}", style={'marginRight': '12px'}),
+        html.Span(tokens),
+    ], style={'fontSize': '12px', 'color': '#ccc', 'marginBottom': '6px'})
+
+    body = [header,
+            html.Div('Prompt', style=_ADVISOR_LABEL_STYLE),
+            _advisor_textbox(val('prompt') or '(empty)')]
+    for key, label in (('roster', 'Roster'), ('matchup_score', 'Matchup score')):
+        if val(key):
+            body.append(html.Details([
+                html.Summary(label, style={'fontSize': '12px', 'color': '#aaa',
+                                           'cursor': 'pointer'}),
+                _advisor_textbox(val(key), 140),
+            ], style={'marginTop': '6px'}))
+    body.append(html.Div('Response', style=_ADVISOR_LABEL_STYLE))
+    if val('advice'):
+        body.append(_advisor_textbox(val('advice'), 240))
+    else:
+        note = ('(gated before the Bedrock call - no response)'
+                if outcome == 'gated'
+                else '(not recorded - request predates response archiving)')
+        body.append(html.Div(note, style={'color': '#777', 'fontStyle': 'italic',
+                                          'fontSize': '13px'}))
+    return html.Div(body, style={'backgroundColor': '#1b1b1b',
+                                 'borderRadius': '8px', 'padding': '12px 14px',
+                                 'marginBottom': '10px'})
+
+
+@callback(
+    Output('advisorHeadline', 'children'),
+    Output('advisorFeed', 'children'),
+    Output('advisorStatus', 'children'),
+    Input('advisorRefreshBtn', 'n_clicks'),
+    Input('advisorWindow', 'value'),
+    Input('advisorOutcome', 'value'),
+    prevent_initial_call=True,
+)
+def _update_advisor(_n_clicks, days, outcome):
+    days = int(days or 30)
+    where = _advisor_where(days)
+    # `outcome` comes from a fixed dropdown, never free text.
+    outcome_sql = '' if outcome in (None, 'all') else f" AND outcome = '{outcome}'"
+    try:
+        summary = _athena_df(
+            'SELECT outcome, COUNT(*) AS n, SUM(tokens_in) AS tin, '
+            'SUM(tokens_out) AS tout '
+            f'FROM advisor_inputs WHERE {where} GROUP BY outcome'
+        )
+        # SELECT * (not an explicit column list) so the feed keeps working
+        # whether or not the Glue table already has the `advice` column.
+        feed = _athena_df(
+            f'SELECT * FROM advisor_inputs WHERE {where}{outcome_sql} '
+            f'ORDER BY ts DESC LIMIT {_ADVISOR_FEED_LIMIT}'
+        )
+    except Exception as e:
+        msg = html.Div(
+            ['Athena query failed: ', html.Code(str(e)),
+             '. Check that you ran ', html.Code('pip install "pyathena[pandas]"'),
+             ', are logged into AWS account 583686634997, and have applied the '
+             'advice-column change in infra/analytics.tf.'],
+            style={'color': 'salmon'})
+        return '', '', msg
+
+    if summary.empty:
+        return '', '', html.Div(
+            f'No advisor requests in the last {days} days.',
+            style={'color': '#aaa'})
+
+    counts = {r['outcome']: int(r['n']) for _, r in summary.iterrows()}
+    total = sum(counts.values())
+    tin = int(summary['tin'].fillna(0).sum())
+    tout = int(summary['tout'].fillna(0).sum())
+    headline = dbc.Row([
+        dbc.Col(_traffic_card('Requests', f'{total:,}'), width=3),
+        dbc.Col(_traffic_card('Answered', f"{counts.get('ok', 0):,}"), width=3),
+        dbc.Col(_traffic_card(
+            'Gated / refused',
+            f"{counts.get('gated', 0):,} / {counts.get('refused', 0):,}"), width=3),
+        dbc.Col(_traffic_card('Tokens in / out', f'{tin:,} / {tout:,}'), width=3),
+    ])
+
+    records = feed.to_dict('records')
+    if records:
+        feed_div = html.Div([_advisor_card(r) for r in records],
+                            style={'maxHeight': '700px', 'overflowY': 'auto',
+                                   'paddingRight': '6px'})
+    else:
+        feed_div = html.Div('No records match this outcome filter.',
+                            style={'color': '#aaa'})
+    capped = (f' (feed capped at {_ADVISOR_FEED_LIMIT} - narrow the window)'
+              if len(records) >= _ADVISOR_FEED_LIMIT else '')
+    status_msg = html.Div(
+        f'Loaded {len(records)} record(s); {total} request(s) in window{capped}.',
+        style={'color': '#7CFC00', 'fontSize': '12px'})
+    return headline, feed_div, status_msg
 
 
 if __name__ == '__main__':

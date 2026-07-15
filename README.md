@@ -1345,11 +1345,11 @@ LAL @ BOS                 BOS         62.0%     58.2%     +3.5 pts   +/-8.2
 
 *Code: `api/advisor.py` · Infra: `infra/advisor.tf` · Hands-on labs: [`docs/bedrock_lab.md`](docs/bedrock_lab.md)*
 
-`POST /api/advisor` answers fantasy-basketball questions with Claude Sonnet on Bedrock, grounded in the day's projection slate. It runs as a **separate ECS service** (`ADVISOR_ENABLED=1`) with its own task role — the main API service never imports the module and has no Bedrock permissions.
+`POST /api/advisor` answers fantasy-basketball questions with Claude Sonnet on Bedrock, grounded in two data tiers: the day's projection slate (when there are games) and season-average actuals for every player with ≥15 games — so trade/keeper/draft questions and the offseason work too (plan: [`docs/advisor_scope_plan.md`](docs/advisor_scope_plan.md)). It runs as a **separate ECS service** (`ADVISOR_ENABLED=1`) with its own task role — the main API service never imports the module and has no Bedrock permissions.
 
 **Stateless, single-turn — there are no sessions.** Every request sends exactly one user message with no conversation history; nothing is remembered between calls. The closest thing to a "session" limit is the concurrency gate: one in-flight request per IP, four globally.
 
-**Context & token limits.** There is no explicit input-token limit; input is bounded indirectly by character caps on everything user-controlled — prompt 2,000 chars, roster 2,500, matchup score 500. The rest of the context is assembled server-side (day's projections, injury report capped at 80 rows, 7-day schedule counts), is stable for the whole day, and sits behind a prompt-cache breakpoint so repeat calls are mostly cache reads. Output is hard-capped at `ADVISOR_MAX_TOKENS` (800), with the system prompt additionally asking for <250 words.
+**Context & token limits.** There is no explicit input-token limit; input is bounded indirectly by character caps on everything user-controlled — prompt 2,000 chars, roster 2,500, matchup score 500. The rest of the context is assembled server-side (day's projections + injury report capped at 80 rows when a slate is current, season averages for ~470 players ≈ 14k tokens, 7-day schedule counts), is stable for the whole day, and sits behind a prompt-cache breakpoint so repeat calls are mostly cache reads. Output is hard-capped at `ADVISOR_MAX_TOKENS` (800), with the system prompt additionally asking for <250 words.
 
 **Rate limiting** (in-process, evaluated cheapest-first before any token is spent):
 
@@ -1361,7 +1361,7 @@ LAL @ BOS                 BOS         62.0%     58.2%     +3.5 pts   +/-8.2
 | Per-IP burst bucket | 5-request burst, refills 1 per 30 s | (constants in code) |
 | Concurrency | 1 in-flight per IP, 4 global | `ADVISOR_MAX_CONCURRENCY` |
 
-After the rate gates: optional Cloudflare Turnstile check (inert unless `TURNSTILE_SECRET_ARN` is set), then a **topical gate** — requests with no basketball signal (fantasy lexicon or current-slate player/team names) are rejected before any Bedrock spend. The client IP comes from the second-from-last `X-Forwarded-For` entry (leading entries are spoofable behind CloudFront → ALB) and only a truncated SHA-256 hash is ever logged. Every request is archived as JSON to S3 (`advisor_inputs/`, hashed IP only) for Athena analysis.
+After the rate gates: optional Cloudflare Turnstile check (inert unless `TURNSTILE_SECRET_ARN` is set), then a **topical gate** — requests with no basketball signal (fantasy lexicon, or any current-slate or season-universe player/team name) are rejected before any Bedrock spend. The client IP comes from the second-from-last `X-Forwarded-For` entry (leading entries are spoofable behind CloudFront → ALB) and only a truncated SHA-256 hash is ever logged. Every request is archived as JSON to S3 (`advisor_inputs/`, hashed IP only) for Athena analysis.
 
 **Caveat:** all counters live in process memory, so they reset when the ECS task restarts, and each task enforces its own caps if the service is ever scaled beyond one task.
 

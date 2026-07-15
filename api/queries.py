@@ -787,3 +787,77 @@ def player_predictions_for_date(game_date: str) -> list[dict]:
     """
     with get_engine().connect() as conn:
         return _rows(conn.execute(sa.text(q), {'mt': _PLAYER_MODEL_TYPE, 'd': game_date}))
+
+
+def player_season_averages(min_gp: int = 15) -> tuple[Optional[str], list[dict]]:
+    """(season_label, rows) — per-player per-game averages for the most recent
+    season, actual results from boxscores (not model output). Grounds the
+    advisor's season tier: trades, keeper/draft questions, players without a
+    slate projection, and the whole offseason.
+
+    Season = games sharing the latest SEASON_ID year digit(s); regular season,
+    playoffs, play-in and Cup count (type digits 2/4/5/6 — preseason and
+    All-Star excluded, same set as PREDICTABLE_GID_TYPES). Universe: players
+    with >= min_gp games; early in a season, when nobody clears 15 GP yet, the
+    caller's fallback re-query with a lower bar keeps the tier populated.
+    """
+    yr_q = """
+        SELECT MAX(RIGHT(CAST(SEASON_ID AS CHAR), 4)) FROM game_list
+        WHERE LEFT(CAST(SEASON_ID AS CHAR), 1) IN ('2','4','5','6')
+    """
+    # Single scan of the season's boxscore rows: averages via GROUP BY, and the
+    # player's latest name/team via MAX(CONCAT(date, ...)) instead of a second
+    # windowed pass — a two-reference CTE materializes twice and was ~2x slower.
+    q = """
+        SELECT person_id, COUNT(*) AS gp,
+               AVG(min_num) AS min_avg, AVG(points) AS pts_avg,
+               AVG(reboundsTotal) AS reb_avg, AVG(assists) AS ast_avg,
+               AVG(steals) AS stl_avg, AVG(blocks) AS blk_avg,
+               AVG(turnovers) AS tov_avg,
+               AVG(threePointersMade) AS fg3m_avg,
+               100 * SUM(fieldGoalsMade) / NULLIF(SUM(fieldGoalsAttempted), 0) AS fg_pct,
+               100 * SUM(freeThrowsMade) / NULLIF(SUM(freeThrowsAttempted), 0) AS ft_pct,
+               MAX(CONCAT(DATE_FORMAT(game_date, '%Y%m%d'), '|',
+                          player_name, '|', team_abbrev)) AS _latest
+        FROM (
+            SELECT p.personId AS person_id,
+                   CONCAT(p.firstName, ' ', p.familyName) AS player_name,
+                   p.teamTricode AS team_abbrev,
+                   g.GAME_DATE AS game_date,
+                   CASE
+                       WHEN p.minutes LIKE 'PT%' THEN
+                           CAST(SUBSTRING_INDEX(SUBSTRING(p.minutes, 3), 'M', 1) AS DECIMAL(8,3))
+                           + CAST(REPLACE(SUBSTRING_INDEX(p.minutes, 'M', -1), 'S', '') AS DECIMAL(8,3)) / 60
+                       WHEN p.minutes LIKE '%:%' THEN
+                           CAST(SUBSTRING_INDEX(p.minutes, ':', 1) AS DECIMAL(8,3))
+                           + CAST(SUBSTRING_INDEX(p.minutes, ':', -1) AS DECIMAL(8,3)) / 60
+                       ELSE CAST(p.minutes AS DECIMAL(8,3))
+                   END AS min_num,
+                   p.points, p.reboundsTotal, p.assists, p.steals, p.blocks,
+                   p.turnovers, p.threePointersMade,
+                   p.fieldGoalsMade, p.fieldGoalsAttempted,
+                   p.freeThrowsMade, p.freeThrowsAttempted
+            FROM boxscoretraditionalv3_player p
+            JOIN game_list g ON g.GAME_ID = p.gameId AND g.TEAM_ID = p.teamId
+            WHERE RIGHT(CAST(g.SEASON_ID AS CHAR), 4) = :yr
+              AND LEFT(CAST(g.SEASON_ID AS CHAR), 1) IN ('2','4','5','6')
+              AND COALESCE(p.minutes, '') <> ''  -- exclude DNP rows
+        ) season_games
+        GROUP BY person_id
+        HAVING COUNT(*) >= :min_gp
+    """
+    with get_engine().connect() as conn:
+        yr = conn.execute(sa.text(yr_q)).scalar()
+        if yr is None:
+            return None, []
+        rows = _rows(conn.execute(sa.text(q), {'yr': yr, 'min_gp': min_gp}))
+    # AVG()/division return Decimal — coerce so formatters treat them as numbers.
+    num_cols = ('min_avg', 'pts_avg', 'reb_avg', 'ast_avg', 'stl_avg',
+                'blk_avg', 'tov_avg', 'fg3m_avg', 'fg_pct', 'ft_pct')
+    for r in rows:
+        for k in num_cols:
+            r[k] = float(r[k]) if r[k] is not None else None
+        _, r['player_name'], r['team_abbrev'] = r.pop('_latest').split('|', 2)
+    rows.sort(key=lambda r: (r['team_abbrev'], r['player_name']))
+    label = f"{yr}-{(int(yr) + 1) % 100:02d}"  # '2025' -> '2025-26'
+    return label, rows

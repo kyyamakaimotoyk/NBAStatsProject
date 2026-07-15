@@ -1,5 +1,19 @@
 # LLM Advisor Scope Expansion — Plan (2026-07-15)
 
+> **Status (2026-07-15): Phases 1 and 3 IMPLEMENTED** (same day, Kai approved
+> the recommendations). Decisions locked: universe = ≥15 GP with an early-season
+> fallback to ≥3 GP (473 players for 2025-26, ~14k tokens); offseason
+> keeper/draft advice = yes, grounded in last season's averages with an explicit
+> no-games line. Phase 2 stays parked until the 2026-27 schedule publishes.
+> One deviation from §Phase 1 item 5: the web heading keeps "projection slate:
+> {d}" when a fresh slate exists and shows a "based on season stats" variant
+> when `slate_date` is null, instead of a single "data as of" wording.
+> Implementation notes: the topical gate's name tokens are length-filtered
+> (≥3 chars) — initials ("A.J." → "a") otherwise match ordinary English and
+> defeat the gate; the season query is a single GROUP BY scan with latest
+> name/team via `MAX(CONCAT(date,'|',name,'|',team))` (a two-reference CTE
+> materialized twice and was ~12x slower).
+
 Goal: the fantasy advisor should answer the questions fantasy players actually
 have — trades, keepers, draft prep, week-ahead streaming, "how good is this
 player" — not only start/sit questions about the current slate. Today it is

@@ -156,7 +156,7 @@ export default function AdvisorPage() {
       {busy && <p className="status">{t.advisor.thinking}</p>}
       {result && (
         <>
-          <h2>{t.advisor.answerHeading(result.slate_date ?? "—")}</h2>
+          <h2>{t.advisor.answerHeading(result.slate_date ?? null)}</h2>
           {/* Model output is untrusted: rendered as plain text only. */}
           <div className="advisor-answer">
             {result.advice.split(/\n{2,}/).map((para, i) => (

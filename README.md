@@ -609,13 +609,22 @@ A model bundle has three logically distinct datasets — *training*, *calibratio
 ### 1. Training data selection
 **`modeling/predict_games.py` `_prepare_training_data(engine)`** loads the current feature snapshot *in its entirety* (no date filtering) via `core/features_io.py` — the `features` table at the version `feature_set_current` points to, falling back to the legacy `nba_ml_features.csv` only if the DB is unavailable. The snapshot is built by `data_engineering/feature_engineering.py::build_feature_dataset`, which runs through the latest available game.
 
-Then **`predict_games.py:1213-1218`** does the actual train/eval split:
+**What the model actually consumes — the E22 pruned set (2026-07-16).** The snapshot stores ~770 columns, but since E22 (`docs/model_tuning_log.md` §E22) the training loaders select the **252-column group-pruned set** (`ENABLE_E22_PRUNED_DEFAULT` + `outputs/e22_keep_columns_top250.json` in `core/features.py`), down from 573. The cut was chosen by multi-seed out-of-sample permutation importance and was *non-inferior-to-better* across all three model families. Thematically, what survived says a lot about where the signal lives:
+
+- **ELO and availability own the top**: `ELO_DIFF` is the single most important feature group, with the availability block right behind it — `PLAYERS_OUT`, all eight `SLOT_n_IMPACT` groups, `TOTAL_AVAILABLE/MISSING_IMPACT`, `STAR_PLAYER_IMPACT`, `ROSTER_DEPTH_SCORE`.
+- **Rim/paint defense and tracking-hustle stats ranked surprisingly high** (`defendedAtRimFieldGoals*`, `oppPointsPaint`, `contestedShots`, `boxOuts`, `looseBallsRecovered`) — the non-obvious survivors, and the best evidence the tracking-data ingestion earns its keep.
+- **Schedule and travel made the cut** (`distance_L10/L5`, `IS_BACK_TO_BACK`, `REST_DAYS`, `GAMES_LAST_7_DAYS`) — small but orthogonal signal.
+- **What got cut (~320 columns)**: the raw L5/L10 counting-stat wall — PTS/AST/REB/STL/BLK/FGM/FGA rolling averages and duplicated L5-vs-L10 horizon pairs. The model keeps *rates, context and availability*; raw volume stats are redundant with what ELO and the rating columns already encode.
+
+Full ranking: `outputs/e22_feature_ranks_groups.csv` / `..._columns.csv`. The pruning applies at model-input time only — snapshots stay full-width, so reverting is a one-line toggle.
+
+Then the loaders do the actual train/eval split via the `eval_split` returned by `_prepare_training_data` (2026-07-16 leak fix — eval preprocessing is fit on the train slice only):
 ```python
-n_samples = len(X_scaled)
-split_idx = int(n_samples * 0.8)
-X_train, X_test = X_scaled[:split_idx], X_scaled[split_idx:]
+(ml_df, feature_cols, X_scaled, y_clf, y_reg, scaler_tuple,
+ eval_split) = _prepare_training_data(engine)
+X_train, X_test, split_idx = eval_split
 ```
-That is a **temporal 80/20 split** — first 80% of rows (sorted by `GAME_DATE`) trains an evaluation model; the last 20% is held out. The boundary dates are captured at `predict_games.py:1220` via `_split_window_dates` (defined at line 1917) and stored in the registry rows so you can audit them. Same pattern repeats in `load_or_train_xgb_models` (~line 1475) and the PyTorch loaders (~line 1711).
+That is a **temporal 80/20 split** — first 80% of rows (sorted by `GAME_DATE`) trains an evaluation model; the last 20% is held out (preprocessed with train-slice-fit imputer/scaler). The boundary dates are captured via `_split_window_dates` and stored in the registry rows so you can audit them. The same pattern repeats in the RF, XGB, and PyTorch loaders.
 
 ### 2. Isotonic calibration data selection
 **`predict_games.py:1294-1300`**:

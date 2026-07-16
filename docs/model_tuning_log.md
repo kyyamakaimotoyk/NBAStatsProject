@@ -1395,6 +1395,30 @@ either family; per-window margins inside pre-registered bounds. **top150 XGB
 pooled MAE +.114 significantly AGAINST (t p=.038)** and its per-window MAE
 margin breached — the 152-column cut is too deep for XGB's margin head.
 
+**What survived, thematically** (252 columns = 87 base-feature groups; full
+ranking in `outputs/e22_feature_ranks_groups.csv`):
+
+- **ELO and availability own the top of the ranking**: ELO_DIFF is the #1
+  group (fitting — the only feature that ever cleared the E12 noise gate),
+  with ELO_P_HOME and HOME/AWAY_ELO close behind, and the availability block
+  right alongside — PLAYERS_OUT (#2), all eight SLOT_n_IMPACT groups,
+  TOTAL_AVAILABLE/MISSING_IMPACT, STAR_PLAYER_IMPACT, ROSTER_DEPTH_SCORE.
+  This independently corroborates the assessment's #1 priority:
+  availability/talent-minutes is where the model's signal lives.
+- **Rim/paint defense and tracking-hustle features ranked surprisingly
+  high**: defendedAtRimFieldGoals{Made,Attempted}_L5/L10, oppPointsPaint,
+  contestedShots, boxOuts, looseBallsRecovered — the non-obvious survivors,
+  and the strongest argument that the tracking-data ingestion earns its keep.
+- **Schedule and travel made the cut**: distance_L10/L5, IS_BACK_TO_BACK,
+  REST_DAYS, GAMES_LAST_7_DAYS — individually small but orthogonal, exactly
+  the feature class the assessment predicted would survive paired tests.
+- **What got cut (~320 columns)**: the bulk of the raw L5/L10 counting-stat
+  wall — PTS/AST/REB/STL/BLK/FGM/FGA rolling averages and most duplicated
+  L5-vs-L10 horizon pairs where one horizon carried the signal. The pruned
+  model keeps *rates, context and availability* and drops the raw volume
+  stats that ELO and the ratings columns already encode — which is the
+  saturation diagnosis (456 inter-correlated rolling columns) made concrete.
+
 **Pre-registration deviation, documented:** the W5 screening gate required
 `acc_diff_ci_lo > −0.015` on both families; top250|XGB's floor came in at
 −0.0174 (miss by 0.0024) with a point estimate of **+1.7pp in favor**. The

@@ -115,3 +115,6 @@ infra/nba_data.sql
 
 # Datasets
 outputs/p1_player_dataset.pkl
+
+# Experiment-loop frozen feature snapshot (regenerate via scripts/export_features_snapshot.py)
+nba_ml_features_frozen.csv

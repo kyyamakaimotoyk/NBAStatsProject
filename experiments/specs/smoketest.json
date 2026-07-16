@@ -1,0 +1,8 @@
+{
+  "experiment_id": "E00_SMOKE",
+  "baseline_arm": "incumbent",
+  "arms": {
+    "incumbent": {},
+    "minus10": {"columns_file": "outputs/smoketest_keep_columns.json"}
+  }
+}

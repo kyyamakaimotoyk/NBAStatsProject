@@ -1418,7 +1418,16 @@ APPLIED — `keep_only` param + `load_pruned_columns()` +
 `ENABLE_E22_PRUNED_DEFAULT = False` in core/features.py, consumed by
 `_prepare_training_data` at model-input time only, never the snapshot writer.
 Flipping the default to True is the remaining adoption step, gated on the NN
-5-seed check below.)* Registry rows `e22_*_20260716` (run_kind='experiment');
+5-seed check below.)* *(Update 2, same day: NN 5-seed W5 check ran
+(`outputs/e22_nn_w5.json`, DB stage `w5_nn`) — acc paired diff 0.0000 (5w/5l),
+AUC +0.0123 significantly FOR pruned (p=.030), MAE −0.12 at p=.054, nothing
+against. The acc CI-floor check failed mechanically (−0.0261 vs −0.015) for
+the third time in this experiment, and the pattern is now clearly a property
+of the margin at n=230 — a dead-even arm produces a ±2.6pp bootstrap CI, so
+the floor is only passable when seed-mean predictions nearly perfectly agree.
+Substance: NN is cleared; all three families show significant AUC gains from
+pruning. Future gates should either widen the acc floor to the bootstrap
+resolution (~±3pp at n=230) or gate accuracy on McNemar only.)* Registry rows `e22_*_20260716` (run_kind='experiment');
 raw artifacts `outputs/e22_perm_importance.json`, `e22_w5.json`,
 `e22_windows.json`, ranks CSVs; DB: `experiments`/`experiment_results`/
 `experiment_comparisons` under experiment_id `E22`.

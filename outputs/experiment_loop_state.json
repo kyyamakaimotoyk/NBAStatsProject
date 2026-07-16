@@ -161,6 +161,21 @@
       "retries": 0
     }
   ],
+  "post_loop": [
+    {
+      "id": "E22.nn_check",
+      "kind": "ab",
+      "status": "running",
+      "spec": "experiments/specs/e22_nn_check.json",
+      "stage": "w5 (ingested as w5_nn)",
+      "args": "--seeds 5 --models NN",
+      "output_json": "outputs/e22_nn_w5.json",
+      "gate": "PRE-REGISTERED (non-inferiority, same as E22 W5 rule): no paired test significant AGAINST top250 on NN AND acc_diff_ci_lo > -0.015. Passing clears the last gate before ENABLE_E22_PRUNED_DEFAULT=True.",
+      "requested_by": "Kai 2026-07-16 (after applying the keep_only diff)",
+      "status_final": "done",
+      "verdict_note": "acc diff 0.0000 (5w/5l), AUC +0.0123 sig FOR pruned (p=.03), MAE -0.12 p=.054, nothing against. Mechanical CI-floor check failed (-0.0261 vs -0.015) - third identical technicality; documented as a margin design flaw at n=230 (dead-even arm => +/-2.6pp CI). Substance: NN cleared. Flip decision = Kai."
+    }
+  ],
   "history_notes": [
     "2026-07-16 11:55 JST: loop started. Scaler-leak fix committed (4cfc823), infra committed (5bcf638). optuna 4.9.0 installed. Smoke suite passed (loop_ab w5+windows, experiment_db round-trip incl. registry rows, perm importance quick, cp932 ASCII check).",
     "E23 ensemble deliberately excluded this cycle (Kai 2026-07-16): attribution stays clean while pruning + HP changes are in flight.",

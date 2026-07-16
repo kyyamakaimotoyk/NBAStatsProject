@@ -41,6 +41,7 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **E18** | **Calibration audit + logging fix + leakage guard** | User-surfaced bug: Game Predictions tab showed NYK winner for CLE@NYK 2026-05-25 while Model Evaluation tab showed CLE pick logged — same model, same game, different pick. Root cause: dashboard reads E13 isotonic-calibrated classifier; the logging path in `predict_games.py` still derived `predicted_winner` from the **regressor margin sign** (`result['win_prob']` = `np.mean(margin_samples > 0)`), an older signal that pre-dates E13. Two-headed model → two different picks near the boundary. Also surfaced: bundle metadata stored no `data_through_date`, so the backfill loop happily predicted for dates within the training window with no warning. | (1) Logging now uses calibrated classifier: `p_cal = result['win_prob_classifier']`; `predicted_winner = home if p_cal > 0.5 else away`. (2) New `home_win_probability_raw` column added via idempotent migration in `prediction_tracker.ensure_table_exists`; the pre-isotonic prob is logged alongside the calibrated one. NN/NN-embed have no isotonic wrapper → raw == calibrated. (3) Bundle metadata gains `train_start_date / train_end_date / eval_start_date / eval_end_date / data_through_date` (the latest GAME_DATE the production model saw). (4) Backfill loop in `predict_games.py` gates on `data_through_date`: dates ≤ that are skipped with a loud message; `--allow-leakage` overrides. (5) Model Evaluation per-game table now shows **Win% raw** + **Win% cal** side-by-side; for legacy rows raw is NULL. | Data fix only (no model retrain). Game Predictions and Model Evaluation now read the same field. Backfill predictions on training-window dates are refused by default — past metrics on those rows were optimistic by an unmeasured amount. **A/B comparison columns ready**: re-run `predict_games.py --start-date X --end-date Y --no-shap --no-plot` for `X > data_through_date` to populate `home_win_probability_raw` and start the raw-vs-calibrated comparison. | **Implemented 2026-05-26** — see "Calibration audit & leakage guard" section below. |
 | **P1** | **Player counting-stat projections** — dataset + baselines + two-stage XGB + 3-season validation/calibration report | New product surface (public `/players` projection table + Bedrock LLM fantasy advisor, docs/player_projections_plan.md) needs per-player MIN + PTS/REB/AST/STL/BLK/TOV/3PM/3PA/FTM/FTA. User-set ship gate: deep calibration + validation on the last 3 seasons before `/players` goes public. | `experiments/p1_player_dataset.py`: 57,854 top-8-by-rolling-MPG player-games (2023-24 → 2025-26 regular seasons, 2022-23 warm-up), ~150 leakage-safe shift-1 features incl. approved Tier-2 groups A/B/C/G (opportunity/hustle, vacated minutes/usage, Vegas spread/total/implied). `p1_player_models.py`: naive L10, Marcel shrinkage (must-beat), two-stage XGB (minutes model × per-36 rates; `count:poisson` with log-minutes exposure for STL/BLK/TOV/3PA/FTA; 3PM/FTM = attempts × shrunken make-rate). `p1_player_validation.py`: 2 season walk-forward folds, paired t-tests, decile reliability, Poisson frequency calibration, split-conformal coverage, minutes-vs-rate decomposition, slices, fantasy aggregates, feature-target correlation matrix. | **XGB beats Marcel on 10/11 targets in both folds, all p≤2.6e-11** (MIN MAE 4.93→4.63 / 4.87→4.59; PTS 5.23→5.03 / 5.17→4.96; 3PA −0.16; STL flat — R²≈0.08, near-noise). Decile calibration tight; conformal coverage 0.78-0.82 (80%) / 0.89-0.91 (90%); Poisson tails over-forecast elite STL/BLK bins; ~15% of PTS error attributable to the minutes model; fantasy-pts MAE 8.03 vs Marcel 8.41. Full report: docs/p1_player_validation_report.md. | **Baseline established 2026-07-09** — `/players` ship gate pending Kai's review; §P1 below |
 | **P2** | **Playoff support + 4th season** (extends P1) | Explore page showed playoff actuals with no predictions and no 2023-24 predictions; the nightly as first built would have predicted playoffs on features frozen at regular-season end. Kai: Option A (support playoffs) + extend backfill to 2023-24. | Season-year now spans regular+playoffs+play-in+Cup (`SEASON_YEAR` grouping key, `IS_PLAYOFF` feature, season-to-date accumulates through the postseason; preseason skipped via GAME_ID type digit). Warm-up 2021-22; train years 22-23..25-26 → 83,266 rows (5,708 playoff). Three walk-forward folds incl. new train-22-23→test-23-24. Harness unchanged → docs/p2_player_validation_report.md; backfill version `p2_wf_20260710`. | New fold 1 clears the gate (XGB beats Marcel 10/11, p≤5.6e-31; STL flat as in every fold). **Playoffs: XGB ≤ Marcel on 11/11 stats**; the regime shift lands in MINUTES (MAE 5.00 PO vs 4.54 reg) while PTS error *drops* in playoffs (4.79 vs 4.96 — healthy, stable-role rosters). Backfill 62,156 rows incl. postseason; 38,177 p1_wf rows retired. | **Implemented 2026-07-10** — §P2 below |
+| **P6** | **STL-serve-Marcel production decision** | STL sat at its noise floor in every P1/P2 fold (single-seed); P1 flagged "consider serving the Marcel number for steals if two more folds agree." First experiment of the 2026-07 player loop; Iter0's 3-seed baseline refresh confirmed XGB not significantly better on STL in 6/9 runs. | `experiments/loop_player_ab.py` (new generic player A/B harness, P3 protocol: 3 folds × seeds [42,7,202]) with a `serve_marcel_for: ["STL"]` arm — baseline XGB predictions with STL swapped to the fold's Marcel number, zero extra fits. Pre-registered non-inferiority gate: never significantly worse in any fold (≥2/3 seeds), mean ΔMAE ≤ +0.005, fantasy-pts MAE cost ≤ +0.01/fold. | Gate condition (a) FAILED decisively: in F2 (test 2024-25) Marcel-STL is significantly WORSE on all 3 seeds (ΔMAE +0.0035…+0.0042, p=.001–.006). Mean Δ +0.0020 and FP costs (−.010/−.001/+.006) passed. Every statistically significant difference favors XGB. | **REJECT — XGB keeps STL, production unchanged** 2026-07-16 — §P6 below |
 | **E22** | **Feature pruning — top-250 group-pruned set vs the 573-column config** | Assessment §2.1: the team feature set is saturated, not leaking — 573 cols vs ~6k train games, 456 of them inter-correlated L5/L10 rolling stats; E15's flat learning curve says signal (not sample) binds, so redundant columns mostly add variance. Pruning = assessment item #7; first experiment of the 2026-07 autonomous loop. | `experiments/e22_perm_importance.py`: OOS permutation importance (RF+XGB × clf+reg × W1–W5 test slices × 3 seeds, n_repeats=5, neg-logloss/neg-MAE), aggregated at base-feature-GROUP level (HOME_/AWAY_/DIFF_ triplets stay together) → keep-lists top250 (252 cols) / top150 (152 cols) → `experiments/loop_ab.py` A/B on frozen snapshot `20260703T072718Z` (6,363 games): W5 10-seed paired tests + 21 monthly windows × 3 seeds, pooled n=4,032. Non-inferiority gates PRE-REGISTERED in `outputs/experiment_loop_state.json` before each launch. | Pruned sets are never significantly worse anywhere, and better where it matters. W5: AUC significantly FOR pruned on all 4 arm×family pairs (+0.008…+0.022, p=.016–.044); top250 RF MAE −0.086 (t p=.002). Pooled windows: top250 passes both families; RF MAE −0.026 (t p=.003). top150 FAILS — XGB pooled MAE +0.11 significantly against (p=.038). One deviation: W5 XGB acc CI floor missed by 0.0024 (point est. +1.7pp FOR); large-n stage ruled. Ranking face-valid: ELO_DIFF #1 group, availability (PLAYERS_OUT, slot impacts) next — mirrors E9/E12. | **KEEP top250 — recommendation staged, adoption is Kai's call** 2026-07-16 — §E22 below |
 | **E24** | **First-ever hyperparameter search (Optuna TPE, XGB)** | Assessment §2.4 gap #1: HPs were hand-set once in E1 (2026-05-18) and never searched — "zero search has ever been done." Cheapest unknown-payoff item on the ranked list. | `experiments/e24_hp_search.py`: 60-trial TPE per task on the E22 top250 loop-incumbent set; objective = mean W1–W4 walk-forward logloss (clf) / MAE (reg), 2 seeds, MedianPruner, SQLite storage; incumbent enqueued as trial 0; **W5 excluded from selection**. Winner gated via `loop_ab.py` on W5 (10 seeds, paired tests vs incumbent HPs, superiority gate pre-registered). | Search preferred heavy regularization (depth 2, lr .04–.06, 500–600 trees, λ 15–30) and beat the incumbent on its own objective (logloss −0.014, MAE −0.21 on W1–W4). **On held-out W5 the advantage vanished**: paired acc diff 0.0000 (McNemar 7w/7l), MAE +0.02 (p=.82), AUC −0.001 (p=.83). Marginal per-seed metrics flattered the tuned config (acc .799 vs .782) but seed-averaged predictions were indistinguishable. | **REJECT — E1 HPs stand** 2026-07-16 — §E24 below |
 | **E25** | **Team-level prior-season eRAPTOR roster-strength aggregates** | P3's own caveat: impact metrics measure margin/possession, so the TEAM model is the natural consumer (assessment §6.2, expected 0.1–0.3 MAE). Standalone signal looked real: corr(DIFF_WMEAN, margin)=0.28, home wins 65% when positive. | `experiments/e25_eraptor_team.py`: pregame-honest roster (trailing-45d appearances minus official Out/Doubtful via `historical_injury_report`), MPG-weighted (last-10, shift-1) prior-season eRAPTOR via P3's name join → 12 cols (WMEAN/MINSUM/match-frac × HOME/AWAY/DIFF), 98.6% coverage. A/B vs the E22 top250 incumbent via `loop_ab.py`: W5 10 seeds (superiority gate, pre-registered) + 21-window diagnostic. | **W5: nothing FOR the augmented arm** (RF 3w/3l acc; XGB −2.2pp ns; all MAE/AUC ns) → gate failed, verdict locked. Diagnostic windows (labeled, could not change verdict): pooled null (best case RF acc +0.6pp, McNemar p=.074); **early-season Oct–Dec slice refutes the "helps early" hypothesis** (RF −0.35pp, XGB −1.1pp acc). Team-level twin of the P3 null: redundant with cross-season ELO + availability-aware slot impacts. | **REJECT** 2026-07-16 — §E25 below |
@@ -1622,3 +1623,73 @@ BOTH models. Registry rows `e25_*_20260716`; artifacts
 - Roster reconstruction: 45-day appearance window + last-10 MPG is one
   operating point; 5 team-games of 12,727 produced no snapshot (season-start
   edge). Not worth tightening unless the idea is revisited.
+
+## 2026-07-16 — Experiment P6: STL-serve-Marcel production decision
+
+### Why
+STL is the one target where the two-stage XGB never cleared the Marcel gate —
+flat in every P1/P2 fold (R²≈0.08, "at its noise floor"), with P1's explicit
+option on record: "consider dropping the STL model to Marcel output in
+production if two more folds agree." First gated experiment of the 2026-07
+player loop (Kai-approved plan), which also shipped the loop's instruments:
+`experiments/loop_player_ab.py` (the P3 arm idiom generalized into a
+spec-driven multi-arm harness — 3 folds × seeds [42,7,202], Marcel always
+computed, paired t on per-row |error| per stat, P3 keep-gate + E10-style
+regression-flag verdicts, per-arm add-column drop discipline with a
+137-feature baseline assert) and `core/experiment_db.py::ingest_player_json`
+(stats as model_type, folds as window_name; NO model_registry rows — the
+player model has no registry presence, versioning lives in the bundle store).
+
+**Loop baseline refresh (P4_BASE in the experiments table)**, 3 seeds — the
+multi-seed confirmation P1's caveat asked for: XGB beats Marcel with paired
+significance in ALL 9 (fold, seed) runs on 10/11 stats; STL fails in 6/9.
+F3 headline (seed-mean): MIN 4.58 vs Marcel 4.92; PTS 4.94 vs 5.15. New
+report-only diagnostics (assessment §3): MIN MAE rises 3.94 → 5.34 across
+quartiles of the player's own MIN_STD_L10 (error concentrates in
+volatile-minutes players — the reducible slice), and the blowup slice
+(actual > 1.5× season average, ~20% of player-games) shows signed PTS error
+−7.7: the point-estimate model cannot see swings, by design.
+
+### Hypothesis
+Serving the Marcel number for STL in production is non-inferior to the XGB
+head: never significantly worse in any fold (≥2/3 seeds), mean ΔMAE across
+the 9 runs ≤ +0.005, fantasy-composite MAE cost ≤ +0.01 in every fold
+(pre-registered in `outputs/player_loop_state.json`).
+
+### Setup
+`loop_player_ab.py --spec specs/p6_stl_marcel.json`: arms baseline vs
+`serve_marcel_for: ["STL"]` (baseline XGB predictions with pred_STL swapped
+to the fold's Marcel prediction — zero extra fits). 3 folds × 3 seeds;
+paired t on per-row |STL error|, Marcel-arm vs XGB baseline; fantasy
+composite (P1 FP weights) reported per arm.
+
+### Results
+| fold | seed ΔMAE (marcel − xgb) | p | sig worse? |
+|---|---|---|---|
+| F1 (23-24) | +0.0019 / +0.0022 / +0.0012 | .11 / .07 / .33 | no |
+| F2 (24-25) | **+0.0035 / +0.0038 / +0.0042** | **.006 / .003 / .001** | **yes ×3** |
+| F3 (25-26) | −0.0006 / +0.0009 / +0.0012 | .63 / .47 / .36 | no |
+
+Mean ΔMAE +0.0020 (condition b passed); FP-MAE deltas −0.010/−0.001/+0.006
+(condition c passed). Condition (a) failed: F2 shows Marcel significantly
+worse on all three seeds.
+
+### Decision
+**REJECT — XGB keeps STL; production unchanged.** The asymmetry is the
+finding: XGB's STL edge is small and fold-dependent, but every statistically
+significant difference across P1, P2, Iter0 and this experiment favors XGB;
+"noise floor" was the right description of the magnitude, not of the sign.
+P1's open option is now closed with multi-seed evidence. DB: experiment_id
+P6 (+P4_BASE for the baseline refresh); artifacts `outputs/p6_stl_marcel.json`,
+`outputs/p4_baseline.json`.
+
+### Caveats / follow-ups
+- Non-inferiority claim (and its rejection) is scoped to played games —
+  production grades predicted-but-DNP rows as zeros, which neither arm
+  addresses (minutes/availability problem, not a rates one).
+- F2's clean significance vs F1/F3's noise suggests season-to-season regime
+  differences in steal predictability; nothing actionable, just logged.
+- The volatility diagnostic (MIN error 3.94→5.34 by own-volatility quartile)
+  is the strongest pointer yet that the next real minutes gain is a
+  volatility-aware minutes model (assessment §3 gap #3 — Phase D adjacent),
+  not more mean-features.

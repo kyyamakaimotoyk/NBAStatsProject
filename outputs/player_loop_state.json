@@ -13,7 +13,7 @@
   "ground_rules": "recommend-only for production changes; commits never pushes; one background process at a time; no hard budget stop (Kai: run until queue done)",
   "budget": {"hard_stop_at": null, "started_at": "2026-07-16T18:20:00+09:00"},
   "consecutive_infra_failures": 0,
-  "current": "Iter0",
+  "current": "P4",
   "queue": [
     {
       "id": "Smoke",
@@ -23,7 +23,8 @@
     {
       "id": "Iter0",
       "kind": "player_ab",
-      "status": "running",
+      "status": "done",
+      "verdict_note": "3.9 min. XGB beats Marcel sig in ALL 9 runs on 10/11 stats; STL fails 6/9 (noise floor at multi-seed - P6 evidence). F3: MIN 4.58/PTS 4.94 (marcel 4.92/5.15). Diagnostics: MIN MAE 3.94->5.34 across own-volatility quartiles; PTS blowup slice signed err -7.7. Ingested as P4_BASE.",
       "spec": "experiments/specs/p4_baseline.json",
       "args": "--seeds 3",
       "output_json": "outputs/p4_baseline.json",
@@ -34,7 +35,8 @@
     {
       "id": "P6",
       "kind": "player_ab",
-      "status": "pending",
+      "status": "done",
+      "verdict_note": "P6 = REJECT (3.8 min). Gate (a) failed: F2 shows Marcel-STL sig WORSE on all 3 seeds (+.0035..+.0042, p=.001-.006); (b) mean +.0020 and (c) FP costs passed. XGB keeps STL; prod unchanged. Tuning-log section + master row appended.",
       "depends_on": ["Iter0"],
       "spec": "experiments/specs/p6_stl_marcel.json",
       "args": "--seeds 3",
@@ -46,7 +48,7 @@
     {
       "id": "P4",
       "kind": "player_ab",
-      "status": "pending",
+      "status": "running",
       "depends_on": ["P6"],
       "spec": "experiments/specs/p4_feature_groups.json",
       "args": "--seeds 3",

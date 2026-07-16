@@ -1,0 +1,8 @@
+{
+  "experiment_id": "E25",
+  "baseline_arm": "incumbent",
+  "arms": {
+    "incumbent": {},
+    "aug_eraptor": {"add_columns_file": "outputs/e25_eraptor_team_cols.csv"}
+  }
+}

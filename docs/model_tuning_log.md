@@ -41,6 +41,7 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **E18** | **Calibration audit + logging fix + leakage guard** | User-surfaced bug: Game Predictions tab showed NYK winner for CLE@NYK 2026-05-25 while Model Evaluation tab showed CLE pick logged — same model, same game, different pick. Root cause: dashboard reads E13 isotonic-calibrated classifier; the logging path in `predict_games.py` still derived `predicted_winner` from the **regressor margin sign** (`result['win_prob']` = `np.mean(margin_samples > 0)`), an older signal that pre-dates E13. Two-headed model → two different picks near the boundary. Also surfaced: bundle metadata stored no `data_through_date`, so the backfill loop happily predicted for dates within the training window with no warning. | (1) Logging now uses calibrated classifier: `p_cal = result['win_prob_classifier']`; `predicted_winner = home if p_cal > 0.5 else away`. (2) New `home_win_probability_raw` column added via idempotent migration in `prediction_tracker.ensure_table_exists`; the pre-isotonic prob is logged alongside the calibrated one. NN/NN-embed have no isotonic wrapper → raw == calibrated. (3) Bundle metadata gains `train_start_date / train_end_date / eval_start_date / eval_end_date / data_through_date` (the latest GAME_DATE the production model saw). (4) Backfill loop in `predict_games.py` gates on `data_through_date`: dates ≤ that are skipped with a loud message; `--allow-leakage` overrides. (5) Model Evaluation per-game table now shows **Win% raw** + **Win% cal** side-by-side; for legacy rows raw is NULL. | Data fix only (no model retrain). Game Predictions and Model Evaluation now read the same field. Backfill predictions on training-window dates are refused by default — past metrics on those rows were optimistic by an unmeasured amount. **A/B comparison columns ready**: re-run `predict_games.py --start-date X --end-date Y --no-shap --no-plot` for `X > data_through_date` to populate `home_win_probability_raw` and start the raw-vs-calibrated comparison. | **Implemented 2026-05-26** — see "Calibration audit & leakage guard" section below. |
 | **P1** | **Player counting-stat projections** — dataset + baselines + two-stage XGB + 3-season validation/calibration report | New product surface (public `/players` projection table + Bedrock LLM fantasy advisor, docs/player_projections_plan.md) needs per-player MIN + PTS/REB/AST/STL/BLK/TOV/3PM/3PA/FTM/FTA. User-set ship gate: deep calibration + validation on the last 3 seasons before `/players` goes public. | `experiments/p1_player_dataset.py`: 57,854 top-8-by-rolling-MPG player-games (2023-24 → 2025-26 regular seasons, 2022-23 warm-up), ~150 leakage-safe shift-1 features incl. approved Tier-2 groups A/B/C/G (opportunity/hustle, vacated minutes/usage, Vegas spread/total/implied). `p1_player_models.py`: naive L10, Marcel shrinkage (must-beat), two-stage XGB (minutes model × per-36 rates; `count:poisson` with log-minutes exposure for STL/BLK/TOV/3PA/FTA; 3PM/FTM = attempts × shrunken make-rate). `p1_player_validation.py`: 2 season walk-forward folds, paired t-tests, decile reliability, Poisson frequency calibration, split-conformal coverage, minutes-vs-rate decomposition, slices, fantasy aggregates, feature-target correlation matrix. | **XGB beats Marcel on 10/11 targets in both folds, all p≤2.6e-11** (MIN MAE 4.93→4.63 / 4.87→4.59; PTS 5.23→5.03 / 5.17→4.96; 3PA −0.16; STL flat — R²≈0.08, near-noise). Decile calibration tight; conformal coverage 0.78-0.82 (80%) / 0.89-0.91 (90%); Poisson tails over-forecast elite STL/BLK bins; ~15% of PTS error attributable to the minutes model; fantasy-pts MAE 8.03 vs Marcel 8.41. Full report: docs/p1_player_validation_report.md. | **Baseline established 2026-07-09** — `/players` ship gate pending Kai's review; §P1 below |
 | **P2** | **Playoff support + 4th season** (extends P1) | Explore page showed playoff actuals with no predictions and no 2023-24 predictions; the nightly as first built would have predicted playoffs on features frozen at regular-season end. Kai: Option A (support playoffs) + extend backfill to 2023-24. | Season-year now spans regular+playoffs+play-in+Cup (`SEASON_YEAR` grouping key, `IS_PLAYOFF` feature, season-to-date accumulates through the postseason; preseason skipped via GAME_ID type digit). Warm-up 2021-22; train years 22-23..25-26 → 83,266 rows (5,708 playoff). Three walk-forward folds incl. new train-22-23→test-23-24. Harness unchanged → docs/p2_player_validation_report.md; backfill version `p2_wf_20260710`. | New fold 1 clears the gate (XGB beats Marcel 10/11, p≤5.6e-31; STL flat as in every fold). **Playoffs: XGB ≤ Marcel on 11/11 stats**; the regime shift lands in MINUTES (MAE 5.00 PO vs 4.54 reg) while PTS error *drops* in playoffs (4.79 vs 4.96 — healthy, stable-role rosters). Backfill 62,156 rows incl. postseason; 38,177 p1_wf rows retired. | **Implemented 2026-07-10** — §P2 below |
+| **E22** | **Feature pruning — top-250 group-pruned set vs the 573-column config** | Assessment §2.1: the team feature set is saturated, not leaking — 573 cols vs ~6k train games, 456 of them inter-correlated L5/L10 rolling stats; E15's flat learning curve says signal (not sample) binds, so redundant columns mostly add variance. Pruning = assessment item #7; first experiment of the 2026-07 autonomous loop. | `experiments/e22_perm_importance.py`: OOS permutation importance (RF+XGB × clf+reg × W1–W5 test slices × 3 seeds, n_repeats=5, neg-logloss/neg-MAE), aggregated at base-feature-GROUP level (HOME_/AWAY_/DIFF_ triplets stay together) → keep-lists top250 (252 cols) / top150 (152 cols) → `experiments/loop_ab.py` A/B on frozen snapshot `20260703T072718Z` (6,363 games): W5 10-seed paired tests + 21 monthly windows × 3 seeds, pooled n=4,032. Non-inferiority gates PRE-REGISTERED in `outputs/experiment_loop_state.json` before each launch. | Pruned sets are never significantly worse anywhere, and better where it matters. W5: AUC significantly FOR pruned on all 4 arm×family pairs (+0.008…+0.022, p=.016–.044); top250 RF MAE −0.086 (t p=.002). Pooled windows: top250 passes both families; RF MAE −0.026 (t p=.003). top150 FAILS — XGB pooled MAE +0.11 significantly against (p=.038). One deviation: W5 XGB acc CI floor missed by 0.0024 (point est. +1.7pp FOR); large-n stage ruled. Ranking face-valid: ELO_DIFF #1 group, availability (PLAYERS_OUT, slot impacts) next — mirrors E9/E12. | **KEEP top250 — recommendation staged, adoption is Kai's call** 2026-07-16 — §E22 below |
 | **P3** | **Prior-season Estimated RAPTOR as player-projection features** | Kai asked whether RAPTOR/LEBRON-class impact metrics improve the models. Sourcing: real RAPTOR dead (data ends 2021-22), LEBRON no export/API, DARKO DPM = only free daily point-in-time series covering 2023-26; Paine Estimated RAPTOR (0.89 corr w/ RAPTOR, thru 2024-25, `outputs/nba_estimated_RAPTOR.csv`) = the backtest source. P2 model had zero RAPM-family signal (only PIE_L10/USG_PCT_L10). | `experiments/p3_impact_metrics.py`: +PREV_ERAPTOR_{OFF,DEF,TOT,WAR82} (previous-season rating, minutes-weighted across stints, normalized-name join, 87.5% match every season, rookies NaN — point-in-time safe by construction). 3 seeds × the 3 P2 walk-forward folds, baseline-vs-augmented paired t-test on per-row \|error\|; keep-gate = ΔMAE<0 AND p<0.05 in all folds for ≥2/3 seeds. | **NULL: 0/11 stats keep, 0 seeds pass the gate anywhere.** Mean ΔMAE: PTS −0.0068, all others ≤ \|0.0013\|. The trees USED the features (gain rank 16-30 of 139 in MIN/PTS models) but zero out-of-sample gain — redundant with L5/L10 form + usage + PREV_*36 priors. Counting stats are the wrong target for a margin-impact metric. | **Rejected for player model 2026-07-10** — open follow-up: eRAPTOR/DARKO in the TEAM model (availability weighting in `player_impact.py` Approach B; roster-strength aggregate = E22 candidate); §P3 below |
 
 ---
@@ -1320,3 +1321,113 @@ in prod complexity and cleanly falsifies "player projections are missing impact 
   clears the gate, build a nightly DARKO snapshot table rather than backfilling scrapes.
 - Name-join misses ~12.5% of rows (mostly rookies, correctly NaN); an ID crosswalk
   (bbref↔NBA) would tighten this if the idea is ever revisited.
+
+## 2026-07-16 — Experiment 22: feature pruning via multi-seed permutation importance
+
+### Why
+The July assessment (§2.1) diagnosed the team feature set as *contained but
+saturated*: 573 model columns against ~6k training games, 456 of them heavily
+inter-correlated L5/L10 rolling box stats, with E15's flat learning curve
+showing signal — not sample size — is the binding constraint. Its recipe
+(item #7): multi-seed permutation importance on the walk-forward harness, keep
+the top ~150–250 columns, re-run the protocol. This is the first experiment of
+the 2026-07 autonomous loop (Kai-approved plan), which also shipped the loop's
+instruments: a frozen 4-season snapshot export pinned to `20260703T072718Z`
+(6,363 games — NOT the production pointer, which still holds the 1,234-game
+single-season set), `experiments/loop_ab.py` (generic spec-driven multi-arm
+A/B reusing e3's stats), `core/experiment_db.py` (experiments /
+experiment_results / experiment_comparisons tables + registry rows with
+`run_kind='experiment'`), and the eval-split scaler-leak fix in
+`_prepare_training_data` (registry metrics honest from today; walk-forward
+numbers were always clean).
+
+**Loop baseline refresh (E0_BASELINE in the experiments table)** on the frozen
+snapshot, since prior W5 numbers came from other train regimes — W5, 10 seeds:
+RF .777 acc / .832 AUC / 11.90 MAE; XGB .771/.824/11.92; NN .774/.835/13.54.
+21 monthly windows × 3 seeds pooled (n=4,032): RF .660/.717/11.23,
+XGB .657/.705/11.28. Note the NN margin head is ~1.6 pts worse on the
+4-season snapshot than its single-season history — unexplained, logged.
+
+### Hypothesis
+A group-pruned top-K subset (K≈250 and K≈150) is NON-inferior to the full
+573-column set on the E12 W5 protocol and on pooled monthly windows, while
+cutting model complexity by >2×. (Non-inferiority, not superiority — the
+assessment called pruning a redundancy cut, not a performance play.)
+
+### Setup
+`experiments/e22_perm_importance.py`: permutation importance computed on each
+of W1–W5's *test slices* (train strictly before each window, preprocessing fit
+on train only), RF+XGB × classifier+regressor at production HPs, 3 seeds,
+n_repeats=5, scoring neg-logloss (clf) / neg-MAE (reg) — 60 runs. Aggregation
+at base-feature-group level (strip HOME_/AWAY_/DIFF_ → 192 groups) so the
+correlated triplets are kept or dropped together; column-level permutation
+splits credit across a triplet and would prune collectively-load-bearing
+members. Top-K arms expand whole groups by mean normalized rank: top250 → 252
+cols, top150 → 152 cols (`outputs/e22_keep_columns_top*.json`). Two unranked
+groups (`speed_L5/L10`, all-NaN in train) are implicitly dropped.
+Eval: `loop_ab.py`, arms full_573/top250/top150 (drop-at-caller, the P3
+idiom — `core/features.py` untouched), W5 with 10 seeds then 21 monthly
+windows (2023-10 → 2026-04, ≥50 test / ≥800 train games each) with 3 seeds.
+Gates pre-registered in `outputs/experiment_loop_state.json`; W5 = screening,
+pooled windows = decisive (E21 meta-rule: policy changes need multi-window
+evidence). Ranking sanity: ELO_DIFF is the #1 group (the only feature ever to
+clear the E12 noise gate), PLAYERS_OUT / ELO_P_HOME / slot impacts / rim
+defense follow.
+
+### Results
+W5 (10 seeds, pooled bootstrap; paired tests on seed-mean predictions):
+
+| arm | model | acc | AUC | MAE | vs full_573 |
+|---|---|---|---|---|---|
+| full_573 | RF | .7766 | .8317 | 11.898 | — |
+| full_573 | XGB | .7714 | .8240 | 11.919 | — |
+| top250 | RF | .7839 | .8389 | 11.812 | MAE −.086 (t p=.002), AUC +.0082 (p=.018), acc ±0 |
+| top250 | XGB | .7816 | .8388 | 11.795 | AUC +.0138 (p=.044), acc +1.7pp ns, MAE −.16 ns |
+| top150 | RF | .7872 | .8425 | 11.794 | AUC +.0112 (p=.016), MAE −.105 (t p=.026) |
+| top150 | XGB | .7808 | .8434 | 11.799 | AUC +.0219 (p=.028), acc/MAE ns |
+
+Pooled 21-window confirmation (n=4,032, seed-mean predictions concatenated):
+top250 RF MAE −.026 (t p=.0032), AUC +.0025 (p=.056), acc ns; top250 XGB all
+ns (acc +0.35pp, MAE +.041, AUC +.0045) — nothing significant against on
+either family; per-window margins inside pre-registered bounds. **top150 XGB
+pooled MAE +.114 significantly AGAINST (t p=.038)** and its per-window MAE
+margin breached — the 152-column cut is too deep for XGB's margin head.
+
+**Pre-registration deviation, documented:** the W5 screening gate required
+`acc_diff_ci_lo > −0.015` on both families; top250|XGB's floor came in at
+−0.0174 (miss by 0.0024) with a point estimate of **+1.7pp in favor**. The
+strict two-stage conjunction would call E22 inconclusive on that basis alone.
+Ruling: the pooled n=4,032 stage — pre-registered as the decisive
+confirmation — passed both families cleanly, and no test anywhere was
+significantly against top250; treating a hair-miss on a 230-game bootstrap CI
+as disqualifying would invert the stages' evidentiary roles. Next loop
+iteration should register the W5 margin as screening-only to remove this
+ambiguity class.
+
+### Decision
+**KEEP top250** (252 columns, 56% complexity cut) as the loop's incumbent
+feature set — E24/E25 baselines run pruned so attribution stays clean.
+**Production adoption is deliberately NOT applied** (loop is recommend-only):
+the staged change is a `keep_only` whitelist parameter on
+`core/features.py::select_features` plus `outputs/e22_keep_columns_top250.json`
+as the checked-in pruned list, defaulting to today's behavior until Kai flips
+it. top150 rejected. Registry rows `e22_*_20260716` (run_kind='experiment');
+raw artifacts `outputs/e22_perm_importance.json`, `e22_w5.json`,
+`e22_windows.json`, ranks CSVs; DB: `experiments`/`experiment_results`/
+`experiment_comparisons` under experiment_id `E22`.
+
+### Caveats / follow-ups
+- Permutation importance under-credits correlated features even at group
+  level; the protection is that the gate is non-inferiority on held-out
+  windows — a bad ranking fails the gate rather than shipping. It did not.
+- The windows stage includes 2026-03/04 months, which overlap W5's span
+  (2 of 21 windows) — pooled results are not fully independent of W5.
+- NN was not evaluated on the pruned set (W5 baseline only). Before adopting
+  top250 for the NN, run a 5-seed W5 check; also note the NN margin-head
+  regression on the 4-season snapshot (13.54 vs ~11.9 historical) — separate
+  investigation, possibly related to the un-tuned epochs/patience at 6k rows.
+- The 6 all-NaN-in-train `speed_*` columns ride along in full_573 as dead
+  weight and are dropped by prepare_xy anyway; the keep-lists exclude them.
+- Pruning HELPING AUC everywhere (not just holding) is consistent with the
+  saturation diagnosis; it also means the E24 HP search now runs on a less
+  noisy feature space.

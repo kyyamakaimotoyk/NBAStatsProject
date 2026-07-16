@@ -132,6 +132,9 @@ def make_objective(family: str, task: str, data: list, seeds: list):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--csv', default='nba_ml_features_frozen.csv')
+    p.add_argument('--columns-file', default=None,
+                   help='JSON keep-list; search runs on this pruned set '
+                        '(e.g. the E22 winner) instead of the full config')
     p.add_argument('--family', default='XGB', choices=['XGB', 'RF'])
     p.add_argument('--tasks', nargs='+', default=['clf', 'reg'],
                    choices=['clf', 'reg'])
@@ -158,6 +161,11 @@ def main():
     df, meta = load_frozen_csv(args.csv)
     from core.features import select_features
     base_cols = select_features(df.columns)
+    if args.columns_file:
+        with open(args.columns_file) as f:
+            keep = set(json.load(f))
+        base_cols = [c for c in base_cols if c in keep]
+        print(f'pruned to {len(base_cols)} columns via {args.columns_file}')
 
     print(f'{args.csv}: {len(df)} games, {len(base_cols)} features; '
           f'family={args.family} tasks={args.tasks} trials={trials} '

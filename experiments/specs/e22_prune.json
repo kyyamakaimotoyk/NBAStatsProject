@@ -1,0 +1,10 @@
+{
+  "experiment_id": "E22",
+  "baseline_arm": "full_573",
+  "arms": {
+    "full_573": {},
+    "top250": {"columns_file": "outputs/e22_keep_columns_top250.json"},
+    "top150": {"columns_file": "outputs/e22_keep_columns_top150.json"}
+  },
+  "comparisons": [["top250", "full_573"], ["top150", "full_573"]]
+}

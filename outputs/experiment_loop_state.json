@@ -4,8 +4,8 @@
   "frozen_csv": "nba_ml_features_frozen.csv",
   "feature_set_version": "20260703T072718Z",
   "incumbent": {
-    "description": "prod config: E9 on / E10 off / E11 off, 573 cols, E1 HPs",
-    "columns_file": null,
+    "description": "E22 KEEP: top250 group-pruned set (252 cols) on top of prod config E9-on/E10-off/E11-off; E1 HPs. Production NOT yet changed (recommend-only) - this is the LOOP incumbent.",
+    "columns_file": "outputs/e22_keep_columns_top250.json",
     "hp_overrides": null,
     "baseline_w5_json": "outputs/e0_baseline_w5.json",
     "baseline_windows_json": "outputs/e0_baseline_windows.json"
@@ -35,7 +35,8 @@
     {
       "id": "E0.windows",
       "kind": "ab",
-      "status": "running",
+      "status": "done",
+      "verdict_note": "21 monthly windows, pooled n=4032: RF .660/.717/11.23, XGB .657/.705/11.28. Elapsed 12.3 min. E0_BASELINE closed in DB.",
       "depends_on": ["E0.w5"],
       "spec": "experiments/specs/e0_baseline.json",
       "stage": "windows",
@@ -49,7 +50,8 @@
     {
       "id": "E22.rank",
       "kind": "perm_importance",
-      "status": "pending",
+      "status": "done",
+      "verdict_note": "192 groups ranked (60 runs). ELO_DIFF #1, PLAYERS_OUT #2, ELO_P_HOME #3, slot impacts + rim defense high. speed_L5/L10 unranked (all-NaN in train). top250->252 cols, top150->152 cols. Elapsed 5.8 min.",
       "depends_on": ["E0.w5"],
       "script": "experiments/e22_perm_importance.py",
       "args": "--seeds 3 --n-repeats 5 --topk 250 150",
@@ -62,7 +64,8 @@
     {
       "id": "E22.w5",
       "kind": "ab",
-      "status": "pending",
+      "status": "done",
+      "verdict_note": "Pruned arms BEAT full set on W5: AUC sig FOR pruned on all 4 arm-family pairs; top250 RF MAE -0.086 t_p=.002. Mechanical gate: top250|RF PASS; top250|XGB CI-floor miss by .0024; top150 both miss. PRE-COMMITTED before windows launch: preference order top250 then top150; KEEP requires the windows gate per pre-registration.",
       "depends_on": ["E22.rank"],
       "spec": "experiments/specs/e22_prune.json",
       "stage": "w5",
@@ -76,7 +79,8 @@
     {
       "id": "E22.windows",
       "kind": "ab",
-      "status": "pending",
+      "status": "done",
+      "verdict_note": "E22 = KEEP top250. Pooled n=4032: top250 passes both families (RF MAE -0.026 t_p=.0032 FOR; XGB all ns); top150 FAILS (XGB MAE +0.11 t_p=.038 against). Deviation documented in tuning log. Elapsed 21.6 min. Tuning-log section + master row appended.",
       "depends_on": ["E22.w5"],
       "spec": "experiments/specs/e22_prune.json",
       "stage": "windows",

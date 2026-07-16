@@ -120,9 +120,13 @@ ENABLE_SERIES_DEFAULT = False  # Track A: E17 ablation found NO significant play
 #
 # Caveat before flipping on: the NN was only baselined, never gated, on the
 # pruned set — run a 5-seed W5 check first (tuning log §E22 caveats).
+# The keep-list lives in core/ (NOT outputs/) because it is production config:
+# outputs/ and experiments/ are .dockerignore'd out of the pipeline image, and
+# the repo rule is that prod code never reads from either. Experiments write
+# candidate lists to outputs/; adopting one = promoting it here.
 E22_PRUNED_COLUMNS_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    'outputs', 'e22_keep_columns_top250.json')
+    os.path.dirname(os.path.abspath(__file__)),
+    'e22_keep_columns_top250.json')
 # Flipped ON 2026-07-16 (Kai): all three families cleared (tuning log §E22,
 # incl. the w5_nn check). Revert = set False; no other change needed.
 ENABLE_E22_PRUNED_DEFAULT = True
@@ -138,8 +142,8 @@ def load_pruned_columns(path: Optional[str] = None) -> list:
     if not os.path.exists(path):
         raise RuntimeError(
             f'E22 pruned-columns file not found: {path}. Regenerate via '
-            f'"python experiments/e22_perm_importance.py" or set '
-            f'ENABLE_E22_PRUNED_DEFAULT = False.')
+            f'"python experiments/e22_perm_importance.py" and promote the '
+            f'keep-list into core/, or set ENABLE_E22_PRUNED_DEFAULT = False.')
     with open(path) as f:
         return json.load(f)
 

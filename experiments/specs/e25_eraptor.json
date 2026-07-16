@@ -2,9 +2,9 @@
   "experiment_id": "E25",
   "baseline_arm": "incumbent",
   "arms": {
-    "incumbent": {"columns_file": "outputs/e22_keep_columns_top250.json"},
+    "incumbent": {"columns_file": "core/e22_keep_columns_top250.json"},
     "aug_eraptor": {
-      "columns_file": "outputs/e22_keep_columns_top250.json",
+      "columns_file": "core/e22_keep_columns_top250.json",
       "add_columns_file": "outputs/e25_eraptor_team_cols.csv"
     }
   }

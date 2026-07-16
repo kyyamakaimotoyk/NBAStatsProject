@@ -21,7 +21,7 @@ Spec schema (experiments/specs/<exp>.json):
       "baseline_arm": "full_573",
       "arms": {
         "full_573": {},
-        "top250":    {"columns_file": "outputs/e22_keep_columns_top250.json"},
+        "top250":    {"columns_file": "core/e22_keep_columns_top250.json"},
         "aug_raptor":{"add_columns_file": "outputs/e25_eraptor_team_cols.csv"},
         "xgb_tuned": {"hp": {"XGB_CLF": {...}, "XGB_REG": {...}}},
         "ens_rf_xgb":{"ensemble": ["RF", "XGB"]}

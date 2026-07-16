@@ -1462,7 +1462,15 @@ only — S3/prod untouched; cloud weekly retrain adopts the pruned set once
 the pipeline image is rebuilt from this commit. Side discovery: preloading
 torch before pandas fixes the long-standing "PyTorch unavailable (OSError)"
 — it is import ORDER, not the install; the retrain snippet preloaded torch
-and all six models trained, NN included.)* Registry rows `e22_*_20260716` (run_kind='experiment');
+and all six models trained, NN included.)*
+*(Update 4, same day — deploy prep: the keep-list moved
+`outputs/e22_keep_columns_top250.json` → `core/e22_keep_columns_top250.json`.
+`.dockerignore` excludes `outputs/` and `experiments/` from the pipeline
+image, so the cloud train stage would have crashed at `load_pruned_columns()`
+on the first pruned retrain. Convention going forward: experiments write
+candidate keep-lists to `outputs/`; ADOPTING one means promoting it into
+`core/` (production config). Spec files repointed; historical result JSONs
+keep the old path they actually ran with.)* Registry rows `e22_*_20260716` (run_kind='experiment');
 raw artifacts `outputs/e22_perm_importance.json`, `e22_w5.json`,
 `e22_windows.json`, ranks CSVs; DB: `experiments`/`experiment_results`/
 `experiment_comparisons` under experiment_id `E22`.

@@ -346,6 +346,21 @@ const en = {
     chartHeading: (name: string, stat: string) => `${name} — ${stat}, game by game`,
     backtestNote:
       "Predicted values are the model's out-of-sample backtest: each one was produced by a model trained only on earlier seasons.",
+    lineTitle: (stat: string) => `Clearing a line — ${stat}`,
+    lineLabel: "Line:",
+    tileGames: "Games",
+    tileAvg: "Average",
+    tileSd: "Std dev",
+    perGame: "per game",
+    sdSub: "spread around the average",
+    tileOver: (line: string) => `Over ${line}`,
+    overSub: (k: number, n: number, lo: string, hi: string) =>
+      `${k} of ${n} games · 95% CI ${lo}–${hi}%`,
+    tileModel: "Model-implied",
+    modelSub: "from the model's Poisson rate for this window",
+    lineCaption:
+      "The over rate counts games in the selected window that beat the line — change the line or the window and it recomputes. The confidence interval says how far a rate from this few games can be trusted; over 5 games it is wide by construction. For streaky low-count stats the model-implied tile shows the probability the model's own Poisson rate assigns to clearing the line. These are descriptive statistics about past games, not betting advice.",
+    tipProj: (v: string) => `(proj ${v})`,
     distHeading: (stat: string) => `${stat} distribution`,
     distPoissonNote:
       "The dotted line is the frequency the model's Poisson rate implies — bars far from the line mean the model mis-judges how streaky this stat is.",
@@ -811,6 +826,21 @@ const ja: Dict = {
     chartHeading: (name: string, stat: string) => `${name} — ${stat}の推移（試合ごと）`,
     backtestNote:
       "予想値はバックテストによるもので、いずれも対象シーズンより前のデータだけで学習したモデルの出力です。結果を知った上での後づけ予想ではありません。",
+    lineTitle: (stat: string) => `基準値超えの割合 — ${stat}`,
+    lineLabel: "基準値:",
+    tileGames: "試合数",
+    tileAvg: "平均",
+    tileSd: "標準偏差",
+    perGame: "1試合あたり",
+    sdSub: "平均まわりのばらつき",
+    tileOver: (line: string) => `${line}超え`,
+    overSub: (k: number, n: number, lo: string, hi: string) =>
+      `${n}試合中${k}試合 · 95%信頼区間 ${lo}–${hi}%`,
+    tileModel: "モデル推定",
+    modelSub: "この期間のポアソン率から計算した確率",
+    lineCaption:
+      "「超え」の割合は、選択中の期間で基準値を上回った試合の数え上げです。基準値や期間を変えると、その場で再計算されます。信頼区間は、この試合数から出した割合がどこまであてになるかの目安で、直近5試合のような短い期間では必然的に広くなります。ムラの大きい少数カウント系の統計値では、モデル自身のポアソン率が基準値超えに割り当てる確率も併記しています。いずれも過去の試合に関する記述統計であり、賭けを推奨するものではありません。",
+    tipProj: (v: string) => `（予想 ${v}）`,
     distHeading: (stat: string) => `${stat}の分布`,
     distPoissonNote:
       "点線は、モデルのポアソン分布が示す理論上の頻度です。棒が点線から大きく離れている場合、この統計値のムラをモデルがうまく捉えられていないことを意味します。",

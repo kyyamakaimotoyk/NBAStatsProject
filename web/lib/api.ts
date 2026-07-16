@@ -195,6 +195,9 @@ export type PlayerGameRow = {
   fg3a: number | null;
   ftm: number | null;
   fta: number | null;
+  // Personal fouls. Optional: rolled out after the stat columns, so a not-yet-
+  // redeployed API omits it — treat absent as null.
+  pf?: number | null;
   pred_min: number | null;
   pred_pts: number | null;
   pred_reb: number | null;

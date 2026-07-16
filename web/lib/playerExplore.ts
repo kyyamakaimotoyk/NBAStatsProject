@@ -54,6 +54,62 @@ export function poissonPmf(lambda: number, k: number): number {
   return Math.exp(logP);
 }
 
+// --- "Clearing a line" panel ------------------------------------------------
+
+export type WindowStats = { n: number; mean: number; sd: number | null };
+
+/** Mean and sample standard deviation over the window (sd null below n=2). */
+export function windowStats(values: number[]): WindowStats | null {
+  const n = values.length;
+  if (n === 0) return null;
+  const mean = values.reduce((a, b) => a + b, 0) / n;
+  const sd =
+    n < 2
+      ? null
+      : Math.sqrt(values.reduce((a, v) => a + (v - mean) ** 2, 0) / (n - 1));
+  return { n, mean, sd };
+}
+
+/** Default betting-style line: the window median snapped to a half point. */
+export function defaultLine(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length % 2 === 1
+    ? sorted[(sorted.length - 1) / 2]
+    : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+  return Math.floor(mid) + 0.5;
+}
+
+export type ClearRate = { k: number; n: number; pct: number; ciLo: number; ciHi: number };
+
+/**
+ * Share of games strictly over `line`, with a 95% Wilson score interval — the
+ * interval is the honest part: over 5 games it is wide by construction.
+ */
+export function clearRate(values: number[], line: number): ClearRate | null {
+  const n = values.length;
+  if (n === 0) return null;
+  const k = values.filter((v) => v > line).length;
+  const p = k / n;
+  const z = 1.96;
+  const denom = 1 + (z * z) / n;
+  const center = (p + (z * z) / (2 * n)) / denom;
+  const half = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / denom;
+  return {
+    k,
+    n,
+    pct: p * 100,
+    ciLo: Math.max(0, center - half) * 100,
+    ciHi: Math.min(1, center + half) * 100,
+  };
+}
+
+/** P(X > line) for Poisson X — matches clearRate's strictly-over convention. */
+export function poissonClearProb(lambda: number, line: number): number {
+  let cdf = 0;
+  for (let k = 0; k <= Math.floor(line); k++) cdf += poissonPmf(lambda, k);
+  return Math.max(0, 1 - cdf);
+}
+
 export type DistBin = { label: string; share: number; poisson?: number; n: number };
 
 // FIXED per-stat axes so histograms are directly comparable across players:

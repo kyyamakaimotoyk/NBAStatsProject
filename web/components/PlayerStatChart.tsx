@@ -19,6 +19,11 @@ export type PlayerChartRow = {
   is_home: number;
   actual: number | null;
   pred: number | null;
+  // Tooltip context regardless of the selected stat: minutes (with the
+  // projection where one exists) and personal fouls explain the off nights.
+  min: number | null;
+  predMin: number | null;
+  pf: number | null;
 };
 
 // Hover card: date, opponent (vs/@), predicted and actual — per the page spec.
@@ -35,6 +40,13 @@ function GameTooltip({
 }) {
   if (!active || !payload || payload.length === 0) return null;
   const row = payload[0].payload;
+  // Stat keys (MIN, PF) stay untranslated by design — see translations.ts.
+  const context: string[] = [];
+  if (statLabel !== "MIN" && row.min != null) {
+    const proj = row.predMin != null ? ` ${t.playersExplore.tipProj(row.predMin.toFixed(1))}` : "";
+    context.push(`MIN ${row.min.toFixed(1)}${proj}`);
+  }
+  if (row.pf != null) context.push(`PF ${row.pf}`);
   return (
     <div
       style={{
@@ -54,6 +66,9 @@ function GameTooltip({
       <div style={{ color: "#3b82f6" }}>
         {t.playersExplore.actual} {statLabel}: {row.actual != null ? row.actual : "—"}
       </div>
+      {context.length > 0 && (
+        <div style={{ marginTop: 4, color: "#9aa6c0" }}>{context.join(" · ")}</div>
+      )}
     </div>
   );
 }

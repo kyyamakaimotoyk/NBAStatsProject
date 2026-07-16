@@ -633,6 +633,7 @@ def player_gamelog(person_id: int, days: int = 1150) -> tuple[list[dict], Option
                p.steals AS stl, p.blocks AS blk, p.turnovers AS tov,
                p.threePointersMade AS fg3m, p.threePointersAttempted AS fg3a,
                p.freeThrowsMade AS ftm, p.freeThrowsAttempted AS fta,
+               p.foulsPersonal AS pf,
                pp.pred_min, pp.pred_pts, pp.pred_reb, pp.pred_ast, pp.pred_stl,
                pp.pred_blk, pp.pred_tov, pp.pred_fg3m, pp.pred_fg3a, pp.pred_ftm,
                pp.pred_fta

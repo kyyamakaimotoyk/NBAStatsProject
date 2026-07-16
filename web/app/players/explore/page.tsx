@@ -16,6 +16,10 @@ import {
   predKey,
   buildDistribution,
   buildErrorDistribution,
+  windowStats,
+  defaultLine,
+  clearRate,
+  poissonClearProb,
   type StatKey,
   type WindowKey,
 } from "@/lib/playerExplore";
@@ -33,6 +37,9 @@ export default function PlayersExplorePage() {
   const [personId, setPersonId] = useState<number | null>(null);
   const [statKey, setStatKey] = useState<StatKey>("pts");
   const [win, setWin] = useState<WindowKey>("season");
+  // null = auto (window median). Kept across window switches so a fixed line
+  // can be compared between windows; reset when the stat (scale) changes.
+  const [line, setLine] = useState<number | null>(null);
   const [log, setLog] = useState<PlayerGamelogResponse | null>(null);
   const [ctx, setCtx] = useState<TeamContextResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -97,26 +104,46 @@ export default function PlayersExplorePage() {
         is_home: r.is_home,
         actual: r[statKey] != null ? Number(r[statKey]) : null,
         pred: r[predKey(statKey)] != null ? Number(r[predKey(statKey)]) : null,
+        min: r.min != null ? Number(r.min) : null,
+        predMin: r.pred_min != null ? Number(r.pred_min) : null,
+        pf: r.pf != null ? Number(r.pf) : null,
       })),
     [rows, statKey, win],
   );
 
-  const dist = useMemo(() => {
-    const actuals = rows
-      .map((r) => r[statKey])
+  const actuals = useMemo(
+    () =>
+      rows
+        .map((r) => r[statKey])
+        .filter((v): v is number => v != null)
+        .map(Number),
+    [rows, statKey],
+  );
+
+  // Model's Poisson rate for the window: mean prediction, falling back to the
+  // actuals when too few games are covered. Shared by the distribution overlay
+  // and the clearing-a-line panel.
+  const lambda = useMemo(() => {
+    if (!stat.poisson) return undefined;
+    const preds = rows
+      .map((r) => r[predKey(statKey)])
       .filter((v): v is number => v != null)
       .map(Number);
-    let lambda: number | undefined;
-    if (stat.poisson) {
-      const preds = rows
-        .map((r) => r[predKey(statKey)])
-        .filter((v): v is number => v != null)
-        .map(Number);
-      const base = preds.length >= 3 ? preds : actuals;
-      if (base.length > 0) lambda = base.reduce((a, b) => a + b, 0) / base.length;
-    }
-    return buildDistribution(actuals, statKey, lambda);
-  }, [rows, statKey, stat.poisson]);
+    const base = preds.length >= 3 ? preds : actuals;
+    if (base.length === 0) return undefined;
+    return base.reduce((a, b) => a + b, 0) / base.length;
+  }, [rows, statKey, stat.poisson, actuals]);
+
+  const dist = useMemo(
+    () => buildDistribution(actuals, statKey, lambda),
+    [actuals, statKey, lambda],
+  );
+
+  const stats = useMemo(() => windowStats(actuals), [actuals]);
+  const effLine = line ?? (actuals.length > 0 ? defaultLine(actuals) : 0.5);
+  const rate = useMemo(() => clearRate(actuals, effLine), [actuals, effLine]);
+  const modelProb =
+    stat.poisson && lambda !== undefined ? poissonClearProb(lambda, effLine) : null;
 
   const errDist = useMemo(() => buildErrorDistribution(rows, statKey), [rows, statKey]);
 
@@ -157,7 +184,13 @@ export default function PlayersExplorePage() {
         </label>
         <label>
           {t.playersExplore.statLabel}{" "}
-          <select value={statKey} onChange={(e) => setStatKey(e.target.value as StatKey)}>
+          <select
+            value={statKey}
+            onChange={(e) => {
+              setStatKey(e.target.value as StatKey);
+              setLine(null); // a line only makes sense on the stat's own scale
+            }}
+          >
             {STATS.map((s) => (
               <option key={s.key} value={s.key}>
                 {s.label}
@@ -183,6 +216,65 @@ export default function PlayersExplorePage() {
 
       {!error && log && (
         <>
+          {stats && rate && (
+            <>
+              <h2>{t.playersExplore.lineTitle(stat.label)}</h2>
+              <div className="controls explore-controls">
+                <label className="inline">
+                  {t.playersExplore.lineLabel}{" "}
+                  <input
+                    type="number"
+                    step={0.5}
+                    min={0}
+                    value={effLine}
+                    onChange={(e) =>
+                      setLine(e.target.value === "" ? null : Number(e.target.value))
+                    }
+                  />
+                </label>
+              </div>
+              <div className="cards">
+                <div className="card">
+                  <div className="card-title">{t.playersExplore.tileGames}</div>
+                  <div className="card-metric">{stats.n}</div>
+                  <div className="card-sub">{t.playersExplore.windows[win]}</div>
+                </div>
+                <div className="card">
+                  <div className="card-title">{t.playersExplore.tileAvg}</div>
+                  <div className="card-metric">{stats.mean.toFixed(1)}</div>
+                  <div className="card-sub">
+                    {stat.label} {t.playersExplore.perGame}
+                  </div>
+                </div>
+                <div className="card">
+                  <div className="card-title">{t.playersExplore.tileSd}</div>
+                  <div className="card-metric">{stats.sd != null ? stats.sd.toFixed(1) : "—"}</div>
+                  <div className="card-sub">{t.playersExplore.sdSub}</div>
+                </div>
+                <div className="card">
+                  <div className="card-title">{t.playersExplore.tileOver(String(effLine))}</div>
+                  <div className="card-metric">{rate.pct.toFixed(0)}%</div>
+                  <div className="card-sub">
+                    {t.playersExplore.overSub(
+                      rate.k,
+                      rate.n,
+                      rate.ciLo.toFixed(0),
+                      rate.ciHi.toFixed(0),
+                    )}
+                  </div>
+                </div>
+                {modelProb != null && (
+                  <div className="card">
+                    <div className="card-title">{t.playersExplore.tileModel}</div>
+                    <div className="card-metric">{(modelProb * 100).toFixed(0)}%</div>
+                    <div className="card-sub">{t.playersExplore.modelSub}</div>
+                  </div>
+                )}
+              </div>
+              <p className="caption">{t.playersExplore.lineCaption}</p>
+            </>
+          )}
+
           <h2>
             {t.playersExplore.chartHeading(log.player_name ?? "", stat.label)}
           </h2>

@@ -181,6 +181,7 @@ class PlayerGameRow(BaseModel):
     fg3a: Optional[float] = None
     ftm: Optional[float] = None
     fta: Optional[float] = None
+    pf: Optional[float] = None
     pred_min: Optional[float] = None
     pred_pts: Optional[float] = None
     pred_reb: Optional[float] = None

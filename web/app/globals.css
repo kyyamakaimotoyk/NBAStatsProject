@@ -777,13 +777,17 @@ h2 {
 .sortable-th button:hover {
   color: var(--accent);
 }
-.controls input[type="date"] {
+.controls input[type="date"],
+.controls input[type="number"] {
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 4px 8px;
   font: inherit;
+}
+.controls input[type="number"] {
+  width: 5.5rem;
 }
 
 /* Fantasy advisor form + answer */

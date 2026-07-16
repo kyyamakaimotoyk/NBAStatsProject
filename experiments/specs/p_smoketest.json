@@ -1,0 +1,10 @@
+{
+  "experiment_id": "P_SMOKE",
+  "baseline_arm": "baseline",
+  "arms": {
+    "baseline": {},
+    "drop_pie": {"drop_columns": ["PIE_L10"]},
+    "mstl": {"serve_marcel_for": ["STL"]}
+  },
+  "diagnostics": true
+}

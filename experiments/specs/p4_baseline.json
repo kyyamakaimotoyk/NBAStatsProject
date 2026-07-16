@@ -1,0 +1,8 @@
+{
+  "experiment_id": "P4_BASE",
+  "baseline_arm": "baseline",
+  "arms": {
+    "baseline": {}
+  },
+  "diagnostics": true
+}

@@ -1,0 +1,8 @@
+{
+  "experiment_id": "P6",
+  "baseline_arm": "baseline",
+  "arms": {
+    "baseline": {},
+    "mstl": {"serve_marcel_for": ["STL"]}
+  }
+}

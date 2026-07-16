@@ -1,0 +1,13 @@
+{
+  "experiment_id": "P4",
+  "baseline_arm": "baseline",
+  "arms": {
+    "baseline": {},
+    "d2_fatigue": {"add_columns_file": "outputs/p4_cols_d2.parquet"},
+    "e2_elo": {"add_columns_file": "outputs/p4_cols_e2.parquet"},
+    "f2a_allowed": {"add_columns_file": "outputs/p4_cols_f2a.parquet"},
+    "f2b_dfg": {"add_columns_file": "outputs/p4_cols_f2b.parquet"},
+    "f2c_hustle": {"add_columns_file": "outputs/p4_cols_f2c.parquet"},
+    "h2_matchup": {"add_columns_file": "outputs/p4_cols_h2.parquet"}
+  }
+}

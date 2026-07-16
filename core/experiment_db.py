@@ -46,6 +46,7 @@ import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
@@ -379,6 +380,164 @@ def set_comparison_gate(engine, experiment_id: str, stage: str, arm: str,
             "AND model_type = :model AND window_name = :win"
         ), {'gate': gate, 'eid': experiment_id, 'stage': stage, 'arm': arm,
             'model': model_type, 'win': window_name})
+
+
+# ============================================================================
+# Player-loop ingest (loop_player_ab.py JSON shape)
+# ============================================================================
+
+def ingest_player_json(engine, experiment_id: str, json_path: str,
+                       stage: str = 'pfolds') -> dict:
+    """Mirror a loop_player_ab result JSON into the experiment tables.
+
+    Mapping (player experiments have per-STAT metrics, not per-model-family):
+      experiment_results  one row per (fold, seed, arm, stat): model_type=STAT
+                          name, window_name=fold name, mae; plus an 'FP' stat
+                          row for the fantasy composite; plus seed=-1 rows with
+                          the per-fold seed-mean MAE. Baselines appear as the
+                          pseudo-arms 'marcel' and 'naive'.
+      experiment_comparisons  per (fold, arm, stat) vs the baseline arm:
+                          mae_diff = seed-mean delta, paired_t_p = WORST
+                          (max) p across seeds (conservative), per-seed detail
+                          in extra_json; plus 'pooled' rows per (arm, stat)
+                          with the all-runs mean delta and the P3-gate verdict
+                          fields; plus baseline-vs-marcel rows
+                          (baseline_arm='marcel').
+
+    No model_registry rows: the player model has no registry presence
+    (versioning = bundle store + model_version in player_predictions) — a
+    documented deviation from the team loop. Idempotent per (experiment_id,
+    stage).
+    """
+    ensure_experiment_tables(engine)
+    with open(json_path) as f:
+        data = json.load(f)
+    baseline = data['spec']['baseline_arm']
+    runs = data.get('runs', [])
+    folds = data.get('folds', [])
+    seeds = data.get('seeds', [])
+
+    result_rows: List[dict] = []
+    comparison_rows: List[dict] = []
+    window_meta = {r['fold']: {'n_train': r['n_train'], 'n_test': r['n_test']}
+                   for r in runs}
+
+    def res_row(arm, stat, fold, seed, mae):
+        return {'eid': experiment_id, 'stage': stage, 'arm': arm,
+                'model': stat, 'win': fold, 'test_start': None, 'test_end': None,
+                'seed': seed,
+                'n_train': window_meta.get(fold, {}).get('n_train'),
+                'n_test': window_meta.get(fold, {}).get('n_test'),
+                'n_features': (data.get('arms_resolved', {})
+                               .get(arm, {}).get('n_features')),
+                'acc': None, 'acc_ci_lo': None, 'acc_ci_hi': None,
+                'auc': None, 'auc_ci_lo': None, 'auc_ci_hi': None,
+                'mae': _f(mae), 'mae_ci_lo': None, 'mae_ci_hi': None,
+                'logloss': None, 'brier': None, 'ece': None, 'extra': None}
+
+    for r in runs:
+        for arm, rec in r['arms'].items():
+            for stat, mae in rec['mae'].items():
+                result_rows.append(res_row(arm, stat, r['fold'], r['seed'], mae))
+            result_rows.append(res_row(arm, 'FP', r['fold'], r['seed'],
+                                       rec.get('fp_mae')))
+        for pseudo in ('marcel', 'naive'):
+            if pseudo in r:
+                for stat, mae in r[pseudo]['mae'].items():
+                    result_rows.append(res_row(pseudo, stat, r['fold'],
+                                               r['seed'], mae))
+                if 'fp_mae' in r[pseudo]:
+                    result_rows.append(res_row(pseudo, 'FP', r['fold'],
+                                               r['seed'], r[pseudo]['fp_mae']))
+
+    # seed-mean rows (seed = -1)
+    for fold in folds:
+        fold_runs = [r for r in runs if r['fold'] == fold]
+        if not fold_runs:
+            continue
+        arms = set()
+        for r in fold_runs:
+            arms.update(r['arms'])
+        for arm in arms:
+            stats_seen = fold_runs[0]['arms'][arm]['mae'].keys()
+            for stat in stats_seen:
+                vals = [r['arms'][arm]['mae'][stat] for r in fold_runs
+                        if arm in r['arms']]
+                result_rows.append(res_row(arm, stat, fold, -1,
+                                           float(np.mean(vals)) if vals else None))
+
+    def cmp_row(arm, base, stat, win, mae_diff, worst_p, extra):
+        return {'eid': experiment_id, 'stage': stage, 'arm': arm, 'base': base,
+                'model': stat, 'win': win,
+                'mcnemar_stat': None, 'mcnemar_p': None,
+                'arm_wins': None, 'base_wins': None,
+                'paired_t_stat': None, 'paired_t_p': _f(worst_p),
+                'mae_diff': _f(mae_diff), 'mae_diff_sd': None,
+                'mae_diff_ci_lo': None, 'mae_diff_ci_hi': None,
+                'mae_diff_p': None,
+                'auc_diff': None, 'auc_diff_ci_lo': None,
+                'auc_diff_ci_hi': None, 'auc_diff_p': None,
+                'acc_diff': None, 'acc_diff_ci_lo': None,
+                'acc_diff_ci_hi': None, 'acc_diff_p': None,
+                'gate': None,
+                'extra': json.dumps(extra, default=str) if extra else None}
+
+    arm_names = [a for a in data['spec']['arms'] if a != baseline]
+    stats_all = list(runs[0]['arms'][baseline]['mae'].keys()) if runs else []
+    for arm in arm_names:
+        for stat in stats_all:
+            for fold in folds:
+                entries = [(r['seed'], r['arms'][arm]['vs_baseline'][stat])
+                           for r in runs
+                           if r['fold'] == fold and arm in r['arms']
+                           and 'vs_baseline' in r['arms'][arm]]
+                if not entries:
+                    continue
+                deltas = [e['delta_mae'] for _, e in entries]
+                ps = [e['p'] for _, e in entries]
+                comparison_rows.append(cmp_row(
+                    arm, baseline, stat, fold,
+                    float(np.mean(deltas)), max(ps),
+                    {'per_seed': {str(s): e for s, e in entries}}))
+            verdict = (data.get('verdicts', {}).get(arm, {})
+                       .get('per_stat', {}).get(stat))
+            if verdict:
+                comparison_rows.append(cmp_row(
+                    arm, baseline, stat, 'pooled',
+                    verdict.get('mean_delta_mae'), None, verdict))
+    # baseline vs marcel
+    for stat in stats_all:
+        for fold in folds:
+            entries = [(r['seed'], r['xgb_vs_marcel'][stat]) for r in runs
+                       if r['fold'] == fold and stat in r.get('xgb_vs_marcel', {})]
+            if not entries:
+                continue
+            deltas = [e['delta_mae'] for _, e in entries]
+            ps = [e['p'] for _, e in entries]
+            comparison_rows.append(cmp_row(
+                baseline, 'marcel', stat, fold,
+                float(np.mean(deltas)), max(ps),
+                {'per_seed': {str(s): e for s, e in entries}}))
+
+    result_keys = ('eid', 'stage', 'arm', 'model', 'win', 'test_start',
+                   'test_end', 'seed', 'n_train', 'n_test', 'n_features',
+                   'acc', 'acc_ci_lo', 'acc_ci_hi', 'auc', 'auc_ci_lo',
+                   'auc_ci_hi', 'mae', 'mae_ci_lo', 'mae_ci_hi',
+                   'logloss', 'brier', 'ece', 'extra')
+    with engine.begin() as conn:
+        conn.execute(text(
+            f"DELETE FROM {RESULTS_TABLE} "
+            "WHERE experiment_id = :eid AND stage = :stage"
+        ), {'eid': experiment_id, 'stage': stage})
+        conn.execute(text(
+            f"DELETE FROM {COMPARISONS_TABLE} "
+            "WHERE experiment_id = :eid AND stage = :stage"
+        ), {'eid': experiment_id, 'stage': stage})
+        for row in result_rows:
+            conn.execute(_INSERT_RESULT, {k: row.get(k) for k in result_keys})
+        for row in comparison_rows:
+            conn.execute(_INSERT_COMPARISON, row)
+    return {'results': len(result_rows), 'comparisons': len(comparison_rows)}
 
 
 # ============================================================================

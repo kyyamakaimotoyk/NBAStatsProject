@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "loop": "player (P4-P7 + stretch), 2026-07-16",
+  "updated_at": "2026-07-16T18:20:00+09:00",
+  "dataset": {
+    "path": "outputs/p1_player_dataset.pkl",
+    "sha1_12": "be873fc11b77",
+    "shape": [83266, 200],
+    "data_through": "2026-06-13",
+    "note": "NEVER rebuild mid-loop (P1/P2/P3 comparability); provenance asserted at every load"
+  },
+  "protocol": "P3: folds F1/F2/F3, seeds [42,7,202], Marcel must-beat, paired ttest_rel on per-row |error| per stat; keep-gate = delta<0 AND p<0.05 in ALL folds for >=2/3 seeds",
+  "ground_rules": "recommend-only for production changes; commits never pushes; one background process at a time; no hard budget stop (Kai: run until queue done)",
+  "budget": {"hard_stop_at": null, "started_at": "2026-07-16T18:20:00+09:00"},
+  "consecutive_infra_failures": 0,
+  "current": "Iter0",
+  "queue": [
+    {
+      "id": "Smoke",
+      "status": "done",
+      "verdict_note": "Tables/columns probed (team_elo_pregame, boxscoredefensivev2_player, boxscorehustlev2_team); pickle provenance verified (83,266x200, sha be873fc11b77, thru 2026-06-13); harness --quick passed (137-feature assert, serve_marcel, diagnostics); all 6 column parquets built (coverage .988-1.000); P_SMOKE DB round-trip + cleanup verified."
+    },
+    {
+      "id": "Iter0",
+      "kind": "player_ab",
+      "status": "running",
+      "spec": "experiments/specs/p4_baseline.json",
+      "args": "--seeds 3",
+      "output_json": "outputs/p4_baseline.json",
+      "log": "logs/p4_baseline.log",
+      "gate": "none - baseline measurement (3-seed XGB-vs-Marcel refresh + provenance + residual-vs-volatility and blowup/dud diagnostic slices, report-only). Establishes the loop's 3-seed comparison basis (P1/P2 headlines were single-seed).",
+      "verdict": null
+    },
+    {
+      "id": "P6",
+      "kind": "player_ab",
+      "status": "pending",
+      "depends_on": ["Iter0"],
+      "spec": "experiments/specs/p6_stl_marcel.json",
+      "args": "--seeds 3",
+      "output_json": "outputs/p6_stl_marcel.json",
+      "log": "logs/p6.log",
+      "gate": "PRE-REGISTERED (non-inferiority): serve-Marcel-STL passes iff (a) STL never significantly worse (delta>0 AND p<0.05) in any fold for >=2/3 seeds; (b) mean STL delta_mae across all 9 (fold,seed) runs <= +0.005; (c) fantasy-pts MAE delta <= +0.01 in every fold. Pass => staged recommendation to serve Marcel STL in player_predict.py (version tag +mstl); adoption = Kai. Claim scoped to played games (prod grades DNPs as zeros).",
+      "verdict": null
+    },
+    {
+      "id": "P4",
+      "kind": "player_ab",
+      "status": "pending",
+      "depends_on": ["P6"],
+      "spec": "experiments/specs/p4_feature_groups.json",
+      "args": "--seeds 3",
+      "output_json": "outputs/p4_ab.json",
+      "log": "logs/p4_ab.log",
+      "gate": "PRE-REGISTERED (superiority, P3 keep-gate, per stat per group): KEEP group for a stat iff delta_mae<0 AND p<0.05 in ALL 3 folds for >=2/3 seeds. Group verdict = KEEP iff >=1 stat passes. REGRESSION FLAG (E10 watch, esp. F2 arms): any stat with delta_mae>0 AND p<0.05 in >=2 folds for >=2 seeds forces group REJECT regardless. MIN-analysis section of the log answers the minutes-interaction questions (D2 x B2B, blowout x volatility) descriptively.",
+      "verdict": null
+    },
+    {
+      "id": "P5",
+      "kind": "script",
+      "status": "pending",
+      "depends_on": ["P4"],
+      "script": "experiments/p5_tail_calibration.py",
+      "output_json": "outputs/p5_tail_calibration.json",
+      "log": "logs/p5.log",
+      "gate": "PRE-REGISTERED (calibration superiority + MAE non-regression): KEEP iff in ALL 3 folds, for BOTH STL and BLK, isotonic-mapped mean |implied-empirical| P(2+) over lambda>=1 bins (n>=30) < Poisson's, AND 3-bucket {0,1,2+} Brier no worse in any fold, AND per-stat MAE delta == 0 by construction (asserted). Ship-time note: refit maps on the production bundle's own calibration slice.",
+      "verdict": null
+    },
+    {
+      "id": "P7.search",
+      "kind": "script",
+      "status": "pending",
+      "depends_on": ["P5"],
+      "script": "experiments/p7_hp_search.py",
+      "output_json": "outputs/p7_hp_search.json",
+      "log": "logs/p7_search.log",
+      "gate": null,
+      "notes": "objective = mean over 11 stats of (XGB MAE / Marcel MAE), averaged over F1+F2 only (F3 reserved for the gate), 2 seeds, TPE + MedianPruner, SQLite outputs/p7_optuna.db, incumbent enqueued as trial 0",
+      "verdict": null
+    },
+    {
+      "id": "P7.gate",
+      "kind": "player_ab",
+      "status": "pending",
+      "depends_on": ["P7.search"],
+      "spec": "experiments/specs/p7_hp_gate.json (written after search)",
+      "output_json": "outputs/p7_gate.json",
+      "log": "logs/p7_gate.log",
+      "gate": "PRE-REGISTERED (superiority, P3 keep-gate): tuned HPs vs incumbent must pass the keep-gate on >=1 stat (delta<0, p<0.05, all folds, >=2/3 seeds) with NO regression-flag stat. F3 was never used for selection.",
+      "verdict": null
+    },
+    {
+      "id": "Stretch.quantile",
+      "kind": "script",
+      "status": "pending",
+      "depends_on": ["P7.gate"],
+      "gate": "NONE - exploratory prototype (Kai opt-in): PTS q10/q25/q50/q75/q90 quantile-XGB heads; report pinball loss + q10-q90 empirical coverage vs the conformal bands; informs the Phase D go/no-go. No KEEP verdict.",
+      "verdict": null
+    }
+  ],
+  "history_notes": [
+    "2026-07-16 ~18:20 JST: player loop started. Infra: loop_player_ab.py (P3 protocol generalized; per-arm add-column drop discipline + 137-feature assert), p4_feature_arms.py (6 groups built, coverage .988-1.000), ingest_player_json in experiment_db (stats as model_type, folds as window_name, NO registry rows - player model has no registry presence).",
+    "Risks pre-registered: pattern auto-capture of *_L10 adds (per-arm drop discipline is the defense); LOAD_BEARING columns refused for drops; ppm.SEED/_EXPLICIT_FEATURES/_xgb_params module globals restored in finally; F2 = E10 caution zone (regression-flag clause); team_elo_pregame ends 2026-05-13 (23 NaN F3 games in e2 arm, XGB NaN-native, prod ELO not refreshed); P1/P2 headlines were single-seed - compare within-loop only; no CI-floor margins anywhere (team-loop lesson).",
+    "Phase D distributional heads: Kai chose include-as-stretch (exploratory only); NN-embed multi-output and week-ahead serving remain out of scope."
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "csv_path": "nba_ml_features_frozen.csv",
+  "csv_meta": {
+    "feature_set_version": "20260703T072718Z",
+    "exported_at": "2026-07-16T02:40:09Z",
+    "n_rows": 6363,
+    "n_games": 6363,
+    "n_columns": 769,
+    "n_model_features_prod_config": 573,
+    "min_date": "2022-01-01",
+    "max_date": "2026-06-13",
+    "n_w5_games": 230
+  },
+  "family": "XGB",
+  "seeds": [
+    42,
+    123
+  ],
+  "trials_requested": 60,
+  "search_windows": [
+    "W1",
+    "W2",
+    "W3",
+    "W4"
+  ],
+  "studies": {
+    "e24_xgb_clf": {
+      "best_value": 0.6019778857066622,
+      "best_params": {
+        "n_estimators": 600,
+        "max_depth": 2,
+        "learning_rate": 0.042277680846582934,
+        "min_child_weight": 1,
+        "subsample": 0.8990037263598738,
+        "colsample_bytree": 0.5964550290878265,
+        "reg_lambda": 29.8911027839001,
+        "reg_alpha": 0.6634530739847289
+      },
+      "incumbent_params": {
+        "n_estimators": 200,
+        "max_depth": 4,
+        "learning_rate": 0.1,
+        "min_child_weight": 10,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "reg_lambda": 1.0
+      },
+      "incumbent_value": 0.6156575128395037,
+      "n_complete": 22,
+      "n_pruned": 38,
+      "elapsed_min": 11.0
+    },
+    "e24_xgb_reg": {
+      "best_value": 11.165542078850173,
+      "best_params": {
+        "n_estimators": 500,
+        "max_depth": 2,
+        "learning_rate": 0.05975442586075754,
+        "min_child_weight": 1,
+        "subsample": 0.9026025989056877,
+        "colsample_bytree": 0.6482854942815544,
+        "reg_lambda": 15.562513986401417,
+        "reg_alpha": 0.896176122522625
+      },
+      "incumbent_params": {
+        "n_estimators": 200,
+        "max_depth": 4,
+        "learning_rate": 0.1,
+        "min_child_weight": 10,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "reg_lambda": 1.0
+      },
+      "incumbent_value": 11.3715467284229,
+      "n_complete": 24,
+      "n_pruned": 36,
+      "elapsed_min": 11.3
+    }
+  },
+  "status": "complete",
+  "run_at": "2026-07-16T12:53:43"
+}

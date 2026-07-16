@@ -42,6 +42,7 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **P1** | **Player counting-stat projections** — dataset + baselines + two-stage XGB + 3-season validation/calibration report | New product surface (public `/players` projection table + Bedrock LLM fantasy advisor, docs/player_projections_plan.md) needs per-player MIN + PTS/REB/AST/STL/BLK/TOV/3PM/3PA/FTM/FTA. User-set ship gate: deep calibration + validation on the last 3 seasons before `/players` goes public. | `experiments/p1_player_dataset.py`: 57,854 top-8-by-rolling-MPG player-games (2023-24 → 2025-26 regular seasons, 2022-23 warm-up), ~150 leakage-safe shift-1 features incl. approved Tier-2 groups A/B/C/G (opportunity/hustle, vacated minutes/usage, Vegas spread/total/implied). `p1_player_models.py`: naive L10, Marcel shrinkage (must-beat), two-stage XGB (minutes model × per-36 rates; `count:poisson` with log-minutes exposure for STL/BLK/TOV/3PA/FTA; 3PM/FTM = attempts × shrunken make-rate). `p1_player_validation.py`: 2 season walk-forward folds, paired t-tests, decile reliability, Poisson frequency calibration, split-conformal coverage, minutes-vs-rate decomposition, slices, fantasy aggregates, feature-target correlation matrix. | **XGB beats Marcel on 10/11 targets in both folds, all p≤2.6e-11** (MIN MAE 4.93→4.63 / 4.87→4.59; PTS 5.23→5.03 / 5.17→4.96; 3PA −0.16; STL flat — R²≈0.08, near-noise). Decile calibration tight; conformal coverage 0.78-0.82 (80%) / 0.89-0.91 (90%); Poisson tails over-forecast elite STL/BLK bins; ~15% of PTS error attributable to the minutes model; fantasy-pts MAE 8.03 vs Marcel 8.41. Full report: docs/p1_player_validation_report.md. | **Baseline established 2026-07-09** — `/players` ship gate pending Kai's review; §P1 below |
 | **P2** | **Playoff support + 4th season** (extends P1) | Explore page showed playoff actuals with no predictions and no 2023-24 predictions; the nightly as first built would have predicted playoffs on features frozen at regular-season end. Kai: Option A (support playoffs) + extend backfill to 2023-24. | Season-year now spans regular+playoffs+play-in+Cup (`SEASON_YEAR` grouping key, `IS_PLAYOFF` feature, season-to-date accumulates through the postseason; preseason skipped via GAME_ID type digit). Warm-up 2021-22; train years 22-23..25-26 → 83,266 rows (5,708 playoff). Three walk-forward folds incl. new train-22-23→test-23-24. Harness unchanged → docs/p2_player_validation_report.md; backfill version `p2_wf_20260710`. | New fold 1 clears the gate (XGB beats Marcel 10/11, p≤5.6e-31; STL flat as in every fold). **Playoffs: XGB ≤ Marcel on 11/11 stats**; the regime shift lands in MINUTES (MAE 5.00 PO vs 4.54 reg) while PTS error *drops* in playoffs (4.79 vs 4.96 — healthy, stable-role rosters). Backfill 62,156 rows incl. postseason; 38,177 p1_wf rows retired. | **Implemented 2026-07-10** — §P2 below |
 | **E22** | **Feature pruning — top-250 group-pruned set vs the 573-column config** | Assessment §2.1: the team feature set is saturated, not leaking — 573 cols vs ~6k train games, 456 of them inter-correlated L5/L10 rolling stats; E15's flat learning curve says signal (not sample) binds, so redundant columns mostly add variance. Pruning = assessment item #7; first experiment of the 2026-07 autonomous loop. | `experiments/e22_perm_importance.py`: OOS permutation importance (RF+XGB × clf+reg × W1–W5 test slices × 3 seeds, n_repeats=5, neg-logloss/neg-MAE), aggregated at base-feature-GROUP level (HOME_/AWAY_/DIFF_ triplets stay together) → keep-lists top250 (252 cols) / top150 (152 cols) → `experiments/loop_ab.py` A/B on frozen snapshot `20260703T072718Z` (6,363 games): W5 10-seed paired tests + 21 monthly windows × 3 seeds, pooled n=4,032. Non-inferiority gates PRE-REGISTERED in `outputs/experiment_loop_state.json` before each launch. | Pruned sets are never significantly worse anywhere, and better where it matters. W5: AUC significantly FOR pruned on all 4 arm×family pairs (+0.008…+0.022, p=.016–.044); top250 RF MAE −0.086 (t p=.002). Pooled windows: top250 passes both families; RF MAE −0.026 (t p=.003). top150 FAILS — XGB pooled MAE +0.11 significantly against (p=.038). One deviation: W5 XGB acc CI floor missed by 0.0024 (point est. +1.7pp FOR); large-n stage ruled. Ranking face-valid: ELO_DIFF #1 group, availability (PLAYERS_OUT, slot impacts) next — mirrors E9/E12. | **KEEP top250 — recommendation staged, adoption is Kai's call** 2026-07-16 — §E22 below |
+| **E24** | **First-ever hyperparameter search (Optuna TPE, XGB)** | Assessment §2.4 gap #1: HPs were hand-set once in E1 (2026-05-18) and never searched — "zero search has ever been done." Cheapest unknown-payoff item on the ranked list. | `experiments/e24_hp_search.py`: 60-trial TPE per task on the E22 top250 loop-incumbent set; objective = mean W1–W4 walk-forward logloss (clf) / MAE (reg), 2 seeds, MedianPruner, SQLite storage; incumbent enqueued as trial 0; **W5 excluded from selection**. Winner gated via `loop_ab.py` on W5 (10 seeds, paired tests vs incumbent HPs, superiority gate pre-registered). | Search preferred heavy regularization (depth 2, lr .04–.06, 500–600 trees, λ 15–30) and beat the incumbent on its own objective (logloss −0.014, MAE −0.21 on W1–W4). **On held-out W5 the advantage vanished**: paired acc diff 0.0000 (McNemar 7w/7l), MAE +0.02 (p=.82), AUC −0.001 (p=.83). Marginal per-seed metrics flattered the tuned config (acc .799 vs .782) but seed-averaged predictions were indistinguishable. | **REJECT — E1 HPs stand** 2026-07-16 — §E24 below |
 | **P3** | **Prior-season Estimated RAPTOR as player-projection features** | Kai asked whether RAPTOR/LEBRON-class impact metrics improve the models. Sourcing: real RAPTOR dead (data ends 2021-22), LEBRON no export/API, DARKO DPM = only free daily point-in-time series covering 2023-26; Paine Estimated RAPTOR (0.89 corr w/ RAPTOR, thru 2024-25, `outputs/nba_estimated_RAPTOR.csv`) = the backtest source. P2 model had zero RAPM-family signal (only PIE_L10/USG_PCT_L10). | `experiments/p3_impact_metrics.py`: +PREV_ERAPTOR_{OFF,DEF,TOT,WAR82} (previous-season rating, minutes-weighted across stints, normalized-name join, 87.5% match every season, rookies NaN — point-in-time safe by construction). 3 seeds × the 3 P2 walk-forward folds, baseline-vs-augmented paired t-test on per-row \|error\|; keep-gate = ΔMAE<0 AND p<0.05 in all folds for ≥2/3 seeds. | **NULL: 0/11 stats keep, 0 seeds pass the gate anywhere.** Mean ΔMAE: PTS −0.0068, all others ≤ \|0.0013\|. The trees USED the features (gain rank 16-30 of 139 in MIN/PTS models) but zero out-of-sample gain — redundant with L5/L10 form + usage + PREV_*36 priors. Counting stats are the wrong target for a margin-impact metric. | **Rejected for player model 2026-07-10** — open follow-up: eRAPTOR/DARKO in the TEAM model (availability weighting in `player_impact.py` Approach B; roster-strength aggregate = E22 candidate); §P3 below |
 
 ---
@@ -1431,3 +1432,68 @@ raw artifacts `outputs/e22_perm_importance.json`, `e22_w5.json`,
 - Pruning HELPING AUC everywhere (not just holding) is consistent with the
   saturation diagnosis; it also means the E24 HP search now runs on a less
   noisy feature space.
+
+## 2026-07-16 — Experiment 24: first hyperparameter search (Optuna TPE, XGB)
+
+### Why
+Assessment §2.4 gap #1: every production hyperparameter was hand-set once in
+E1 (2026-05-18) as a sensible guess against the overfitting gap, and no search
+of any kind had ever been run. Expected payoff "0–0.3 MAE — unknown until
+tried." Second experiment of the 2026-07 autonomous loop, run on the E22
+top250 loop-incumbent feature set (pre-declared coupling: if Kai declines the
+E22 adoption, this search's conclusions apply to the pruned set, not prod).
+
+### Hypothesis
+A 60-trial TPE study per task (objective = mean out-of-sample loss across the
+W1–W4 walk-forward windows, 2 seeds; W5 deliberately excluded from selection)
+finds an XGB config that beats the E1 HPs on the E12 W5 protocol.
+
+### Setup
+`experiments/e24_hp_search.py`: search space over
+n_estimators/max_depth/learning_rate/min_child_weight/subsample/
+colsample_bytree/reg_lambda/reg_alpha; MedianPruner across windows; SQLite
+storage `outputs/e24_optuna.db` (resumable); incumbent enqueued as trial 0
+(reg_alpha pinned at the space floor) so the sampler and the comparison both
+know the current config. Gate: `loop_ab.py`, arms incumbent_pruned vs
+xgb_tuned (both on top250), W5, 10 seeds, XGB only. Superiority gate
+pre-registered: a paired test significantly FOR the tuned arm at p<0.05 AND a
+delta above the noise floor; windows confirm required before any KEEP.
+
+### Results
+Search (22 min total, ~60 trials/study, ~60% pruned): both tasks converged on
+heavy regularization — clf best: depth 2, lr 0.042, 600 trees, λ=29.9,
+α=0.66; reg best: depth 2, lr 0.060, 500 trees, λ=15.6, α=0.90. On the
+selection objective the winners beat the incumbent clearly: logloss
+0.602 vs 0.616 (−0.014), MAE 11.166 vs 11.372 (−0.206).
+
+**W5 gate: the advantage did not transfer.** Paired on seed-mean predictions
+(n=230): accuracy diff 0.0000 (McNemar 7 wins / 7 losses, p=.79); MAE diff
++0.023 (t p=.82); AUC diff −0.0013 (p=.83). Marginal per-arm bootstrap means
+looked better for tuned (acc .799 vs .782, MAE 11.60 vs 11.79) — the gap
+between marginal and paired views is seed-averaging: the low-variance
+depth-2 config gains little from averaging 10 seeds while the incumbent gains
+a lot, and seed-averaged they are statistically identical.
+
+### Decision
+**REJECT — the E1 hyperparameters stand.** No windows stage run (W5
+superiority already failed; running more stages after a failed gate is
+fishing). This is the W5-holdout design working as intended: a selection-set
+improvement that doesn't survive the held-out window is selection overfitting,
+the exact failure mode the split existed to catch. Registry rows
+`e24_*_20260716`; artifacts `outputs/e24_hp_search.json`, `e24_optuna.db`,
+`e24_w5.json`.
+
+### Caveats / follow-ups
+- The search DID find a Pareto-comparable config at half the tree depth —
+  if inference cost ever matters, depth-2/λ-heavy XGB is a free simplification
+  candidate (would need its own non-inferiority run).
+- Two seeds per trial and four windows is a thin objective; a future search
+  could use the 21 monthly windows as the objective (more data per trial,
+  less selection variance) at ~5× the trial cost. SQLite storage means the
+  existing 60 trials are reusable as warm-start.
+- The marginal-vs-paired nuance matters for production: prod serves a single
+  seed-42 model, not a 10-seed average. Single-seed per-seed W5 metrics DID
+  favor tuned on average — but with 10 single-seed comparisons the paired
+  protocol on seed-means is the house standard (E12), and it says no.
+- RF search never ran (XGB-first per plan; budget was available but the XGB
+  null lowers the prior — queue it only if a future cycle wants it).

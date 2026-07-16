@@ -94,7 +94,8 @@
     {
       "id": "E24.search",
       "kind": "optuna",
-      "status": "pending",
+      "status": "done",
+      "verdict_note": "60 trials/task on top250 (22 min): winners depth-2/lr .04-.06/500-600 trees/lambda 15-30; W1-W4 objective beat incumbent (logloss -.014, MAE -.21).",
       "depends_on": ["E22.windows"],
       "script": "experiments/e24_hp_search.py",
       "args": "--family XGB --trials 60 --seeds 2",
@@ -108,7 +109,8 @@
     {
       "id": "E24.gate",
       "kind": "ab",
-      "status": "pending",
+      "status": "done",
+      "verdict_note": "E24 = REJECT. W5 paired: acc diff 0.0000 (7w/7l), MAE +0.02 p=.82, AUC -0.001 p=.83. Selection gains did not transfer; E1 HPs stand. Windows stage skipped (gate already failed). Tuning-log section + master row appended.",
       "depends_on": ["E24.search"],
       "spec": "experiments/specs/e24_hp_gate.json",
       "stage": "w5",
@@ -122,19 +124,16 @@
     {
       "id": "E25.build",
       "kind": "build",
-      "status": "pending",
+      "status": "done",
       "script": "experiments/e25_eraptor_team.py",
       "output": "outputs/e25_eraptor_team_cols.csv",
-      "log": "logs/e25_build.log",
-      "gate": null,
-      "verdict": null,
-      "retries": 0,
-      "notes": "columns built during earlier compute; eval queued after E24"
+      "verdict_note": "Built early (12:04 JST) while E0 ran: 12 cols, 98.6% coverage, matched-minutes share .84, corr(DIFF_WMEAN, margin)=.28 standalone.",
+      "retries": 0
     },
     {
       "id": "E25.w5",
       "kind": "ab",
-      "status": "pending",
+      "status": "running",
       "depends_on": ["E25.build", "E24.gate"],
       "spec": "experiments/specs/e25_eraptor.json",
       "stage": "w5",

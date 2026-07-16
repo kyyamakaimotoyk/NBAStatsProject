@@ -1,0 +1,24 @@
+{
+  "experiment_id": "E24",
+  "baseline_arm": "incumbent_pruned",
+  "arms": {
+    "incumbent_pruned": {"columns_file": "outputs/e22_keep_columns_top250.json"},
+    "xgb_tuned": {
+      "columns_file": "outputs/e22_keep_columns_top250.json",
+      "hp": {
+        "XGB_CLF": {
+          "n_estimators": 600, "max_depth": 2, "learning_rate": 0.042277680846582934,
+          "min_child_weight": 1, "subsample": 0.8990037263598738,
+          "colsample_bytree": 0.5964550290878265, "reg_lambda": 29.8911027839001,
+          "reg_alpha": 0.6634530739847289
+        },
+        "XGB_REG": {
+          "n_estimators": 500, "max_depth": 2, "learning_rate": 0.05975442586075754,
+          "min_child_weight": 1, "subsample": 0.9026025989056877,
+          "colsample_bytree": 0.6482854942815544, "reg_lambda": 15.562513986401417,
+          "reg_alpha": 0.896176122522625
+        }
+      }
+    }
+  }
+}

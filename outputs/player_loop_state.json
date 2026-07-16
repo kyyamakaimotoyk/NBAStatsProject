@@ -5,15 +5,21 @@
   "dataset": {
     "path": "outputs/p1_player_dataset.pkl",
     "sha1_12": "be873fc11b77",
-    "shape": [83266, 200],
+    "shape": [
+      83266,
+      200
+    ],
     "data_through": "2026-06-13",
     "note": "NEVER rebuild mid-loop (P1/P2/P3 comparability); provenance asserted at every load"
   },
   "protocol": "P3: folds F1/F2/F3, seeds [42,7,202], Marcel must-beat, paired ttest_rel on per-row |error| per stat; keep-gate = delta<0 AND p<0.05 in ALL folds for >=2/3 seeds",
   "ground_rules": "recommend-only for production changes; commits never pushes; one background process at a time; no hard budget stop (Kai: run until queue done)",
-  "budget": {"hard_stop_at": null, "started_at": "2026-07-16T18:20:00+09:00"},
+  "budget": {
+    "hard_stop_at": null,
+    "started_at": "2026-07-16T18:20:00+09:00"
+  },
   "consecutive_infra_failures": 0,
-  "current": "P4",
+  "current": "P5",
   "queue": [
     {
       "id": "Smoke",
@@ -37,7 +43,9 @@
       "kind": "player_ab",
       "status": "done",
       "verdict_note": "P6 = REJECT (3.8 min). Gate (a) failed: F2 shows Marcel-STL sig WORSE on all 3 seeds (+.0035..+.0042, p=.001-.006); (b) mean +.0020 and (c) FP costs passed. XGB keeps STL; prod unchanged. Tuning-log section + master row appended.",
-      "depends_on": ["Iter0"],
+      "depends_on": [
+        "Iter0"
+      ],
       "spec": "experiments/specs/p6_stl_marcel.json",
       "args": "--seeds 3",
       "output_json": "outputs/p6_stl_marcel.json",
@@ -48,20 +56,25 @@
     {
       "id": "P4",
       "kind": "player_ab",
-      "status": "running",
-      "depends_on": ["P6"],
+      "status": "done",
+      "depends_on": [
+        "P6"
+      ],
       "spec": "experiments/specs/p4_feature_groups.json",
       "args": "--seeds 3",
       "output_json": "outputs/p4_ab.json",
       "log": "logs/p4_ab.log",
       "gate": "PRE-REGISTERED (superiority, P3 keep-gate, per stat per group): KEEP group for a stat iff delta_mae<0 AND p<0.05 in ALL 3 folds for >=2/3 seeds. Group verdict = KEEP iff >=1 stat passes. REGRESSION FLAG (E10 watch, esp. F2 arms): any stat with delta_mae>0 AND p<0.05 in >=2 folds for >=2 seeds forces group REJECT regardless. MIN-analysis section of the log answers the minutes-interaction questions (D2 x B2B, blowout x volatility) descriptively.",
-      "verdict": null
+      "verdict": null,
+      "verdict_note": "P4 = KEEP d2_fatigue only (25.5 min, 63 fits). MIN gate 3/3 seeds, delta -0.038..-0.063 p~0 every fold; MIN MAE 4.644->4.593. e2/f2a/f2b/h2 flat REJECT; f2c REJECT_REGRESSION (TOV sig worse - E10 caution replicated). Staged: D2 cols into player_dataset.py, adoption Kai."
     },
     {
       "id": "P5",
       "kind": "script",
-      "status": "pending",
-      "depends_on": ["P4"],
+      "status": "running",
+      "depends_on": [
+        "P4"
+      ],
       "script": "experiments/p5_tail_calibration.py",
       "output_json": "outputs/p5_tail_calibration.json",
       "log": "logs/p5.log",
@@ -72,7 +85,9 @@
       "id": "P7.search",
       "kind": "script",
       "status": "pending",
-      "depends_on": ["P5"],
+      "depends_on": [
+        "P5"
+      ],
       "script": "experiments/p7_hp_search.py",
       "output_json": "outputs/p7_hp_search.json",
       "log": "logs/p7_search.log",
@@ -84,7 +99,9 @@
       "id": "P7.gate",
       "kind": "player_ab",
       "status": "pending",
-      "depends_on": ["P7.search"],
+      "depends_on": [
+        "P7.search"
+      ],
       "spec": "experiments/specs/p7_hp_gate.json (written after search)",
       "output_json": "outputs/p7_gate.json",
       "log": "logs/p7_gate.log",
@@ -95,7 +112,9 @@
       "id": "Stretch.quantile",
       "kind": "script",
       "status": "pending",
-      "depends_on": ["P7.gate"],
+      "depends_on": [
+        "P7.gate"
+      ],
       "gate": "NONE - exploratory prototype (Kai opt-in): PTS q10/q25/q50/q75/q90 quantile-XGB heads; report pinball loss + q10-q90 empirical coverage vs the conformal bands; informs the Phase D go/no-go. No KEEP verdict.",
       "verdict": null
     }

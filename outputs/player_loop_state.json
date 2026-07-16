@@ -19,7 +19,7 @@
     "started_at": "2026-07-16T18:20:00+09:00"
   },
   "consecutive_infra_failures": 0,
-  "current": "P5",
+  "current": "P7.search",
   "queue": [
     {
       "id": "Smoke",
@@ -71,7 +71,7 @@
     {
       "id": "P5",
       "kind": "script",
-      "status": "running",
+      "status": "done",
       "depends_on": [
         "P4"
       ],
@@ -79,12 +79,13 @@
       "output_json": "outputs/p5_tail_calibration.json",
       "log": "logs/p5.log",
       "gate": "PRE-REGISTERED (calibration superiority + MAE non-regression): KEEP iff in ALL 3 folds, for BOTH STL and BLK, isotonic-mapped mean |implied-empirical| P(2+) over lambda>=1 bins (n>=30) < Poisson's, AND 3-bucket {0,1,2+} Brier no worse in any fold, AND per-stat MAE delta == 0 by construction (asserted). Ship-time note: refit maps on the production bundle's own calibration slice.",
-      "verdict": null
+      "verdict": null,
+      "verdict_note": "P5 = REJECT (3.3 min). Isotonic maps made P(2+) calibration WORSE (STL .023->.043; BLK flat); Brier no-worse failed 8/9 cells. Nonparametric map overfits sparse lambda>=2 slice. Follow-up logged: 1-param shrinkage or Phase D heads. Tuning-log section + row."
     },
     {
       "id": "P7.search",
       "kind": "script",
-      "status": "pending",
+      "status": "running",
       "depends_on": [
         "P5"
       ],

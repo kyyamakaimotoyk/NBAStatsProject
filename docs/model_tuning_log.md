@@ -1427,7 +1427,18 @@ of the margin at n=230 — a dead-even arm produces a ±2.6pp bootstrap CI, so
 the floor is only passable when seed-mean predictions nearly perfectly agree.
 Substance: NN is cleared; all three families show significant AUC gains from
 pruning. Future gates should either widen the acc floor to the bootstrap
-resolution (~±3pp at n=230) or gate accuracy on McNemar only.)* Registry rows `e22_*_20260716` (run_kind='experiment');
+resolution (~±3pp at n=230) or gate accuracy on McNemar only.)*
+*(Update 3, same day — ADOPTED: Kai flipped `ENABLE_E22_PRUNED_DEFAULT=True`
+and retrained locally. New `*_20260716` bundles + registry rows
+(feature_count 252, is_current, leak-free eval split) vs the 20260703
+generation on the identical 987/247 playoff-heavy holdout: RF reg MAE
+12.60→12.47, XGB clf acc .660→.709, XGB reg 13.05→12.85, NN AUC
+.775→.791, NN reg 13.14→12.44; RF clf −1.2pp acc (noise). Local bundles
+only — S3/prod untouched; cloud weekly retrain adopts the pruned set once
+the pipeline image is rebuilt from this commit. Side discovery: preloading
+torch before pandas fixes the long-standing "PyTorch unavailable (OSError)"
+— it is import ORDER, not the install; the retrain snippet preloaded torch
+and all six models trained, NN included.)* Registry rows `e22_*_20260716` (run_kind='experiment');
 raw artifacts `outputs/e22_perm_importance.json`, `e22_w5.json`,
 `e22_windows.json`, ranks CSVs; DB: `experiments`/`experiment_results`/
 `experiment_comparisons` under experiment_id `E22`.

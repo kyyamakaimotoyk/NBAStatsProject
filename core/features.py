@@ -123,7 +123,9 @@ ENABLE_SERIES_DEFAULT = False  # Track A: E17 ablation found NO significant play
 E22_PRUNED_COLUMNS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     'outputs', 'e22_keep_columns_top250.json')
-ENABLE_E22_PRUNED_DEFAULT = False
+# Flipped ON 2026-07-16 (Kai): all three families cleared (tuning log §E22,
+# incl. the w5_nn check). Revert = set False; no other change needed.
+ENABLE_E22_PRUNED_DEFAULT = True
 
 
 def load_pruned_columns(path: Optional[str] = None) -> list:

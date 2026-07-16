@@ -22,8 +22,10 @@ When adding a new feature column to the CSV:
     below.
 """
 from __future__ import annotations
+import json
+import os
 import re
-from typing import Iterable
+from typing import Iterable, Optional
 
 
 # ----------------------------------------------------------------------------
@@ -103,6 +105,42 @@ ENABLE_SERIES_DEFAULT = False  # Track A: E17 ablation found NO significant play
                                # Build/table retained for re-eval as playoff data grows;
                                # off in production. See docs/playoff_improvement_plan.md.
 
+# ----------------------------------------------------------------------------
+# E22: group-pruned top-250 feature set (2026-07-16, tuning log §E22)
+# ----------------------------------------------------------------------------
+# Multi-seed OOS permutation importance found the 573-column config redundancy-
+# bloated; the 252-column group-pruned subset was non-inferior-to-better on the
+# W5 protocol AND 21 pooled monthly windows (RF MAE sig better both stages, AUC
+# sig better on every W5 arm x family pair; deeper 150-col cut REJECTED — XGB
+# margin regressed). The keep-list is the checked-in artifact below.
+#
+# This toggle applies at MODEL-INPUT sites only (the predict_games training
+# loaders) — never at the CSV/features-table writer: snapshots always store the full
+# column set so the pruning decision stays reversible per model generation.
+#
+# Caveat before flipping on: the NN was only baselined, never gated, on the
+# pruned set — run a 5-seed W5 check first (tuning log §E22 caveats).
+E22_PRUNED_COLUMNS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'outputs', 'e22_keep_columns_top250.json')
+ENABLE_E22_PRUNED_DEFAULT = False
+
+
+def load_pruned_columns(path: Optional[str] = None) -> list:
+    """Load the E22 keep-list (exact column names) for select_features(keep_only=...).
+
+    Raises with a pointer to the regeneration command if the artifact is
+    missing — silence here would mean silently training on the full set.
+    """
+    path = path or E22_PRUNED_COLUMNS_PATH
+    if not os.path.exists(path):
+        raise RuntimeError(
+            f'E22 pruned-columns file not found: {path}. Regenerate via '
+            f'"python experiments/e22_perm_importance.py" or set '
+            f'ENABLE_E22_PRUNED_DEFAULT = False.')
+    with open(path) as f:
+        return json.load(f)
+
 
 def get_active_patterns(*, enable_e9: bool = ENABLE_E9_DEFAULT,
                         enable_e11: bool = ENABLE_E11_DEFAULT,
@@ -129,12 +167,18 @@ def select_features(
     enable_e10: bool = ENABLE_E10_DEFAULT,
     enable_e11: bool = ENABLE_E11_DEFAULT,
     enable_series: bool = ENABLE_SERIES_DEFAULT,
+    keep_only: Optional[Iterable[str]] = None,
 ) -> list:
     """Select model-feature columns from df.columns given experiment toggles.
 
     Defaults reflect the E3 noise-aware ablation decision: E9 on, E10/E11 off.
     Track-A series-context on by default (harmless to regular season). See
     docs/e3_ablation_report.md and docs/playoff_improvement_plan.md.
+
+    ``keep_only`` (E22): an explicit whitelist applied as a FINAL intersection —
+    pattern selection and toggles run first, then anything not in the list is
+    dropped. None (default) preserves pre-E22 behavior. Pass
+    ``load_pruned_columns()`` to get the checked-in top-250 set.
 
     PLAYER_ID columns are always excluded (they're for embedding/SHAP, not as
     direct RF/XGB/NN inputs).
@@ -146,6 +190,14 @@ def select_features(
 
     if not enable_e10:
         cols = [c for c in cols if not E10_OPP_ADJ_REGEX.search(c)]
+
+    if keep_only is not None:
+        keep = set(keep_only)
+        cols = [c for c in cols if c in keep]
+        if not cols:
+            raise RuntimeError(
+                'select_features: keep_only matched zero columns - wrong '
+                'keep-list for this feature frame?')
 
     return cols
 

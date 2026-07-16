@@ -2256,8 +2256,12 @@ def _prepare_training_data(engine):
 
     # Centralized allow-list — see core/features.py for the rationale and the
     # post-mortem on the silent-drop bug this replaced.
-    from core.features import select_features
-    feature_cols = select_features(ml_df.columns)
+    # E22 pruning applies here (model input) and never at the snapshot writer,
+    # so stored feature sets stay full-width and the cut stays reversible.
+    from core.features import (ENABLE_E22_PRUNED_DEFAULT, load_pruned_columns,
+                               select_features)
+    keep_only = load_pruned_columns() if ENABLE_E22_PRUNED_DEFAULT else None
+    feature_cols = select_features(ml_df.columns, keep_only=keep_only)
 
     X = ml_df[feature_cols].copy()
     y_clf = ml_df['TARGET_WIN']

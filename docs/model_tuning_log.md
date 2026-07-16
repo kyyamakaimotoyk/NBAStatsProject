@@ -1413,7 +1413,12 @@ feature set — E24/E25 baselines run pruned so attribution stays clean.
 the staged change is a `keep_only` whitelist parameter on
 `core/features.py::select_features` plus `outputs/e22_keep_columns_top250.json`
 as the checked-in pruned list, defaulting to today's behavior until Kai flips
-it. top150 rejected. Registry rows `e22_*_20260716` (run_kind='experiment');
+it. top150 rejected. *(Update 2026-07-16, Kai-requested: the diff is now
+APPLIED — `keep_only` param + `load_pruned_columns()` +
+`ENABLE_E22_PRUNED_DEFAULT = False` in core/features.py, consumed by
+`_prepare_training_data` at model-input time only, never the snapshot writer.
+Flipping the default to True is the remaining adoption step, gated on the NN
+5-seed check below.)* Registry rows `e22_*_20260716` (run_kind='experiment');
 raw artifacts `outputs/e22_perm_importance.json`, `e22_w5.json`,
 `e22_windows.json`, ranks CSVs; DB: `experiments`/`experiment_results`/
 `experiment_comparisons` under experiment_id `E22`.

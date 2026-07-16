@@ -1382,7 +1382,7 @@ def load_or_train_rf_models(engine, force_retrain=False):
     bundle = load_model_bundle('rf') if not need_retrain else None
     if bundle is not None:
         saved_features = bundle['feature_names']
-        ml_df, current_features, _, _, _, _ = _prepare_training_data(engine)
+        ml_df, current_features, _, _, _, _, _ = _prepare_training_data(engine)
         if len(current_features) != len(saved_features):
             print(f"\nFeature count changed: {len(saved_features)} -> {len(current_features)}; retraining RF.")
             need_retrain = True
@@ -1396,7 +1396,7 @@ def load_or_train_rf_models(engine, force_retrain=False):
     if (not need_retrain
             and all(os.path.exists(p) for p in [clf_path, reg_path, scaler_path, features_path])):
         saved_features = joblib.load(features_path)
-        ml_df, current_features, _, _, _, _ = _prepare_training_data(engine)
+        ml_df, current_features, _, _, _, _, _ = _prepare_training_data(engine)
         if len(current_features) != len(saved_features):
             print(f"\nFeature count changed: {len(saved_features)} -> {len(current_features)}")
             need_retrain = True
@@ -1409,12 +1409,13 @@ def load_or_train_rf_models(engine, force_retrain=False):
 
     # Prepare data with train/test split for evaluation
     print("\nTraining Random Forest models...")
-    ml_df, feature_cols, X_scaled, y_clf, y_reg, scaler_tuple = _prepare_training_data(engine)
+    (ml_df, feature_cols, X_scaled, y_clf, y_reg, scaler_tuple,
+     eval_split) = _prepare_training_data(engine)
 
-    # Use temporal split - last 20% for test
-    n_samples = len(X_scaled)
-    split_idx = int(n_samples * 0.8)
-    X_train, X_test = X_scaled[:split_idx], X_scaled[split_idx:]
+    # Temporal 80/20 eval split. Eval matrices come preprocessed with imputer +
+    # scaler fit on the train slice only (2026-07-16 leak fix); X_scaled stays
+    # full-fit for the production retrain below.
+    X_train, X_test, split_idx = eval_split
     y_clf_train, y_clf_test = y_clf.values[:split_idx], y_clf.values[split_idx:]
     y_reg_train, y_reg_test = y_reg.values[:split_idx], y_reg.values[split_idx:]
 
@@ -1643,7 +1644,7 @@ def load_or_train_pytorch_models(engine, force_retrain=False):
     bundle = load_model_bundle('nn') if not need_retrain else None
     if bundle is not None:
         saved_features = bundle['feature_names']
-        ml_df, current_features, _, _, _, _ = _prepare_training_data(engine)
+        ml_df, current_features, _, _, _, _, _ = _prepare_training_data(engine)
         if len(current_features) != len(saved_features):
             print(f"\nFeature count changed: {len(saved_features)} -> {len(current_features)}; retraining NN.")
             need_retrain = True
@@ -1662,7 +1663,7 @@ def load_or_train_pytorch_models(engine, force_retrain=False):
     if (not need_retrain
             and all(os.path.exists(p) for p in [clf_path, reg_path, scaler_path, features_path, config_path])):
         saved_features = joblib.load(features_path)
-        ml_df, current_features, _, _, _, _ = _prepare_training_data(engine)
+        ml_df, current_features, _, _, _, _, _ = _prepare_training_data(engine)
         if len(current_features) != len(saved_features):
             print(f"\nFeature count changed: {len(saved_features)} -> {len(current_features)}")
             need_retrain = True
@@ -1683,12 +1684,13 @@ def load_or_train_pytorch_models(engine, force_retrain=False):
             return clf, reg, scaler, saved_features, target_scaler
 
     print("\nTraining PyTorch models...")
-    ml_df, feature_cols, X_scaled, y_clf, y_reg, scaler_tuple = _prepare_training_data(engine)
+    (ml_df, feature_cols, X_scaled, y_clf, y_reg, scaler_tuple,
+     eval_split) = _prepare_training_data(engine)
 
-    # Use temporal split - last 20% for test
-    n_samples = len(X_scaled)
-    split_idx = int(n_samples * 0.8)
-    X_train, X_test = X_scaled[:split_idx], X_scaled[split_idx:]
+    # Temporal 80/20 eval split. Eval matrices come preprocessed with imputer +
+    # scaler fit on the train slice only (2026-07-16 leak fix); X_scaled stays
+    # full-fit for the production retrain below.
+    X_train, X_test, split_idx = eval_split
     y_clf_train, y_clf_test = y_clf.values[:split_idx], y_clf.values[split_idx:]
     y_reg_train, y_reg_test = y_reg.values[:split_idx], y_reg.values[split_idx:]
 
@@ -1907,7 +1909,7 @@ def load_or_train_xgb_models(engine, force_retrain=False):
     bundle = load_model_bundle('xgb') if not need_retrain else None
     if bundle is not None:
         saved_features = bundle['feature_names']
-        ml_df, current_features, _, _, _, _ = _prepare_training_data(engine)
+        ml_df, current_features, _, _, _, _, _ = _prepare_training_data(engine)
         if len(current_features) != len(saved_features):
             print(f"\nFeature count changed: {len(saved_features)} -> {len(current_features)}; retraining XGB.")
             need_retrain = True
@@ -1920,7 +1922,7 @@ def load_or_train_xgb_models(engine, force_retrain=False):
     if (not need_retrain
             and all(os.path.exists(p) for p in [clf_path, reg_path, scaler_path, features_path])):
         saved_features = joblib.load(features_path)
-        ml_df, current_features, _, _, _, _ = _prepare_training_data(engine)
+        ml_df, current_features, _, _, _, _, _ = _prepare_training_data(engine)
         if len(current_features) != len(saved_features):
             need_retrain = True
         else:
@@ -1928,10 +1930,10 @@ def load_or_train_xgb_models(engine, force_retrain=False):
             return joblib.load(clf_path), joblib.load(reg_path), joblib.load(scaler_path), saved_features
 
     print("\nTraining XGBoost models...")
-    ml_df, feature_cols, X_scaled, y_clf, y_reg, scaler_tuple = _prepare_training_data(engine)
-    n_samples = len(X_scaled)
-    split_idx = int(n_samples * 0.8)
-    X_train, X_test = X_scaled[:split_idx], X_scaled[split_idx:]
+    (ml_df, feature_cols, X_scaled, y_clf, y_reg, scaler_tuple,
+     eval_split) = _prepare_training_data(engine)
+    # Temporal 80/20 eval split — see the RF loader note; same 2026-07-16 leak fix.
+    X_train, X_test, split_idx = eval_split
     y_clf_train, y_clf_test = y_clf.values[:split_idx], y_clf.values[split_idx:]
     y_reg_train, y_reg_test = y_reg.values[:split_idx], y_reg.values[split_idx:]
 
@@ -2234,7 +2236,22 @@ def _load_feature_dataset(engine):
 
 
 def _prepare_training_data(engine):
-    """Prepare training data (shared by RF and PyTorch)."""
+    """Prepare training data (shared by RF, XGB and PyTorch loaders).
+
+    Returns a 7-tuple::
+
+        ml_df, valid_cols, X_scaled, y_clf, y_reg, (imputer, scaler), eval_split
+
+    ``X_scaled`` and ``(imputer, scaler)`` are fit on ALL rows — the production
+    model retrains on every row, so its preprocessing legitimately sees every
+    row, and this fitted pair is what ships in the bundle.
+
+    ``eval_split = (X_train_eval, X_test_eval, split_idx)`` carries the temporal
+    80/20 eval matrices with imputer+scaler fit on the TRAIN SLICE ONLY, so the
+    registry eval metrics no longer absorb test-set preprocessing statistics
+    (2026-07-16 fix; assessment §2.1 item 7 — walk-forward harnesses were
+    already clean, this makes the registry rows honest too).
+    """
     ml_df = _load_feature_dataset(engine)
 
     # Centralized allow-list — see core/features.py for the rationale and the
@@ -2249,13 +2266,23 @@ def _prepare_training_data(engine):
     valid_cols = X.columns[X.notna().any()].tolist()
     X = X[valid_cols]
 
+    # Eval pass: preprocessing fit strictly on the first 80% of rows (the rows
+    # the eval models train on), applied to the held-out 20%.
+    split_idx = int(len(X) * 0.8)
+    eval_imputer = SimpleImputer(strategy='median')
+    eval_scaler = StandardScaler()
+    X_train_eval = eval_scaler.fit_transform(eval_imputer.fit_transform(X.iloc[:split_idx]))
+    X_test_eval = eval_scaler.transform(eval_imputer.transform(X.iloc[split_idx:]))
+
+    # Production pass: fit on every row for the model that actually ships.
     imputer = SimpleImputer(strategy='median')
     scaler = StandardScaler()
 
     X_imputed = imputer.fit_transform(X)
     X_scaled = scaler.fit_transform(X_imputed)
 
-    return ml_df, valid_cols, X_scaled, y_clf, y_reg, (imputer, scaler)
+    return (ml_df, valid_cols, X_scaled, y_clf, y_reg, (imputer, scaler),
+            (X_train_eval, X_test_eval, split_idx))
 
 
 def _train_pytorch_model(model, X, y, is_classifier=True, epochs=100, lr=0.001,

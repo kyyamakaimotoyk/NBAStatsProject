@@ -676,13 +676,11 @@ The split above keeps *training* honest. Separately, every **feature** in `nba_m
 | Pregame availability (E7) | `*_SLOT_X_AVAILABLE` comes from the official **pre-tip** injury report (`historical_injury_report`), not the post-game boxscore — the model sees who was *announced out*, not who actually played. | `feature_engineering.py` (`availability_source='pregame'`) |
 | `start_date` / `end_date` / 180-day buffer | The window only bounds *which rows land in the CSV*. The 180-day pre-`start_date` buffer feeds rolling context then is dropped. A given row's feature values are identical regardless of the window — so different train/backfill date ranges never change feature computation. | `feature_engineering.py:1388,1571` |
 
-**Known accepted residual — preprocessing fit (deliberately not fixed):** In `_prepare_training_data` (`predict_games.py:1955-1959`), the `SimpleImputer` (median) and `StandardScaler` are `fit_transform`ed on the **full** dataset *before* the 80/20 eval split. So those preprocessing statistics (median, mean, std) are computed using the held-out 20% too — textbook preprocessing leakage. It is left as-is on purpose because:
+**Preprocessing fit (fixed 2026-07-16):** `_prepare_training_data` historically `fit_transform`ed the `SimpleImputer` (median) and `StandardScaler` on the **full** dataset *before* the 80/20 eval split, so the registry "test" metrics absorbed held-out preprocessing statistics — textbook preprocessing leakage, documented here as an accepted residual for over a year. It is now fixed (July 2026 model assessment §2.1 item 7): the function returns a separate `eval_split` whose matrices are preprocessed with imputer/scaler **fit on the train slice only**, and all three loaders (RF/NN/XGB) evaluate on those. The production model still retrains on all rows with preprocessing fit on all rows — correct for the deployment artifact, and that full-fit `(imputer, scaler)` pair is what ships in the bundle. Notes that remain true:
 
-1. **It does not affect the headline walk-forward metrics.** The walk-forward experiments (`e2`/`e3`/`e17`) refit the imputer/scaler on the *train window only* (e.g. `experiments/e17_series_eval.py:84`). Only the in-`load_or_train` registry "test" numbers carry the small optimistic bias.
-2. **RF and XGB are scale-invariant** — they split on thresholds, so a globally-fit `StandardScaler` changes nothing for them. Only the NN has any sensitivity, and it's second-order.
-3. The **production** model *should* use a scaler fit on all available data (it's the deployment artifact), so the line is correct for production — it's only slightly optimistic for the eval-metric reporting.
-
-To make the registry test metrics airtight, fit imputer/scaler on `X_train` only for the eval pass, then refit on all data for production. Not currently done; the registry numbers should be read as marginally optimistic, and the walk-forward numbers used for any keep/drop decision.
+1. **The headline walk-forward metrics never carried this bias.** The walk-forward experiments (`e2`/`e3`/`e17`) always refit the imputer/scaler on the *train window only* (e.g. `experiments/e17_series_eval.py:84`).
+2. **RF and XGB are scale-invariant** — they split on thresholds — so the practical effect was confined to the NN and to the imputer medians; expect registry metrics from mid-July 2026 onward to be honest but not visibly different.
+3. Registry rows written **before 2026-07-16** should still be read as marginally optimistic on their `test_*` columns.
 
 ---
 

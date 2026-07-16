@@ -358,8 +358,10 @@ const en = {
       `${k} of ${n} games · 95% CI ${lo}–${hi}%`,
     tileModel: "Model-implied",
     modelSub: "from the model's Poisson rate for this window",
+    curveXLabel: "Line",
+    curveYLabel: "Share of games over",
     lineCaption:
-      "The over rate counts games in the selected window that beat the line — change the line or the window and it recomputes. The confidence interval says how far a rate from this few games can be trusted; over 5 games it is wide by construction. For streaky low-count stats the model-implied tile shows the probability the model's own Poisson rate assigns to clearing the line. These are descriptive statistics about past games, not betting advice.",
+      "The curve is the whole story at once: for every possible line, the share of games in the selected window that beat it. Click anywhere on the curve — or edit the line box — to move the orange marker; the tiles recompute as it moves. The confidence interval says how far a rate from this few games can be trusted; over 5 games it is wide by construction. For streaky low-count stats the model-implied tile shows the probability the model's own Poisson rate assigns to clearing the line. These are descriptive statistics about past games, not betting advice.",
     tipProj: (v: string) => `(proj ${v})`,
     distHeading: (stat: string) => `${stat} distribution`,
     distPoissonNote:
@@ -838,8 +840,10 @@ const ja: Dict = {
       `${n}試合中${k}試合 · 95%信頼区間 ${lo}–${hi}%`,
     tileModel: "モデル推定",
     modelSub: "この期間のポアソン率から計算した確率",
+    curveXLabel: "基準値",
+    curveYLabel: "基準値を超えた試合の割合",
     lineCaption:
-      "「超え」の割合は、選択中の期間で基準値を上回った試合の数え上げです。基準値や期間を変えると、その場で再計算されます。信頼区間は、この試合数から出した割合がどこまであてになるかの目安で、直近5試合のような短い期間では必然的に広くなります。ムラの大きい少数カウント系の統計値では、モデル自身のポアソン率が基準値超えに割り当てる確率も併記しています。いずれも過去の試合に関する記述統計であり、賭けを推奨するものではありません。",
+      "この曲線は、あらゆる基準値に対して「選択中の期間で何%の試合がそれを上回ったか」を一望できるものです。曲線上をクリックするか基準値の入力欄を変更すると、オレンジのマーカーが動き、下のタイルも連動して再計算されます。信頼区間は、この試合数から出した割合がどこまであてになるかの目安で、直近5試合のような短い期間では必然的に広くなります。ムラの大きい少数カウント系の統計値では、モデル自身のポアソン率が基準値超えに割り当てる確率も併記しています。いずれも過去の試合に関する記述統計であり、賭けを推奨するものではありません。",
     tipProj: (v: string) => `（予想 ${v}）`,
     distHeading: (stat: string) => `${stat}の分布`,
     distPoissonNote:

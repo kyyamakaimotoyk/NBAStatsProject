@@ -110,6 +110,25 @@ export function poissonClearProb(lambda: number, line: number): number {
   return Math.max(0, 1 - cdf);
 }
 
+export type CurvePoint = { x: number; pct: number };
+
+/**
+ * The over-rate as a curve: at each half-point line x, the share (%) of window
+ * games strictly over x. Evaluated on the stat's FIXED range (same rationale as
+ * the histogram bins: curves stay comparable across players and windows).
+ */
+export function clearCurve(values: number[], key: StatKey): CurvePoint[] {
+  if (values.length === 0) return [];
+  const intTop = INT_TOP[key];
+  const top = intTop !== undefined ? intTop + 1 : (RANGE[key] ?? { max: 50, step: 5 }).max;
+  const pts: CurvePoint[] = [];
+  for (let x = 0.5; x < top; x += 1) {
+    const pct = (values.filter((v) => v > x).length / values.length) * 100;
+    pts.push({ x, pct: Math.round(pct * 10) / 10 });
+  }
+  return pts;
+}
+
 export type DistBin = { label: string; share: number; poisson?: number; n: number };
 
 // FIXED per-stat axes so histograms are directly comparable across players:

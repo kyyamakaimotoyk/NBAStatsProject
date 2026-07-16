@@ -789,6 +789,18 @@ h2 {
 .controls input[type="number"] {
   width: 5.5rem;
 }
+/* The clearing-a-line input drives the curve — accent it so it can't be missed. */
+.controls input.line-input {
+  border-color: var(--accent);
+}
+.controls input.line-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* The curve is click-to-set — advertise it. */
+.clear-curve {
+  cursor: pointer;
+}
 
 /* Fantasy advisor form + answer */
 .advisor-form {

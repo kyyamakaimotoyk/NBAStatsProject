@@ -20,12 +20,14 @@ import {
   defaultLine,
   clearRate,
   poissonClearProb,
+  clearCurve,
   type StatKey,
   type WindowKey,
 } from "@/lib/playerExplore";
 import { useLang } from "@/lib/i18n";
 import PlayerStatChart, { type PlayerChartRow } from "@/components/PlayerStatChart";
 import PlayerDistChart from "@/components/PlayerDistChart";
+import ClearCurveChart from "@/components/ClearCurveChart";
 import TeamComparePanel from "@/components/TeamComparePanel";
 
 const WINDOWS: WindowKey[] = ["L5", "L10", "season", "three"];
@@ -142,6 +144,7 @@ export default function PlayersExplorePage() {
   const stats = useMemo(() => windowStats(actuals), [actuals]);
   const effLine = line ?? (actuals.length > 0 ? defaultLine(actuals) : 0.5);
   const rate = useMemo(() => clearRate(actuals, effLine), [actuals, effLine]);
+  const curve = useMemo(() => clearCurve(actuals, statKey), [actuals, statKey]);
   const modelProb =
     stat.poisson && lambda !== undefined ? poissonClearProb(lambda, effLine) : null;
 
@@ -223,6 +226,7 @@ export default function PlayersExplorePage() {
                 <label className="inline">
                   {t.playersExplore.lineLabel}{" "}
                   <input
+                    className="line-input"
                     type="number"
                     step={0.5}
                     min={0}
@@ -233,6 +237,13 @@ export default function PlayersExplorePage() {
                   />
                 </label>
               </div>
+              <ClearCurveChart
+                data={curve}
+                line={effLine}
+                pct={rate.pct}
+                statLabel={stat.label}
+                onSelect={setLine}
+              />
               <div className="cards">
                 <div className="card">
                   <div className="card-title">{t.playersExplore.tileGames}</div>

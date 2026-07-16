@@ -43,6 +43,7 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **P2** | **Playoff support + 4th season** (extends P1) | Explore page showed playoff actuals with no predictions and no 2023-24 predictions; the nightly as first built would have predicted playoffs on features frozen at regular-season end. Kai: Option A (support playoffs) + extend backfill to 2023-24. | Season-year now spans regular+playoffs+play-in+Cup (`SEASON_YEAR` grouping key, `IS_PLAYOFF` feature, season-to-date accumulates through the postseason; preseason skipped via GAME_ID type digit). Warm-up 2021-22; train years 22-23..25-26 → 83,266 rows (5,708 playoff). Three walk-forward folds incl. new train-22-23→test-23-24. Harness unchanged → docs/p2_player_validation_report.md; backfill version `p2_wf_20260710`. | New fold 1 clears the gate (XGB beats Marcel 10/11, p≤5.6e-31; STL flat as in every fold). **Playoffs: XGB ≤ Marcel on 11/11 stats**; the regime shift lands in MINUTES (MAE 5.00 PO vs 4.54 reg) while PTS error *drops* in playoffs (4.79 vs 4.96 — healthy, stable-role rosters). Backfill 62,156 rows incl. postseason; 38,177 p1_wf rows retired. | **Implemented 2026-07-10** — §P2 below |
 | **E22** | **Feature pruning — top-250 group-pruned set vs the 573-column config** | Assessment §2.1: the team feature set is saturated, not leaking — 573 cols vs ~6k train games, 456 of them inter-correlated L5/L10 rolling stats; E15's flat learning curve says signal (not sample) binds, so redundant columns mostly add variance. Pruning = assessment item #7; first experiment of the 2026-07 autonomous loop. | `experiments/e22_perm_importance.py`: OOS permutation importance (RF+XGB × clf+reg × W1–W5 test slices × 3 seeds, n_repeats=5, neg-logloss/neg-MAE), aggregated at base-feature-GROUP level (HOME_/AWAY_/DIFF_ triplets stay together) → keep-lists top250 (252 cols) / top150 (152 cols) → `experiments/loop_ab.py` A/B on frozen snapshot `20260703T072718Z` (6,363 games): W5 10-seed paired tests + 21 monthly windows × 3 seeds, pooled n=4,032. Non-inferiority gates PRE-REGISTERED in `outputs/experiment_loop_state.json` before each launch. | Pruned sets are never significantly worse anywhere, and better where it matters. W5: AUC significantly FOR pruned on all 4 arm×family pairs (+0.008…+0.022, p=.016–.044); top250 RF MAE −0.086 (t p=.002). Pooled windows: top250 passes both families; RF MAE −0.026 (t p=.003). top150 FAILS — XGB pooled MAE +0.11 significantly against (p=.038). One deviation: W5 XGB acc CI floor missed by 0.0024 (point est. +1.7pp FOR); large-n stage ruled. Ranking face-valid: ELO_DIFF #1 group, availability (PLAYERS_OUT, slot impacts) next — mirrors E9/E12. | **KEEP top250 — recommendation staged, adoption is Kai's call** 2026-07-16 — §E22 below |
 | **E24** | **First-ever hyperparameter search (Optuna TPE, XGB)** | Assessment §2.4 gap #1: HPs were hand-set once in E1 (2026-05-18) and never searched — "zero search has ever been done." Cheapest unknown-payoff item on the ranked list. | `experiments/e24_hp_search.py`: 60-trial TPE per task on the E22 top250 loop-incumbent set; objective = mean W1–W4 walk-forward logloss (clf) / MAE (reg), 2 seeds, MedianPruner, SQLite storage; incumbent enqueued as trial 0; **W5 excluded from selection**. Winner gated via `loop_ab.py` on W5 (10 seeds, paired tests vs incumbent HPs, superiority gate pre-registered). | Search preferred heavy regularization (depth 2, lr .04–.06, 500–600 trees, λ 15–30) and beat the incumbent on its own objective (logloss −0.014, MAE −0.21 on W1–W4). **On held-out W5 the advantage vanished**: paired acc diff 0.0000 (McNemar 7w/7l), MAE +0.02 (p=.82), AUC −0.001 (p=.83). Marginal per-seed metrics flattered the tuned config (acc .799 vs .782) but seed-averaged predictions were indistinguishable. | **REJECT — E1 HPs stand** 2026-07-16 — §E24 below |
+| **E25** | **Team-level prior-season eRAPTOR roster-strength aggregates** | P3's own caveat: impact metrics measure margin/possession, so the TEAM model is the natural consumer (assessment §6.2, expected 0.1–0.3 MAE). Standalone signal looked real: corr(DIFF_WMEAN, margin)=0.28, home wins 65% when positive. | `experiments/e25_eraptor_team.py`: pregame-honest roster (trailing-45d appearances minus official Out/Doubtful via `historical_injury_report`), MPG-weighted (last-10, shift-1) prior-season eRAPTOR via P3's name join → 12 cols (WMEAN/MINSUM/match-frac × HOME/AWAY/DIFF), 98.6% coverage. A/B vs the E22 top250 incumbent via `loop_ab.py`: W5 10 seeds (superiority gate, pre-registered) + 21-window diagnostic. | **W5: nothing FOR the augmented arm** (RF 3w/3l acc; XGB −2.2pp ns; all MAE/AUC ns) → gate failed, verdict locked. Diagnostic windows (labeled, could not change verdict): pooled null (best case RF acc +0.6pp, McNemar p=.074); **early-season Oct–Dec slice refutes the "helps early" hypothesis** (RF −0.35pp, XGB −1.1pp acc). Team-level twin of the P3 null: redundant with cross-season ELO + availability-aware slot impacts. | **REJECT** 2026-07-16 — §E25 below |
 | **P3** | **Prior-season Estimated RAPTOR as player-projection features** | Kai asked whether RAPTOR/LEBRON-class impact metrics improve the models. Sourcing: real RAPTOR dead (data ends 2021-22), LEBRON no export/API, DARKO DPM = only free daily point-in-time series covering 2023-26; Paine Estimated RAPTOR (0.89 corr w/ RAPTOR, thru 2024-25, `outputs/nba_estimated_RAPTOR.csv`) = the backtest source. P2 model had zero RAPM-family signal (only PIE_L10/USG_PCT_L10). | `experiments/p3_impact_metrics.py`: +PREV_ERAPTOR_{OFF,DEF,TOT,WAR82} (previous-season rating, minutes-weighted across stints, normalized-name join, 87.5% match every season, rookies NaN — point-in-time safe by construction). 3 seeds × the 3 P2 walk-forward folds, baseline-vs-augmented paired t-test on per-row \|error\|; keep-gate = ΔMAE<0 AND p<0.05 in all folds for ≥2/3 seeds. | **NULL: 0/11 stats keep, 0 seeds pass the gate anywhere.** Mean ΔMAE: PTS −0.0068, all others ≤ \|0.0013\|. The trees USED the features (gain rank 16-30 of 139 in MIN/PTS models) but zero out-of-sample gain — redundant with L5/L10 form + usage + PREV_*36 priors. Counting stats are the wrong target for a margin-impact metric. | **Rejected for player model 2026-07-10** — open follow-up: eRAPTOR/DARKO in the TEAM model (availability weighting in `player_impact.py` Approach B; roster-strength aggregate = E22 candidate); §P3 below |
 
 ---
@@ -1497,3 +1498,70 @@ the exact failure mode the split existed to catch. Registry rows
   protocol on seed-means is the house standard (E12), and it says no.
 - RF search never ran (XGB-first per plan; budget was available but the XGB
   null lowers the prior — queue it only if a future cycle wants it).
+
+## 2026-07-16 — Experiment 25: team-level eRAPTOR roster-strength aggregates
+
+### Why
+P3 rejected prior-season Estimated RAPTOR for the player model but explicitly
+flagged the team model as the natural consumer (impact metrics measure margin
+per possession), and the assessment ranked RAPM-family team aggregates #2 on
+expected value (0.1–0.3 MAE, data already in hand). Third experiment of the
+2026-07 loop. The standalone signal was real: corr(DIFF_ERAPTOR_TOT_WMEAN,
+final margin) = 0.28 over 6,363 games; home teams with a positive
+roster-strength edge won 65.0%.
+
+### Hypothesis
+An MPG-weighted prior-season eRAPTOR aggregate over the pregame-available
+roster adds signal the pruned team model lacks — most plausibly early-season,
+before rolling form features stabilize. Superiority gate (feature-adds must
+beat, not tie), pre-registered in `outputs/experiment_loop_state.json`.
+
+### Setup
+`experiments/e25_eraptor_team.py`: roster = players who appeared for the team
+in the trailing 45 days (pregame-knowable) minus official pregame Out/Doubtful
+(`bulk_fetch_pregame_availability` / `historical_injury_report`); weight =
+mean minutes over last 10 appearances strictly before the game; rating =
+prior-season minutes-weighted eRAPTOR via P3's normalized-name join. 12
+columns (TOT/OFF/DEF weighted means, talent-minutes sum, match fraction ×
+HOME/AWAY/DIFF), 98.6% game coverage, matched-minutes share 0.84.
+Arms: E22 top250 incumbent (252 cols) vs incumbent + 12 (264 cols),
+`add_columns_file` join at the harness — feature_engineering untouched.
+W5 10 seeds RF+XGB, then a 21-window pass run as a LABELED DIAGNOSTIC after
+the W5 verdict locked (budget was idle; it could inform the DARKO follow-up
+but not change the verdict).
+
+### Results
+W5 paired (n=230): RF acc diff 0.0000 (3 disagreements each way), MAE +0.020
+(p=.26), AUC −0.0052 (p=.18); XGB acc −2.2pp (ns, p=.23, 3w/8l), MAE +0.16
+(ns), AUC +0.002 (ns). Nothing significantly FOR the augmented arm anywhere →
+superiority gate failed on both families.
+
+Diagnostic pooled windows (n=4,032): all null — best case RF acc +0.6pp
+(McNemar p=.074, under the bar), MAE/AUC flat on both families. The
+early-season hypothesis is REFUTED, not just unsupported: across the 9
+Oct/Nov/Dec windows the augmented arm was *worse* on accuracy (RF −0.35pp,
+XGB −1.1pp; MAE ~flat). Cross-season ELO plus the availability-aware slot
+impacts evidently already encode what a static prior-season talent rating
+knows, even in October.
+
+### Decision
+**REJECT** — do not add prior-season eRAPTOR aggregates to the team model.
+Combined with P3, static prior-season impact ratings are now falsified for
+BOTH models. Registry rows `e25_*_20260716`; artifacts
+`outputs/e25_eraptor_team_cols.csv` (regenerable), `e25_w5.json`,
+`e25_windows.json`; DB experiment_id `E25`.
+
+### Caveats / follow-ups
+- This tests the STATIC prior-season form of the idea. DARKO's remaining
+  untested edge is *in-season daily updating* (post-trade, rookie emergence) —
+  a different feature class. Given both statics came back null AND the
+  early-season slice showed nothing, the DARKO team-model follow-up is
+  DEPRIORITIZED (was: adoption target) — revisit only with a concrete
+  post-trade-window hypothesis.
+- The assessment's #1 item (projected talent-MINUTES from the player-model
+  pipeline, replacing binary slot flags) is NOT falsified by this — E25's
+  weights are trailing MPG, not projected minutes; that experiment remains
+  open as the top-value candidate (now E26).
+- Roster reconstruction: 45-day appearance window + last-10 MPG is one
+  operating point; 5 team-games of 12,727 produced no snapshot (season-start
+  edge). Not worth tightening unless the idea is revisited.

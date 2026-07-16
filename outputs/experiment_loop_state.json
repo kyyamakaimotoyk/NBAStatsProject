@@ -133,7 +133,8 @@
     {
       "id": "E25.w5",
       "kind": "ab",
-      "status": "running",
+      "status": "done",
+      "verdict_note": "Superiority gate FAILED both families (RF 3w/3l; XGB -2.2pp ns) - E25 verdict locked REJECT at W5.",
       "depends_on": ["E25.build", "E24.gate"],
       "spec": "experiments/specs/e25_eraptor.json",
       "stage": "w5",
@@ -147,7 +148,8 @@
     {
       "id": "E25.windows",
       "kind": "ab",
-      "status": "pending",
+      "status": "done",
+      "verdict_note": "LABELED DIAGNOSTIC (verdict already locked): pooled null; early-season Oct-Dec slice REFUTES helps-early (RF -0.35pp, XGB -1.1pp acc). DARKO team follow-up deprioritized. Loop queue COMPLETE at ~14:35 JST, ~5h20m under budget.",
       "depends_on": ["E25.w5"],
       "spec": "experiments/specs/e25_eraptor.json",
       "stage": "windows",

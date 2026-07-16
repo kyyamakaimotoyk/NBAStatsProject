@@ -39,7 +39,11 @@ if _os.getcwd() != _PROJECT_ROOT:
 # refactors that move file ops around don't reintroduce the silent-rebuild bug.
 FEATURES_CSV_PATH = _os.path.join(_PROJECT_ROOT, 'nba_ml_features.csv')
 
-# PyTorch - MUST be imported FIRST before numpy/pandas on Windows to avoid DLL conflicts
+# PyTorch - MUST be imported FIRST before numpy/pandas on Windows to avoid DLL conflicts.
+# NOTE (2026-07-16): this header only protects DIRECT execution of this file. If an
+# IMPORTING module loads pandas/numpy before importing predict_games, torch still hits
+# the OSError — importers must preload torch themselves at the top of their own file
+# (see visualization/dataExploration.py and experiments/harness.py for the pattern).
 try:
     import torch
     import torch.nn as nn
@@ -2418,7 +2422,20 @@ def _train_pytorch_model(model, X, y, is_classifier=True, epochs=100, lr=0.001,
 # PYTORCH WITH EMBEDDINGS - TRAINING & LOADING
 # ============================================================================
 
-def load_or_train_pytorch_embedding_models(engine):
+# nn-embed has no bundle in the artifact store (the pipeline retrains every
+# model type EXCEPT nn-embed); its trained state is these loose local files.
+# Callers that must not lazily train (e.g. the dashboard's model preload)
+# check this list before invoking the loader.
+NN_EMBED_ARTIFACT_PATHS = [
+    'models/nn_embed_classifier.pt',
+    'models/nn_embed_regressor.pt',
+    'models/scaler.joblib',
+    'models/feature_names.joblib',
+    'models/nn_embed_config.joblib',
+]
+
+
+def load_or_train_pytorch_embedding_models(engine, force_retrain=False):
     """
     Load pre-trained PyTorch models with player embeddings or train new ones.
 
@@ -2427,6 +2444,11 @@ def load_or_train_pytorch_embedding_models(engine):
     - Player IDs (16 per game: 8 home + 8 away)
     - Availability mask (1 if playing, 0 if OUT)
 
+    ``force_retrain`` matches the other loaders' contract (load_model_by_key
+    passes it to every LOADER_DISPATCH entry — this signature mismatch was
+    latent for months while the dashboard's broken torch import skipped the
+    nn-embed path entirely; surfaced 2026-07-16 by the import-order fix).
+
     Returns:
         tuple: (classifier, regressor, scaler_tuple, team_feature_names,
                 player_to_idx, target_scaler, n_slots, embedding_dim)
@@ -2434,13 +2456,9 @@ def load_or_train_pytorch_embedding_models(engine):
     if not PYTORCH_AVAILABLE:
         raise ImportError("PyTorch not available")
 
-    clf_path = 'models/nn_embed_classifier.pt'
-    reg_path = 'models/nn_embed_regressor.pt'
-    scaler_path = 'models/scaler.joblib'
-    features_path = 'models/feature_names.joblib'
-    config_path = 'models/nn_embed_config.joblib'
+    clf_path, reg_path, scaler_path, features_path, config_path = NN_EMBED_ARTIFACT_PATHS
 
-    if all(os.path.exists(p) for p in [clf_path, reg_path, scaler_path, features_path, config_path]):
+    if not force_retrain and all(os.path.exists(p) for p in NN_EMBED_ARTIFACT_PATHS):
         print("Loading pre-trained PyTorch embedding models...")
         scaler = joblib.load(scaler_path)
         feature_names = joblib.load(features_path)

@@ -4,6 +4,19 @@ import sys as _sys
 import os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
+# PyTorch preload — MUST come before plotly/pandas/numpy on Windows (MKL/OMP
+# DLL load order). Without it, the `from modeling.predict_games import ...`
+# further down finds torch broken (OSError) even though it's installed,
+# because this module loaded pandas first — which is why the dashboard showed
+# "PyTorch unavailable (OSError)" since ~July while predict_games run directly
+# was fine. Root-caused 2026-07-16 (tuning log §E22, update 3). The app's
+# PYTORCH_AVAILABLE flag still comes from predict_games; a failure here just
+# means torch genuinely isn't usable on this machine.
+try:
+    import torch  # noqa: F401
+except (ImportError, OSError):
+    pass
+
 import plotly as plt
 import plotly.express as px
 import plotly.graph_objects as go
@@ -985,6 +998,17 @@ if PREDICTIONS_AVAILABLE:
             if spec.framework == 'pytorch' and not PYTORCH_AVAILABLE:
                 print(f"Skipping {spec.display_name}: PyTorch unavailable")
                 continue
+            if spec.key == 'nn-embed':
+                # nn-embed has no artifact-store bundle; if its loose local
+                # files are missing, the loader would lazily TRAIN at dashboard
+                # startup (minutes of blocking). Skip instead. Latent for
+                # months while the torch import-order bug skipped this path.
+                from modeling.predict_games import NN_EMBED_ARTIFACT_PATHS
+                if not all(os.path.exists(p) for p in NN_EMBED_ARTIFACT_PATHS):
+                    print(f"Skipping {spec.display_name}: no trained nn-embed "
+                          f"artifacts on this machine (run predict_games.py "
+                          f"--model nn-embed to train)")
+                    continue
             try:
                 print(f"Loading {spec.display_name} ({spec.key})...")
                 loaded_models[spec.key] = load_model_by_key(spec.key, pred_engine)

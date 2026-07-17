@@ -113,6 +113,33 @@ def _xgb_params(objective):
                 n_jobs=-1, tree_method='hist')
 
 
+# P7/P7b (2026-07-17, tuning log §P7 + addendum): the first HP search found a
+# heavily-regularized config that beats the P1 hand-set params on 9/11 stats
+# (PTS −0.033, MIN −0.019 MAE) but regresses BLK — so it is adopted PER
+# SUBMODEL: 'default' applies to the minutes head and every stat head except
+# those with their own key; BLK's empty dict keeps the incumbent _xgb_params.
+# Gate evidence: outputs/p7b_gate.json (3 folds × 3 seeds, zero regressions).
+# Revert = set this dict to {}.
+# NOTE for experiments: harness HP arms that monkeypatch _xgb_params should
+# also clear/patch this dict, or their overrides will be layered UNDER it.
+_PER_MODEL_HP_OVERRIDES = {
+    'default': {
+        'n_estimators': 350, 'max_depth': 4,
+        'learning_rate': 0.02564888603022094, 'min_child_weight': 19,
+        'subsample': 0.666016060577559, 'colsample_bytree': 0.8280441108448228,
+        'reg_lambda': 21.34660167854208, 'reg_alpha': 7.97486168468657,
+    },
+    'BLK': {},
+}
+
+
+def _params_for(model_name, objective):
+    """Production params for one of the 9 submodels ('MIN' or a stat name)."""
+    override = _PER_MODEL_HP_OVERRIDES.get(
+        model_name, _PER_MODEL_HP_OVERRIDES.get('default', {}))
+    return {**_xgb_params(objective), **override}
+
+
 class TwoStageXGB:
     """Minutes model + per-36 rate / Poisson-exposure stat models."""
 
@@ -126,7 +153,7 @@ class TwoStageXGB:
         self.features = feature_columns(train)
         X = train[self.features].astype(float)
 
-        self.min_model = xgb.XGBRegressor(**_xgb_params('reg:squarederror'))
+        self.min_model = xgb.XGBRegressor(**_params_for('MIN', 'reg:squarederror'))
         self.min_model.fit(X, train['MIN'])
 
         played = train['MIN'] >= 4
@@ -134,12 +161,12 @@ class TwoStageXGB:
         for s in RATE_STATS:
             y = tp[f'{s}_36G']
             m = y.notna()
-            model = xgb.XGBRegressor(**_xgb_params('reg:squarederror'))
+            model = xgb.XGBRegressor(**_params_for(s, 'reg:squarederror'))
             model.fit(Xp[m], y[m], sample_weight=tp['MIN'][m])
             self.rate_models[s] = model
         offset = np.log(tp['MIN'] / 36.0)
         for s in POISSON_STATS:
-            model = xgb.XGBRegressor(**_xgb_params('count:poisson'))
+            model = xgb.XGBRegressor(**_params_for(s, 'count:poisson'))
             model.fit(Xp, tp[s], base_margin=offset)
             self.poisson_models[s] = model
         return self

@@ -142,6 +142,12 @@
       "status": "done",
       "requested_by": "Kai 2026-07-17",
       "verdict_note": "d2 columns ADOPTED: pre-filter impl in player_dataset.py::add_player_rolling + _EXPLICIT_FEATURES; dataset rebuilt 83,266x202; bundle xgb_player_20260717 retrained (139 feats incl. MIN_PREV_GAME/CUM_MIN_LAST3), current pointer updated. LOCAL only - cloud rides next pipeline image rebuild. NOTE: frozen loop pickle overwritten by adoption (sha changed; loop was complete)."
+    },
+    {
+      "id": "P7B.adopt",
+      "status": "done",
+      "requested_by": "Kai 2026-07-17",
+      "verdict_note": "P7b ADOPTED: _PER_MODEL_HP_OVERRIDES + _params_for() in player_projection_models.py; harness hp arms zero prod overrides for their fits; bundle retrained (d2 + mixed HPs, verified per-head params). Local only - cloud rides next pipeline image rebuild."
     }
   ]
 }

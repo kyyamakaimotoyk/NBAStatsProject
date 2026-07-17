@@ -1917,11 +1917,19 @@ for the minutes head + every stat head EXCEPT BLK (incumbent). Fresh 3-fold ×
 −0.019, STL sig 3/3), ZERO regression flags: BLK is now flat
 (+0.0000/+0.0001/+0.0008, all ns — the tuned-minutes exposure-offset coupling
 did not hurt), FP composite better in every fold (−0.058/−0.035/−0.010).**
-The first player HP change to clear a gate. Adoption staged (Kai's call):
-production needs per-submodel HP support in `player_projection_models.py`
-(e.g. a `_PER_MODEL_HP_OVERRIDES` dict consulted in fit) + retrain; artifacts
+The first player HP change to clear a gate. Artifacts
 `outputs/p7b_gate.json`, spec `experiments/specs/p7b_hp_mixed.json`, DB
-experiment_id P7B.
+experiment_id P7B. *(ADOPTED same day, Kai-requested:
+`_PER_MODEL_HP_OVERRIDES` + `_params_for()` added to
+player_projection_models.py (revert = set the dict to {}), harness hp arms
+now zero the prod overrides for their fits so future HP experiments stay
+clean, and the bundle retrained with d2 + mixed HPs together — verified in
+the saved submodels (PTS/MIN heads lr .0256/depth 4/λ 21.3, BLK head
+incumbent). The single-slice holdout probe reads flat vs the d2-only bundle —
+expected; the 3-fold × 3-seed paired gate is the measurement. Cloud adoption
+rides the next pipeline image rebuild. Minor: same-day retrains share the
+model_version string xgb_player_20260717 (file got a _1 suffix); harmless in
+the offseason, next weekly retrain mints a fresh date.)*
 
 **Addendum — Phase D stretch prototype (no gate, exploratory per Kai's scope
 decision).** `experiments/p_stretch_quantile.py`: five quantile-XGB heads

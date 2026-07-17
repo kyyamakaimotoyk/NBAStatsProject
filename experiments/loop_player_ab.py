@@ -342,18 +342,30 @@ def run(args):
                     if info['kind'] == 'serve_marcel':
                         continue  # derived after baseline
                     a_train, a_test = arm_frames(train_all, test_all, info, all_added)
+                    # hp/hp_per_model arms take FULL control of params: zero
+                    # the production _PER_MODEL_HP_OVERRIDES (adopted by P7b)
+                    # for their fits, else prod overrides layer on top of the
+                    # arm's. The baseline arm keeps prod overrides — baseline
+                    # means production config.
+                    orig_overrides = getattr(ppm, '_PER_MODEL_HP_OVERRIDES', None)
                     if info.get('hp_per_model'):
                         ppm._xgb_params = _per_model_params(orig_params,
                                                             info['hp_per_model'])
+                        if orig_overrides is not None:
+                            ppm._PER_MODEL_HP_OVERRIDES = {}
                     elif info['hp']:
                         ppm._xgb_params = (lambda hp_over: lambda obj:
                                            {**orig_params(obj), **hp_over})(info['hp'])
+                        if orig_overrides is not None:
+                            ppm._PER_MODEL_HP_OVERRIDES = {}
                     t0 = time.time()
                     try:
                         model = TwoStageXGB().fit(a_train)
                         preds = model.predict(a_test)
                     finally:
                         ppm._xgb_params = orig_params
+                        if orig_overrides is not None:
+                            ppm._PER_MODEL_HP_OVERRIDES = orig_overrides
                     n_feats = len(model.features)
                     if arm == baseline and n_feats != args.expect_features:
                         raise RuntimeError(

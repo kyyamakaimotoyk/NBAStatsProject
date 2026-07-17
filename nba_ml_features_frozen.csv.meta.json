@@ -1,0 +1,11 @@
+{
+  "feature_set_version": "20260703T072718Z",
+  "exported_at": "2026-07-16T02:40:09Z",
+  "n_rows": 6363,
+  "n_games": 6363,
+  "n_columns": 769,
+  "n_model_features_prod_config": 573,
+  "min_date": "2022-01-01",
+  "max_date": "2026-06-13",
+  "n_w5_games": 230
+}

@@ -24,6 +24,15 @@ resource "aws_budgets_budget" "monthly" {
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 
+  # Scope to this project only — the account/VPC hosts multiple projects, and
+  # every resource here carries Project=<var.project> via provider default_tags.
+  # Requires "Project" to be activated as a cost allocation tag in Billing;
+  # untagged charges (and other projects) are invisible to this budget.
+  cost_filter {
+    name   = "TagKeyValue"
+    values = [format("user:Project$%s", var.project)]
+  }
+
   # Early warning: spending has passed 80% of the budget this month.
   notification {
     comparison_operator        = "GREATER_THAN"

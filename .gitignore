@@ -114,7 +114,7 @@ infra/nba_data.sql
 .claude/settings.local.json
 
 # Datasets
-outputs/p1_player_dataset.pkl
+outputs/*
 
 # Experiment-loop frozen feature snapshot (regenerate via scripts/export_features_snapshot.py)
 nba_ml_features_frozen.csv

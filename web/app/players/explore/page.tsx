@@ -38,7 +38,7 @@ export default function PlayersExplorePage() {
   const [teamId, setTeamId] = useState<number | null>(null);
   const [personId, setPersonId] = useState<number | null>(null);
   const [statKey, setStatKey] = useState<StatKey>("pts");
-  const [win, setWin] = useState<WindowKey>("season");
+  const [win, setWin] = useState<WindowKey>("three");
   // null = auto (window median). Kept across window switches so a fixed line
   // can be compared between windows; reset when the stat (scale) changes.
   const [line, setLine] = useState<number | null>(null);

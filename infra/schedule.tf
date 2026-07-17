@@ -77,9 +77,11 @@ resource "aws_scheduler_schedule" "nightly_predict" {
   name  = "${var.project}-nightly-predict"
   state = "ENABLED"
 
-  # Run once a day at 11:00 AM US Eastern. Tunable: earlier = predictions on the
-  # site sooner; later = firmer injury data (the job fetches live injuries for
-  # today). cron fields: (minute hour day-of-month month day-of-week year).
+  # 11:00 AM US Eastern — the midday leg of a three-run day (see also
+  # postslate_grade @ 4:30 AM and pretip_refresh @ 5:45 PM below). This one gets
+  # predictions on the site by mid-morning and is the freshest pre-tip run for
+  # weekend matinees / holiday noon games (12:30–1 PM ET tips).
+  # cron fields: (minute hour day-of-month month day-of-week year).
   schedule_expression          = "cron(0 11 * * ? *)"
   schedule_expression_timezone = "America/New_York"
 
@@ -105,6 +107,102 @@ resource "aws_scheduler_schedule" "nightly_predict" {
     }
 
     # If a launch fails transiently, retry for up to an hour.
+    retry_policy {
+      maximum_event_age_in_seconds = 3600
+      maximum_retry_attempts       = 3
+    }
+  }
+}
+
+
+# =============================================================================
+# Post-slate grade run (added 2026-07-17) — full-slate grading + first predictions
+# =============================================================================
+# Runs the same nightly-predict CMD, but at 4:30 AM ET — after the home ingest
+# drop lands (home Task Scheduler moved to 16:30 JST = 2:30 AM EST / 3:30 AM
+# EDT, post-slate in both DST regimes). This grades the WHOLE previous slate
+# (including West coast games that used to miss the mid-slate 11:30 JST drop
+# and got graded a day late), feeds the drift monitor complete data, and
+# publishes first predictions for today before US-morning traffic.
+# Staggered 30 min after the 4:00 AM api_daily_restart only to keep logs tidy.
+# Safe to run alongside the 11 AM run: model_predictions upserts on
+# (game_id, model_type, model_version), so re-runs overwrite in place.
+resource "aws_scheduler_schedule" "postslate_grade" {
+  name  = "${var.project}-postslate-grade"
+  state = "ENABLED"
+
+  schedule_expression          = "cron(30 4 * * ? *)"
+  schedule_expression_timezone = "America/New_York"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_ecs_cluster.main.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    ecs_parameters {
+      task_definition_arn = aws_ecs_task_definition.pipeline.arn
+      launch_type         = "FARGATE"
+      task_count          = 1
+
+      network_configuration {
+        subnets          = aws_subnet.public[*].id
+        security_groups  = [aws_security_group.app.id]
+        assign_public_ip = true
+      }
+    }
+
+    retry_policy {
+      maximum_event_age_in_seconds = 3600
+      maximum_retry_attempts       = 3
+    }
+  }
+}
+
+
+# =============================================================================
+# Pre-tipoff refresh (added 2026-07-17) — last-minute injuries + late lines
+# =============================================================================
+# Same CMD again, at 5:45 PM ET: after the official injury reports land in the
+# late afternoon and before the earliest weekday tips (~7 PM ET). Re-predicts
+# today with the freshest injury data and captures near-closing Vegas lines,
+# which also makes the market-benchmark comparison fairer. Weekend matinees
+# (12:30–1 PM ET tips) are covered by the 11 AM nightly_predict run above.
+# CAVEAT: on matinee days this run re-predicts games that already tipped —
+# the upsert overwrites the pre-game row. Features are identical (today's
+# boxscores only reach the DB with the NEXT home drop), but live injury data
+# can shift mid-game, so the stored prediction is technically post-tip. If
+# that ever matters for the public track record, add a tip-time guard to
+# batch_predict_today rather than moving this schedule.
+resource "aws_scheduler_schedule" "pretip_refresh" {
+  name  = "${var.project}-pretip-refresh"
+  state = "ENABLED"
+
+  schedule_expression          = "cron(45 17 * * ? *)"
+  schedule_expression_timezone = "America/New_York"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_ecs_cluster.main.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    ecs_parameters {
+      task_definition_arn = aws_ecs_task_definition.pipeline.arn
+      launch_type         = "FARGATE"
+      task_count          = 1
+
+      network_configuration {
+        subnets          = aws_subnet.public[*].id
+        security_groups  = [aws_security_group.app.id]
+        assign_public_ip = true
+      }
+    }
+
     retry_policy {
       maximum_event_age_in_seconds = 3600
       maximum_retry_attempts       = 3
@@ -160,7 +258,7 @@ resource "aws_scheduler_schedule" "weekly_retrain" {
         {
           name = "pipeline"
           command = ["sh", "-c",
-            "python data_engineering/compute_elo.py && python orchestration/pipeline.py run --stages player_impact,features,train,player_train,validate"]
+          "python data_engineering/compute_elo.py && python orchestration/pipeline.py run --stages player_impact,features,train,player_train,validate"]
         }
       ]
     })

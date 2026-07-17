@@ -1,0 +1,3 @@
+# Placeholder until AdSense approval. After approval, replace this comment
+# with the exact line AdSense shows under Account > ads.txt, which looks like:
+# google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0

@@ -848,3 +848,20 @@ h2 {
   padding: 14px 18px;
   max-width: 720px;
 }
+
+/* Ad containers reserve their height up front so a late-filling (or never-
+   filling) ad can't shift the page — CLS stays at zero either way. */
+.ad-slot {
+  max-width: 960px;
+  margin: 0.5rem auto;
+  padding: 0 1.5rem;
+  min-height: 106px; /* 90px unit + label line */
+}
+.ad-label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.15rem;
+}

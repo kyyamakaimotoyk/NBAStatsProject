@@ -19,7 +19,7 @@
     "started_at": "2026-07-16T18:20:00+09:00"
   },
   "consecutive_infra_failures": 0,
-  "current": "Stretch.quantile",
+  "current": "COMPLETE",
   "queue": [
     {
       "id": "Smoke",
@@ -114,17 +114,19 @@
     {
       "id": "Stretch.quantile",
       "kind": "script",
-      "status": "running",
+      "status": "done",
       "depends_on": [
         "P7.gate"
       ],
       "gate": "NONE - exploratory prototype (Kai opt-in): PTS q10/q25/q50/q75/q90 quantile-XGB heads; report pinball loss + q10-q90 empirical coverage vs the conformal bands; informs the Phase D go/no-go. No KEEP verdict.",
-      "verdict": null
+      "verdict": null,
+      "verdict_note": "Phase D GO signal: q10-q90 coverage .795-.797 at conformal-equivalent width (15.6-15.7 vs ref 15.74) with per-player adaptivity; q50 MAE 4.90 beats two-stage point 4.94; P(30+) emittable. Report-only."
     }
   ],
   "history_notes": [
     "2026-07-16 ~18:20 JST: player loop started. Infra: loop_player_ab.py (P3 protocol generalized; per-arm add-column drop discipline + 137-feature assert), p4_feature_arms.py (6 groups built, coverage .988-1.000), ingest_player_json in experiment_db (stats as model_type, folds as window_name, NO registry rows - player model has no registry presence).",
     "Risks pre-registered: pattern auto-capture of *_L10 adds (per-arm drop discipline is the defense); LOAD_BEARING columns refused for drops; ppm.SEED/_EXPLICIT_FEATURES/_xgb_params module globals restored in finally; F2 = E10 caution zone (regression-flag clause); team_elo_pregame ends 2026-05-13 (23 NaN F3 games in e2 arm, XGB NaN-native, prod ELO not refreshed); P1/P2 headlines were single-seed - compare within-loop only; no CI-floor margins anywhere (team-loop lesson).",
-    "Phase D distributional heads: Kai chose include-as-stretch (exploratory only); NN-embed multi-output and week-ahead serving remain out of scope."
+    "Phase D distributional heads: Kai chose include-as-stretch (exploratory only); NN-embed multi-output and week-ahead serving remain out of scope.",
+    "2026-07-17 ~09:45 JST: player loop queue COMPLETE. Verdicts: P4 KEEP(d2_fatigue only), P5 REJECT, P6 REJECT, P7 REJECT_REGRESSION (9/11 better, BLK veto; P7b staged). Stretch: Phase D feasibility answered GO. Wall time ~15h incl. overnight machine sleep during P7 search; ~1.5h actual compute."
   ]
 }

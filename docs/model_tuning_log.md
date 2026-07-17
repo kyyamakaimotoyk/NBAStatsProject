@@ -1902,3 +1902,16 @@ composition of this run's numbers.
   over Marcel is fold-dependent) suggests STL's noise floor is partly a
   regularization artifact, not purely irreducible — small update against
   "STL is hopeless."
+
+**Addendum — Phase D stretch prototype (no gate, exploratory per Kai's scope
+decision).** `experiments/p_stretch_quantile.py`: five quantile-XGB heads
+(q10–q90) for PTS on F3, 2 seeds. Result: q10–q90 empirical coverage
+0.795/0.797 (nominal 80%) at mean width 15.6–15.7 — matching the published
+split-conformal reference (coverage .809, width 15.74) with per-player
+adaptive widths instead of a constant band; the q50 head's MAE (4.90)
+slightly beats the production two-stage point estimate (4.94); "P(30+
+points)" is directly emittable (q90 ≥ 30 on ~12% of rows vs 4.7% actual 30+
+games). **Feasibility answered: Phase D distributional heads work at
+conformal-equivalent honesty with adaptivity conformal can't give — the
+go/no-go is now a scoping decision, not a research question.** Artifacts:
+`outputs/p_stretch_quantile.json`.

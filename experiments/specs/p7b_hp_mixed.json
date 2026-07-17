@@ -1,0 +1,22 @@
+{
+  "experiment_id": "P7B",
+  "baseline_arm": "baseline",
+  "arms": {
+    "baseline": {},
+    "hp_mixed": {
+      "hp_per_model": {
+        "default": {
+          "n_estimators": 350,
+          "max_depth": 4,
+          "learning_rate": 0.02564888603022094,
+          "min_child_weight": 19,
+          "subsample": 0.666016060577559,
+          "colsample_bytree": 0.8280441108448228,
+          "reg_lambda": 21.34660167854208,
+          "reg_alpha": 7.97486168468657
+        },
+        "BLK": {}
+      }
+    }
+  }
+}

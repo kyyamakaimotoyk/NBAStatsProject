@@ -305,6 +305,15 @@ def add_player_rolling(pt, seasons):
     pt['MIN_TREND'] = pt['MIN_L5'] - pt['MIN_L10']
     pt['STARTS_SHARE_L10'] = roll_mean(g, 'STARTED', 10)
 
+    # P4 (2026-07-16, tuning log §P4): heavy-legs fatigue features — the only
+    # parked Tier-2 group to clear the keep-gate (MIN MAE −0.05, sig on 3/3
+    # seeds in every fold). Computed PRE-top-8-filter here, so "previous game"
+    # means the player's previous PLAYED game (the experiment used the
+    # post-filter approximation; this is the cleaner production definition).
+    pt['MIN_PREV_GAME'] = g['MIN'].shift(1)
+    pt['CUM_MIN_LAST3'] = g['MIN'].transform(
+        lambda s: s.shift(1).rolling(3, min_periods=1).sum())
+
     for s in STAT_COLS:
         pt[f'{s}_L5'] = roll_mean(g, s, 5)
         pt[f'{s}_L10'] = roll_mean(g, s, 10)

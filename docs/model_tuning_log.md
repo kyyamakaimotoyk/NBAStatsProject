@@ -1766,7 +1766,11 @@ Staged production change (recommend-only): compute `MIN_PREV_GAME` and
 (pre-filter, so "previous game" means previous *played* game rather than
 previous top-8 appearance — the experiment used the post-filter
 approximation, noted), add both to `_EXPLICIT_FEATURES`, retrain the
-player_xgb bundle. Adoption = Kai. The parked-groups question is now CLOSED:
+player_xgb bundle. Adoption = Kai. *(Update 2026-07-17, Kai-requested:
+ADOPTED — both columns implemented pre-filter in add_player_rolling +
+_EXPLICIT_FEATURES; dataset rebuilt (202 cols) and player_xgb bundle
+retrained locally with incumbent HPs. Cloud adoption rides the next pipeline
+image rebuild.)* The parked-groups question is now CLOSED:
 of D2/E2/F2/H2, only D2 earns its columns.
 DB: experiment_id P4 (+P4_BASE); artifacts `outputs/p4_ab.json`,
 `outputs/p4_cols_*.parquet` (regenerable), gates in experiment_comparisons.
@@ -1902,6 +1906,22 @@ composition of this run's numbers.
   over Marcel is fold-dependent) suggests STL's noise floor is partly a
   regularization artifact, not purely irreducible — small update against
   "STL is hopeless."
+
+**Addendum 2 (2026-07-17) — Experiment P7b: per-submodel HP mix — KEEP.**
+Kai green-lit the staged follow-up. Harness gained `hp_per_model` arm support
+(HP overrides routed to each of TwoStageXGB's 9 submodels via fit()'s fixed
+construction order, built from ppm's own constants). Arm = P7's tuned config
+for the minutes head + every stat head EXCEPT BLK (incumbent). Fresh 3-fold ×
+3-seed gate (7.4 min), same pre-registered rule as P7. **Result: full pass —
+9/11 stats clear the keep-gate (identical deltas to P7: PTS −0.033, MIN
+−0.019, STL sig 3/3), ZERO regression flags: BLK is now flat
+(+0.0000/+0.0001/+0.0008, all ns — the tuned-minutes exposure-offset coupling
+did not hurt), FP composite better in every fold (−0.058/−0.035/−0.010).**
+The first player HP change to clear a gate. Adoption staged (Kai's call):
+production needs per-submodel HP support in `player_projection_models.py`
+(e.g. a `_PER_MODEL_HP_OVERRIDES` dict consulted in fit) + retrain; artifacts
+`outputs/p7b_gate.json`, spec `experiments/specs/p7b_hp_mixed.json`, DB
+experiment_id P7B.
 
 **Addendum — Phase D stretch prototype (no gate, exploratory per Kai's scope
 decision).** `experiments/p_stretch_quantile.py`: five quantile-XGB heads

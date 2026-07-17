@@ -164,6 +164,7 @@ def resolve_arms(spec: dict, ds: pd.DataFrame):
         info = {'kind': 'feature', 'owned_adds': [], 'drop': [],
                 'serve_marcel_for': cfg.get('serve_marcel_for'),
                 'hp': cfg.get('hp')}
+        info['hp_per_model'] = cfg.get('hp_per_model')
         if cfg.get('serve_marcel_for'):
             info['kind'] = 'serve_marcel'
         if 'drop_columns' in cfg:
@@ -193,6 +194,28 @@ def resolve_arms(spec: dict, ds: pd.DataFrame):
                     if not (c.endswith(ppm._SUFFIXES) and not c.endswith('_36G'))
                     and not (c.startswith('PREV_') and c.endswith('36'))]
     return ds, arm_info, all_added, explicit_new
+
+
+def _per_model_params(orig, per_model: dict):
+    """P7b: route different HP overrides to each of TwoStageXGB's 9 submodels.
+
+    Relies on fit()'s FIXED construction order — min_model, then RATE_STATS,
+    then POISSON_STATS (player_projection_models.py fit); the order list is
+    built from ppm's own constants so a reorder there breaks loudly here.
+    per_model keys: stat names + optional 'default'; an empty dict override
+    means incumbent HPs for that submodel. Create a FRESH instance right
+    before each fit (stateful call counter).
+    """
+    order = ['MIN'] + list(ppm.RATE_STATS) + list(ppm.POISSON_STATS)
+    state = {'i': 0}
+
+    def patched(objective):
+        name = order[state['i'] % len(order)]
+        state['i'] += 1
+        over = per_model.get(name, per_model.get('default', {}))
+        return {**orig(objective), **over}
+
+    return patched
 
 
 def arm_frames(ds_train: pd.DataFrame, ds_test: pd.DataFrame, info: dict,
@@ -319,7 +342,10 @@ def run(args):
                     if info['kind'] == 'serve_marcel':
                         continue  # derived after baseline
                     a_train, a_test = arm_frames(train_all, test_all, info, all_added)
-                    if info['hp']:
+                    if info.get('hp_per_model'):
+                        ppm._xgb_params = _per_model_params(orig_params,
+                                                            info['hp_per_model'])
+                    elif info['hp']:
                         ppm._xgb_params = (lambda hp_over: lambda obj:
                                            {**orig_params(obj), **hp_over})(info['hp'])
                     t0 = time.time()

@@ -128,5 +128,20 @@
     "Risks pre-registered: pattern auto-capture of *_L10 adds (per-arm drop discipline is the defense); LOAD_BEARING columns refused for drops; ppm.SEED/_EXPLICIT_FEATURES/_xgb_params module globals restored in finally; F2 = E10 caution zone (regression-flag clause); team_elo_pregame ends 2026-05-13 (23 NaN F3 games in e2 arm, XGB NaN-native, prod ELO not refreshed); P1/P2 headlines were single-seed - compare within-loop only; no CI-floor margins anywhere (team-loop lesson).",
     "Phase D distributional heads: Kai chose include-as-stretch (exploratory only); NN-embed multi-output and week-ahead serving remain out of scope.",
     "2026-07-17 ~09:45 JST: player loop queue COMPLETE. Verdicts: P4 KEEP(d2_fatigue only), P5 REJECT, P6 REJECT, P7 REJECT_REGRESSION (9/11 better, BLK veto; P7b staged). Stretch: Phase D feasibility answered GO. Wall time ~15h incl. overnight machine sleep during P7 search; ~1.5h actual compute."
+  ],
+  "post_loop": [
+    {
+      "id": "P7B",
+      "status": "done",
+      "requested_by": "Kai 2026-07-17",
+      "verdict_note": "P7B = KEEP (7.4 min). hp_per_model arm (tuned all heads except BLK): 9/11 stats pass, ZERO regression flags (BLK flat +0.0000..+0.0008 ns), FP better every fold. First player HP change to clear a gate. Prod adoption staged: needs per-submodel HP support in player_projection_models.py.",
+      "gate": "PRE-REGISTERED (same as P7): >=1 stat passes P3 keep-gate AND no regression-flag stat."
+    },
+    {
+      "id": "D2.adopt",
+      "status": "done",
+      "requested_by": "Kai 2026-07-17",
+      "verdict_note": "d2 columns ADOPTED: pre-filter impl in player_dataset.py::add_player_rolling + _EXPLICIT_FEATURES; dataset rebuilt 83,266x202; bundle xgb_player_20260717 retrained (139 feats incl. MIN_PREV_GAME/CUM_MIN_LAST3), current pointer updated. LOCAL only - cloud rides next pipeline image rebuild. NOTE: frozen loop pickle overwritten by adoption (sha changed; loop was complete)."
+    }
   ]
 }

@@ -19,7 +19,7 @@
     "started_at": "2026-07-16T18:20:00+09:00"
   },
   "consecutive_infra_failures": 0,
-  "current": "P7.search",
+  "current": "Stretch.quantile",
   "queue": [
     {
       "id": "Smoke",
@@ -85,7 +85,7 @@
     {
       "id": "P7.search",
       "kind": "script",
-      "status": "running",
+      "status": "done",
       "depends_on": [
         "P5"
       ],
@@ -94,12 +94,13 @@
       "log": "logs/p7_search.log",
       "gate": null,
       "notes": "objective = mean over 11 stats of (XGB MAE / Marcel MAE), averaged over F1+F2 only (F3 reserved for the gate), 2 seeds, TPE + MedianPruner, SQLite outputs/p7_optuna.db, incumbent enqueued as trial 0",
-      "verdict": null
+      "verdict": null,
+      "verdict_note": "41 complete + 9 pruned (spanned machine sleep; SQLite storage handled it). Best 0.9575 vs incumbent 0.9615; winner depth-4/lr .026/lambda 21/alpha 8."
     },
     {
       "id": "P7.gate",
       "kind": "player_ab",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "P7.search"
       ],
@@ -107,12 +108,13 @@
       "output_json": "outputs/p7_gate.json",
       "log": "logs/p7_gate.log",
       "gate": "PRE-REGISTERED (superiority, P3 keep-gate): tuned HPs vs incumbent must pass the keep-gate on >=1 stat (delta<0, p<0.05, all folds, >=2/3 seeds) with NO regression-flag stat. F3 was never used for selection.",
-      "verdict": null
+      "verdict": null,
+      "verdict_note": "P7 = REJECT_REGRESSION (mechanical, 8 min). Tuned HPs TRANSFERRED (9/11 stats pass keep-gate, PTS -0.033, FP better every fold) but BLK sig worse F1+F2 -> any-stat veto. No override (genuine regression, unlike E22 technicality). P7b staged: per-submodel HPs, needs Kai. Tuning-log section + row."
     },
     {
       "id": "Stretch.quantile",
       "kind": "script",
-      "status": "pending",
+      "status": "running",
       "depends_on": [
         "P7.gate"
       ],

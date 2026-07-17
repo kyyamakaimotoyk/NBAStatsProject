@@ -42,6 +42,7 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **P1** | **Player counting-stat projections** — dataset + baselines + two-stage XGB + 3-season validation/calibration report | New product surface (public `/players` projection table + Bedrock LLM fantasy advisor, docs/player_projections_plan.md) needs per-player MIN + PTS/REB/AST/STL/BLK/TOV/3PM/3PA/FTM/FTA. User-set ship gate: deep calibration + validation on the last 3 seasons before `/players` goes public. | `experiments/p1_player_dataset.py`: 57,854 top-8-by-rolling-MPG player-games (2023-24 → 2025-26 regular seasons, 2022-23 warm-up), ~150 leakage-safe shift-1 features incl. approved Tier-2 groups A/B/C/G (opportunity/hustle, vacated minutes/usage, Vegas spread/total/implied). `p1_player_models.py`: naive L10, Marcel shrinkage (must-beat), two-stage XGB (minutes model × per-36 rates; `count:poisson` with log-minutes exposure for STL/BLK/TOV/3PA/FTA; 3PM/FTM = attempts × shrunken make-rate). `p1_player_validation.py`: 2 season walk-forward folds, paired t-tests, decile reliability, Poisson frequency calibration, split-conformal coverage, minutes-vs-rate decomposition, slices, fantasy aggregates, feature-target correlation matrix. | **XGB beats Marcel on 10/11 targets in both folds, all p≤2.6e-11** (MIN MAE 4.93→4.63 / 4.87→4.59; PTS 5.23→5.03 / 5.17→4.96; 3PA −0.16; STL flat — R²≈0.08, near-noise). Decile calibration tight; conformal coverage 0.78-0.82 (80%) / 0.89-0.91 (90%); Poisson tails over-forecast elite STL/BLK bins; ~15% of PTS error attributable to the minutes model; fantasy-pts MAE 8.03 vs Marcel 8.41. Full report: docs/p1_player_validation_report.md. | **Baseline established 2026-07-09** — `/players` ship gate pending Kai's review; §P1 below |
 | **P2** | **Playoff support + 4th season** (extends P1) | Explore page showed playoff actuals with no predictions and no 2023-24 predictions; the nightly as first built would have predicted playoffs on features frozen at regular-season end. Kai: Option A (support playoffs) + extend backfill to 2023-24. | Season-year now spans regular+playoffs+play-in+Cup (`SEASON_YEAR` grouping key, `IS_PLAYOFF` feature, season-to-date accumulates through the postseason; preseason skipped via GAME_ID type digit). Warm-up 2021-22; train years 22-23..25-26 → 83,266 rows (5,708 playoff). Three walk-forward folds incl. new train-22-23→test-23-24. Harness unchanged → docs/p2_player_validation_report.md; backfill version `p2_wf_20260710`. | New fold 1 clears the gate (XGB beats Marcel 10/11, p≤5.6e-31; STL flat as in every fold). **Playoffs: XGB ≤ Marcel on 11/11 stats**; the regime shift lands in MINUTES (MAE 5.00 PO vs 4.54 reg) while PTS error *drops* in playoffs (4.79 vs 4.96 — healthy, stable-role rosters). Backfill 62,156 rows incl. postseason; 38,177 p1_wf rows retired. | **Implemented 2026-07-10** — §P2 below |
 | **P4** | **Parked Tier-2 feature-group ablations (D2/E2/F2a/F2b/F2c/H2)** | The plan doc's round-1 decision (2026-07-09) adopted groups A/B/C/G and parked D2 (schedule/fatigue), E2 (team ELO), F2 (opponent defense, 3 sub-arms), H2 (matchup interactions) "for a later ablation round" — this is that round, run by the 2026-07 player loop. | `experiments/p4_feature_arms.py` builds each group as an add-columns parquet (shift(1) rolling, opponent-mirrored, coverage .988–1.000; no production code touched); `loop_player_ab.py` runs 7 arms × 3 folds × 3 seeds (63 fits, 25.5 min) with per-arm add-column drop discipline (any `*_L10`-named add is auto-captured by `feature_columns()` — every arm drops non-owned adds, baseline asserted at 137). P3 keep-gate per stat + E10 regression-flag clause, pre-registered. | **KEEP d2_fatigue only** (`MIN_PREV_GAME`, `CUM_MIN_LAST3`): MIN passes on **3/3 seeds** — Δ −0.038…−0.063 with p≈0 in every (fold, seed); MIN MAE 4.644→4.593. PTS rides along −0.012 (ns). e2_elo/f2a/f2b/h2 all flat REJECT; **f2c_hustle REJECT_REGRESSION** — TOV significantly worse in F2+F3 (+0.0013…+0.0030, p=.0001–.03) on all seeds: the E10 "_ALLOWED-features regress" caution replicated at player level. | **KEEP (d2 staged, adoption = Kai) 2026-07-16** — §P4 below |
+| **P7** | **First player hyperparameter search (Optuna TPE, F3 held out)** | The shared `_xgb_params` (300 trees, depth 5, lr .05) was hand-set in P1 and never searched — the player sibling of E24, with E24's lesson baked in: selection (F1+F2) never touches the confirmation fold (F3). | `experiments/p7_hp_search.py`: 50-trial TPE, objective = mean over 11 stats of MAE_xgb/MAE_marcel on F1+F2 × 2 seeds (scale-free), MedianPruner, SQLite, incumbent = trial 0. Winner (350 trees, depth 4, lr .026, mcw 19, λ 21.3, α 8.0 — heavy regularization again) gated via `loop_player_ab.py` `hp` arm, 3 folds × 3 seeds, P3 keep-gate + regression-flag clause pre-registered. | **The tuned config TRANSFERRED — unlike E24**: 9/11 stats pass the keep-gate on held-out folds (PTS −0.033, MIN −0.019, REB −0.013; STL sig better 3/3 seeds), fantasy composite better in every fold (−.057/−.035/−.009). **But BLK regressed significantly in F1+F2** (+.0019…+.0029) and the pre-registered any-stat veto forces REJECT. Search: best 0.9575 vs incumbent 0.9615 on the objective. | **REJECT (mechanical; 9-vs-1 tension documented, P7b staged)** 2026-07-17 — §P7 below |
 | **P5** | **Isotonic tail calibration for the STL/BLK Poisson heads** | P1/P2 documented the one calibration defect in the player model: above λ≈2 the Poisson head over-forecasts 2+ STL/BLK games (BLK [2,3): implied .666 vs empirical .632); assessment §3 gap #1 queued "negative-binomial or tail shrinkage." Isotonic maps chosen (points untouched, MAE non-regression by construction; XGBoost has no NB objective). | `experiments/p5_tail_calibration.py`: per (fold × seed [42,7,202]) chronological 85/15 train split → TwoStageXGB on 85% → iso maps λ→P(0), λ→P(2+) fit on the 15% → eval on the test fold: λ-bin tables (Poisson vs isotonic \|implied−empirical\|), 3-bucket Brier. Gate pre-registered: isotonic must beat Poisson on the λ≥1 P(2+) gap in ALL folds for BOTH stats with Brier no worse. | **Maps made it WORSE**: STL P(2+) gap .023→.043, BLK .036→.036, Brier no-worse failed 8/9 fold-stat cells (only F3\|BLK passed). Nonparametric isotonic overfits the sparse λ≥2 region on a ~3k-row within-fold slice — the defect is real, this correction is wrong-shaped. | **REJECT** 2026-07-16 — §P5 below |
 | **P6** | **STL-serve-Marcel production decision** | STL sat at its noise floor in every P1/P2 fold (single-seed); P1 flagged "consider serving the Marcel number for steals if two more folds agree." First experiment of the 2026-07 player loop; Iter0's 3-seed baseline refresh confirmed XGB not significantly better on STL in 6/9 runs. | `experiments/loop_player_ab.py` (new generic player A/B harness, P3 protocol: 3 folds × seeds [42,7,202]) with a `serve_marcel_for: ["STL"]` arm — baseline XGB predictions with STL swapped to the fold's Marcel number, zero extra fits. Pre-registered non-inferiority gate: never significantly worse in any fold (≥2/3 seeds), mean ΔMAE ≤ +0.005, fantasy-pts MAE cost ≤ +0.01/fold. | Gate condition (a) FAILED decisively: in F2 (test 2024-25) Marcel-STL is significantly WORSE on all 3 seeds (ΔMAE +0.0035…+0.0042, p=.001–.006). Mean Δ +0.0020 and FP costs (−.010/−.001/+.006) passed. Every statistically significant difference favors XGB. | **REJECT — XGB keeps STL, production unchanged** 2026-07-16 — §P6 below |
 | **E22** | **Feature pruning — top-250 group-pruned set vs the 573-column config** | Assessment §2.1: the team feature set is saturated, not leaking — 573 cols vs ~6k train games, 456 of them inter-correlated L5/L10 rolling stats; E15's flat learning curve says signal (not sample) binds, so redundant columns mostly add variance. Pruning = assessment item #7; first experiment of the 2026-07 autonomous loop. | `experiments/e22_perm_importance.py`: OOS permutation importance (RF+XGB × clf+reg × W1–W5 test slices × 3 seeds, n_repeats=5, neg-logloss/neg-MAE), aggregated at base-feature-GROUP level (HOME_/AWAY_/DIFF_ triplets stay together) → keep-lists top250 (252 cols) / top150 (152 cols) → `experiments/loop_ab.py` A/B on frozen snapshot `20260703T072718Z` (6,363 games): W5 10-seed paired tests + 21 monthly windows × 3 seeds, pooled n=4,032. Non-inferiority gates PRE-REGISTERED in `outputs/experiment_loop_state.json` before each launch. | Pruned sets are never significantly worse anywhere, and better where it matters. W5: AUC significantly FOR pruned on all 4 arm×family pairs (+0.008…+0.022, p=.016–.044); top250 RF MAE −0.086 (t p=.002). Pooled windows: top250 passes both families; RF MAE −0.026 (t p=.003). top150 FAILS — XGB pooled MAE +0.11 significantly against (p=.038). One deviation: W5 XGB acc CI floor missed by 0.0024 (point est. +1.7pp FOR); large-n stage ruled. Ranking face-valid: ELO_DIFF #1 group, availability (PLAYERS_OUT, slot impacts) next — mirrors E9/E12. | **KEEP top250 — recommendation staged, adoption is Kai's call** 2026-07-16 — §E22 below |
@@ -1833,3 +1834,71 @@ experiments-table verdict only, not ingested into experiment_results).
 - Phase D distributional heads would subsume this entirely (quantile/NB heads
   emit tail probabilities natively) — if Phase D proceeds, drop the post-hoc
   map idea rather than retrying it.
+
+## 2026-07-17 — Experiment P7: first player hyperparameter search
+
+### Why
+The player model's shared `_xgb_params` (300 trees, depth 5, lr 0.05, mcw 20)
+were hand-set in P1 (2026-07-09) and never searched — the player-model
+sibling of team-side E24, whose lesson is built into the design: the search
+selects on F1+F2 only; F3 exists solely for the pre-registered gate.
+
+### Hypothesis
+A 50-trial TPE study (objective = mean over the 11 targets of
+MAE_xgb / MAE_marcel, F1+F2 × 2 seeds, scale-free across stats) finds a
+config that beats the incumbent on the P3 keep-gate: ≥1 stat with ΔMAE<0 and
+p<0.05 in all 3 folds for ≥2/3 seeds, with NO stat tripping the regression
+flag (significantly worse in ≥2 folds for ≥2 seeds).
+
+### Setup
+`experiments/p7_hp_search.py` (SQLite storage `outputs/p7_optuna.db`,
+MedianPruner, incumbent enqueued as trial 0; 41 complete + 9 pruned; the run
+spanned a machine sleep overnight — Optuna storage made that a non-event).
+Winner: 350 trees, depth 4, lr 0.0256, mcw 19, subsample 0.67, colsample
+0.83, reg_lambda 21.3, reg_alpha 8.0 — the same heavy-regularization
+direction E24's team search found. Objective: best 0.9575 vs incumbent
+0.9615. Gate: `loop_player_ab.py`, arms baseline vs `hp` override, 3 folds ×
+3 seeds (8 min).
+
+### Results
+**The selection gains transferred — the opposite of E24.** On held-out
+evaluation, 9 of 11 stats pass the full keep-gate: PTS −0.0327, MIN −0.0185,
+REB −0.0125, AST −0.0103, FTA −0.0070, FG3A −0.0062, FTM −0.0058, FG3M
+−0.0023, and even STL −0.0022 (significant on 3/3 seeds — the stat that
+never beat Marcel now improves within-model). Fantasy-composite MAE improves
+in every fold (−0.057 / −0.035 / −0.009). **BLK regressed**: +0.0029/+0.0019
+mean in F1/F2 with paired significance (F3 −0.0005, flat) — the heavier
+regularization apparently starves the lowest-λ Poisson head. The
+pre-registered any-stat regression veto therefore forces the verdict.
+
+### Decision
+**REJECT (mechanical)** — the incumbent HPs stay in production. No override:
+unlike E22's documented deviation (a CI-width technicality with the point
+estimate in favor), BLK's flag fired on a genuine, replicated significant
+regression; overriding a pre-registered hard clause because the aggregate
+looks good is the forking-paths behavior the protocol exists to prevent.
+
+**The 9-vs-1 tension is documented as a gate-design lesson**: the any-stat
+veto was calibrated for feature adds (E10-class harm across the board), and
+is arguably miscalibrated for HP changes, where per-stat tradeoffs are
+expected and the TwoStageXGB architecture makes per-stat HP assignment
+natural (9 independent submodels). **Staged follow-up P7b (needs Kai's
+go-ahead)**: extend the harness `hp` arm to per-submodel dicts (~15 lines),
+run tuned-HPs-for-all-heads-except-BLK under its own pre-registered gate —
+one ~8-minute run. Note the minutes-model coupling: BLK's exposure offset
+comes from the minutes head, so the mixed config is close to, but not
+identical to, the arms measured here — hence a fresh gate run rather than
+composition of this run's numbers.
+
+### Caveats / follow-ups
+- Search breadth was 50 trials × 2 seeds on 2 folds; the winner sits in a
+  broad flat region (trials 35–43 within 0.001 of each other) — more trials
+  are unlikely to change the story, per the MedianPruner's 9 prunes.
+- The objective weighted all 11 stats equally; a fantasy-weighted or
+  PTS/MIN-weighted objective would bias the search toward the stats that
+  matter and might have avoided the BLK sacrifice organically. Candidate
+  refinement if P7b proceeds.
+- STL improving significantly under tuned HPs (after P6 showed XGB's edge
+  over Marcel is fold-dependent) suggests STL's noise floor is partly a
+  regularization artifact, not purely irreducible — small update against
+  "STL is hopeless."

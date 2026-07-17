@@ -1,0 +1,37 @@
+{
+  "best_value": 0.9575241954009046,
+  "best_params": {
+    "n_estimators": 350,
+    "max_depth": 4,
+    "learning_rate": 0.02564888603022094,
+    "min_child_weight": 19,
+    "subsample": 0.666016060577559,
+    "colsample_bytree": 0.8280441108448228,
+    "reg_lambda": 21.34660167854208,
+    "reg_alpha": 7.97486168468657
+  },
+  "incumbent_params": {
+    "n_estimators": 300,
+    "max_depth": 5,
+    "learning_rate": 0.05,
+    "min_child_weight": 20,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_lambda": 1.0,
+    "reg_alpha": 0.001
+  },
+  "incumbent_value": 0.9615115097480715,
+  "n_complete": 41,
+  "n_pruned": 9,
+  "search_folds": [
+    "F1_train2223_test2324",
+    "F2_train2224_test2425"
+  ],
+  "seeds": [
+    42,
+    7
+  ],
+  "objective": "mean over 11 targets of MAE_xgb/MAE_marcel, F1+F2 only",
+  "elapsed_min": 777.1,
+  "run_at": "2026-07-17T09:16:28"
+}

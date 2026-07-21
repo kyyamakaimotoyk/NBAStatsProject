@@ -122,9 +122,9 @@ function PrivacyJapanese() {
         ブロックしています。
       </p>
 
-      <h2>ファンタジー相談室</h2>
+      <h2>ファンタジー・バスケ相談所</h2>
       <p>
-        <Link href="/advisor">ファンタジー相談室</Link>
+        <Link href="/advisor">ファンタジー・バスケ相談所</Link>
         に送信された質問と生成された回答は、サービス改善のために保存されることがあります。
         個人情報は入力しないようお願いします。フォームはCloudflare Turnstileによる
         ボット対策で保護されています。

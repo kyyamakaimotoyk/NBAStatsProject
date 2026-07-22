@@ -53,8 +53,8 @@ jobs:
           # Analytics + ads (both public ids by design). Leave commented until
           # the accounts exist — unset means the site ships zero third-party
           # scripts and no ad slots. See docs/ad_monetization_plan.md.
-          # NEXT_PUBLIC_GA_ID: G-XXXXXXXXXX          # GA4 Admin -> Data streams
-          # NEXT_PUBLIC_ADSENSE_CLIENT: ca-pub-XXXX  # AdSense -> Account -> Settings
+          NEXT_PUBLIC_GA_ID: G-S4WFMMXKJR          # GA4 Admin -> Data streams
+          NEXT_PUBLIC_ADSENSE_CLIENT: pub-8164683714910600  # AdSense -> Account -> Settings
 
       # Exchange the OIDC token for temporary AWS credentials (no stored keys).
       - uses: aws-actions/configure-aws-credentials@v4

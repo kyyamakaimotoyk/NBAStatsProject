@@ -267,6 +267,10 @@ resource "aws_ecs_service" "advisor" {
   desired_count   = 1
   launch_type     = "FARGATE"
 
+  # Same as the api service: propagate tags so Fargate spend is cost-allocated.
+  enable_ecs_managed_tags = true
+  propagate_tags          = "SERVICE"
+
   network_configuration {
     subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.app.id, aws_security_group.api.id]

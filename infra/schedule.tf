@@ -61,6 +61,19 @@ data "aws_iam_policy_document" "scheduler_run" {
     actions   = ["ecs:UpdateService"]
     resources = [aws_ecs_service.api.id]
   }
+
+  # propagate_tags makes RunTask tag the launched task, which needs TagResource
+  # on tasks in our cluster (and only at task creation).
+  statement {
+    sid       = "TagOnRunTask"
+    actions   = ["ecs:TagResource"]
+    resources = ["arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:task/${aws_ecs_cluster.main.name}/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "ecs:CreateAction"
+      values   = ["RunTask"]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "scheduler_run" {
@@ -97,6 +110,9 @@ resource "aws_scheduler_schedule" "nightly_predict" {
     ecs_parameters {
       task_definition_arn = aws_ecs_task_definition.pipeline.arn
       launch_type         = "FARGATE"
+      # Fargate is billed per task; without this the pipeline's compute shows
+      # as untagged spend in Cost Explorer.
+      propagate_tags = "TASK_DEFINITION"
       task_count          = 1
 
       network_configuration {
@@ -145,6 +161,9 @@ resource "aws_scheduler_schedule" "postslate_grade" {
     ecs_parameters {
       task_definition_arn = aws_ecs_task_definition.pipeline.arn
       launch_type         = "FARGATE"
+      # Fargate is billed per task; without this the pipeline's compute shows
+      # as untagged spend in Cost Explorer.
+      propagate_tags = "TASK_DEFINITION"
       task_count          = 1
 
       network_configuration {
@@ -194,6 +213,9 @@ resource "aws_scheduler_schedule" "pretip_refresh" {
     ecs_parameters {
       task_definition_arn = aws_ecs_task_definition.pipeline.arn
       launch_type         = "FARGATE"
+      # Fargate is billed per task; without this the pipeline's compute shows
+      # as untagged spend in Cost Explorer.
+      propagate_tags = "TASK_DEFINITION"
       task_count          = 1
 
       network_configuration {
@@ -244,6 +266,9 @@ resource "aws_scheduler_schedule" "weekly_retrain" {
     ecs_parameters {
       task_definition_arn = aws_ecs_task_definition.pipeline.arn
       launch_type         = "FARGATE"
+      # Fargate is billed per task; without this the pipeline's compute shows
+      # as untagged spend in Cost Explorer.
+      propagate_tags = "TASK_DEFINITION"
       task_count          = 1
 
       network_configuration {

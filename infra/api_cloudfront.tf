@@ -5,8 +5,11 @@
 #   - DDoS edge absorption (AWS Shield Standard, free) across ~600 edges,
 #   - origin hiding (the ALB only accepts CloudFront's IPs; see api_alb.tf SG),
 #   - a place to bolt on AWS WAF / rate-limiting later (web_acl_id).
-# It is NOT used as a cache here: the API is dynamic (RDS-fresh per request), so
-# we attach the managed CachingDisabled policy and forward everything to origin.
+# It is ALSO the edge cache for every public read path (short 5-min TTL via the
+# api_perf policy below — the data only changes when the ingest/prediction jobs
+# run, a few times a day). Only /api/health (monitoring must see the live
+# process) and /api/advisor (personalized POST) stay uncached, via the managed
+# CachingDisabled policy on the default behavior.
 #
 # HTTPS end-to-end. The trick for the CloudFront->ALB leg: CloudFront connects to
 # the ALB using the name `api-origin.hoopmodel.com`, which the wildcard cert
@@ -21,7 +24,7 @@ data "aws_ec2_managed_prefix_list" "cloudfront" {
 }
 
 # Managed policies (stable, AWS-provided):
-#  - CachingDisabled: never cache (dynamic API; no stale predictions).
+#  - CachingDisabled: never cache (the default behavior: health + advisor).
 #  - AllViewer: forward all viewer headers/cookies/query strings to the origin
 #    (so ?date=, ?days=, ?model=, and the CORS Origin header reach FastAPI).
 data "aws_cloudfront_cache_policy" "caching_disabled" {
@@ -47,9 +50,14 @@ resource "aws_route53_record" "api_origin" {
 
 
 resource "aws_cloudfront_distribution" "api" {
-  enabled     = true
-  comment     = "${var.project} API — shields the ALB"
-  price_class = "PriceClass_100" # US/Canada/Europe edges only (cheapest)
+  enabled = true
+  comment = "${var.project} API — shields the ALB"
+  # PriceClass_200 is the cheapest class that includes Tokyo/Osaka edges.
+  # PriceClass_100 (US/CA/EU only) forced Japanese readers of this bilingual
+  # site onto US edges: ~0.25s TLS + ~0.65s edge HITs measured from Tokyo,
+  # vs ~0.03s once served locally. Below CloudFront's always-free tier
+  # (1 TB + 10M req/mo) the class change costs nothing.
+  price_class = "PriceClass_200"
   aliases     = ["api.${var.domain_name}"]
 
   origin {
@@ -74,10 +82,11 @@ resource "aws_cloudfront_distribution" "api" {
     compress                 = true
   }
 
-  # Model-performance + data-exploration data only changes nightly / on feature
-  # regen, so cache it (~5 min) at the edge instead of hitting RDS every visit. The
-  # cache key includes the Origin header (correct CORS per origin) and all query
-  # strings (so each window/feature caches separately).
+  # Every public read path gets the ~5-min edge cache: the underlying data only
+  # changes when the scheduled ingest/prediction jobs write (a few times a day),
+  # so RDS-per-visit bought freshness nothing needs. The cache key includes the
+  # Origin header (correct CORS per origin) and all query strings (each
+  # window/feature/date/model variant caches separately).
   ordered_cache_behavior {
     path_pattern             = "/api/performance/*"
     target_origin_id         = "alb-api"
@@ -91,6 +100,41 @@ resource "aws_cloudfront_distribution" "api" {
 
   ordered_cache_behavior {
     path_pattern             = "/api/explore/*"
+    target_origin_id         = "alb-api"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS"]
+    cached_methods           = ["GET", "HEAD"]
+    cache_policy_id          = aws_cloudfront_cache_policy.api_perf.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+    compress                 = true
+  }
+
+  # /api/predictions and /api/predictions/latest (no trailing slash on the
+  # first, so the pattern has no / before the wildcard).
+  ordered_cache_behavior {
+    path_pattern             = "/api/predictions*"
+    target_origin_id         = "alb-api"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS"]
+    cached_methods           = ["GET", "HEAD"]
+    cache_policy_id          = aws_cloudfront_cache_policy.api_perf.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+    compress                 = true
+  }
+
+  ordered_cache_behavior {
+    path_pattern             = "/api/accuracy/*"
+    target_origin_id         = "alb-api"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS"]
+    cached_methods           = ["GET", "HEAD"]
+    cache_policy_id          = aws_cloudfront_cache_policy.api_perf.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+    compress                 = true
+  }
+
+  ordered_cache_behavior {
+    path_pattern             = "/api/players/*"
     target_origin_id         = "alb-api"
     viewer_protocol_policy   = "redirect-to-https"
     allowed_methods          = ["GET", "HEAD", "OPTIONS"]
@@ -130,11 +174,14 @@ resource "aws_cloudfront_distribution" "api" {
 }
 
 
-# Short-TTL cache policy for /api/performance/* — keeps the nightly-changing model
-# data fresh-enough (~5 min) while collapsing repeat reads off RDS.
+# Short-TTL cache policy shared by every cached /api/* behavior — keeps the
+# batch-produced data fresh-enough (~5 min) while collapsing repeat reads off
+# RDS. The API now also sends Cache-Control (max-age=60, s-maxage=300), and
+# CloudFront prefers s-maxage over these TTLs when present — so the effective
+# edge TTL stays ~5 min either way; default_ttl is the no-header fallback.
 resource "aws_cloudfront_cache_policy" "api_perf" {
   name        = "${var.project}-api-perf"
-  comment     = "Short-TTL cache for /api/performance/* (data changes nightly)"
+  comment     = "Short-TTL cache for public /api/* read paths (batch-produced data)"
   default_ttl = 300
   min_ttl     = 0
   max_ttl     = 3600

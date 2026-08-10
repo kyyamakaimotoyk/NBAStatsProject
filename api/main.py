@@ -19,8 +19,9 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from api import queries
 from api.db import db_healthy
@@ -48,6 +49,13 @@ app = FastAPI(
                 "only reads it.",
 )
 
+# Compress JSON bodies on the origin leg (CloudFront -> ALB fetches; the edge
+# already compresses toward viewers). Level 5, not the default 9: on a 0.25 vCPU
+# task the extra CPU of 9 buys a marginal size gain. Starlette inserts each
+# add_middleware at the FRONT of the stack, so GZip must be added before CORS —
+# that leaves CORS outermost and its headers intact on compressed responses.
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=5)
+
 # CORS: the Next.js static site calls this API cross-origin. Allowed origins come
 # from ALLOWED_ORIGINS (comma-separated) so prod domains are configured per-env.
 # Defaults to localhost dev ports.
@@ -63,6 +71,35 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+# Paths whose responses must never be cached: health (monitoring has to see the
+# live process) and the advisor (personalized POST flow).
+_NO_CACHE_PREFIXES = ("/api/health", "/api/advisor")
+
+
+@app.middleware("http")
+async def cache_headers(request: Request, call_next):
+    """Cache-Control on public GET responses.
+
+    max-age=60 lets page-to-page navigation reuse the browser cache instead of
+    refetching; s-maxage=300 keeps CloudFront's edge TTL at the same ~5 min the
+    api_perf cache policy already used (CloudFront prefers s-maxage, browsers
+    ignore it). Browser max-age is deliberately the shorter of the two — the
+    browser cache is the one we can never flush. Registered after CORS so it
+    runs outermost.
+    """
+    response = await call_next(request)
+    if (
+        request.method == "GET"
+        and response.status_code == 200
+        and request.url.path.startswith("/api/")
+        and not request.url.path.startswith(_NO_CACHE_PREFIXES)
+    ):
+        response.headers["Cache-Control"] = (
+            "public, max-age=60, s-maxage=300, stale-while-revalidate=600"
+        )
+    return response
+
 
 _VALID_MODELS = {"rf", "nn", "xgb"}
 

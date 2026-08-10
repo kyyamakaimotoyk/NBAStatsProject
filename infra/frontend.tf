@@ -86,8 +86,11 @@ resource "aws_cloudfront_distribution" "site" {
   enabled             = true
   default_root_object = "index.html"
   comment             = "${var.project} static site"
-  price_class         = "PriceClass_100"
-  aliases             = [var.domain_name, "www.${var.domain_name}"]
+  # PriceClass_200 = cheapest class with Tokyo/Osaka edges; PriceClass_100 was
+  # serving Japanese readers from US edges (0.74s TTFB measured from Tokyo).
+  # Free below CloudFront's always-free tier — see api_cloudfront.tf for detail.
+  price_class = "PriceClass_200"
+  aliases     = [var.domain_name, "www.${var.domain_name}"]
 
   # Access logs -> S3 (Week 4.4). See cf_logs.tf for the bucket + ACL setup.
   logging_config {

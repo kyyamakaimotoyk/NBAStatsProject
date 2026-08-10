@@ -7,6 +7,7 @@ provider "aws" {
   default_tags {
     tags = {
       Project   = var.project #defined in variables.tf
+      League    = "NBA" # cost-allocation: pairs with League=MLB in the MLB repo
       ManagedBy = "terraform"
     }
   }

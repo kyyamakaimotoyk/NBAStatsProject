@@ -16,7 +16,8 @@ Zero-trust layers, outermost first (docs/player_projections_plan.md section 5):
               and pins the exact refusal sentence (prompt rules reduce the
               VALUE of abuse; the code rules above reduce ACCESS — the
               security boundary is IAM + caps, never the prompt)
-  audit       ADVISOR_OK / ADVISOR_TOKENS / ADVISOR_GATED / ADVISOR_REFUSED
+  audit       ADVISOR_OK / ADVISOR_TOKENS / ADVISOR_GATED /
+              ADVISOR_GUARDRAIL_BLOCKED / ADVISOR_TOOL / ADVISOR_REFUSED
               log lines (CloudWatch metric filters attach to ADVISOR_TOKENS),
               plus a JSON record per request to s3://$ADVISOR_LOG_BUCKET/
               advisor_inputs/ for Athena analysis (hashed IP only; the site
@@ -30,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -425,7 +427,96 @@ Rules you must follow:
 - Projections are model estimates, not guarantees; note relevant injury flags.
 - Be concise and actionable: a short recommendation first, then the reasoning.
   Keep the whole answer under 250 words.
+- Format for plain-text display. The site renders your answer as plain text,
+  NOT markdown — never use markdown syntax (#, *, **, backticks, tables,
+  numbered headers). Structure every answer as: one plain sentence that
+  answers the question directly; then one short line per player or decision
+  in the form "Player: the numbers that drove the call"; then at most one
+  caveat line, only when an injury flag or data gap genuinely matters. No
+  greetings, no restating the question, no "Great question", no closing
+  offers to help further.
 """
+
+
+# ---------------------------------------------------------------------------
+# Managed system prompt (Bedrock Prompt Management; bedrock_ops_lab.md Lab 11)
+# ---------------------------------------------------------------------------
+
+_prompt_cache = {"day": None, "key": None, "text": None}
+
+
+def _aws_region() -> str:
+    return os.environ.get("AWS_REGION_NAME",
+                          os.environ.get("AWS_REGION", "us-east-1"))
+
+
+def _system_prompt() -> str:
+    """System prompt text. When ADVISOR_PROMPT_ID is set, fetch it from
+    Bedrock Prompt Management (bedrock-agent GetPrompt, pinned to
+    ADVISOR_PROMPT_VERSION; empty version = DRAFT) and cache it for the day so
+    the bytes stay stable behind the prompt-cache breakpoint. Any failure
+    falls back to the last good copy, then to the embedded SYSTEM_PROMPT —
+    a control-plane hiccup must never take the advisor down.
+
+    The managed prompt may reference {{refusal_text}}; it is substituted here
+    so the refusal-detection string in code and prompt can never drift."""
+    pid = os.environ.get("ADVISOR_PROMPT_ID", "").strip()
+    if not pid:
+        return SYSTEM_PROMPT
+    ver = os.environ.get("ADVISOR_PROMPT_VERSION", "").strip()
+    today = date.today().isoformat()
+    key = f"{pid}:{ver}"
+    if _prompt_cache["day"] == today and _prompt_cache["key"] == key:
+        return _prompt_cache["text"]
+    try:
+        import boto3
+        kwargs = {"promptIdentifier": pid}
+        if ver:
+            kwargs["promptVersion"] = ver
+        resp = boto3.client("bedrock-agent", region_name=_aws_region()).get_prompt(**kwargs)
+        default_name = resp.get("defaultVariant")
+        text = None
+        for variant in resp.get("variants", []):
+            t = ((variant.get("templateConfiguration") or {})
+                 .get("text", {}).get("text"))
+            if t and (text is None or variant.get("name") == default_name):
+                text = t
+        if not text:
+            raise ValueError(f"prompt {pid} has no text variant")
+        text = text.replace("{{refusal_text}}", REFUSAL_TEXT)
+        _prompt_cache.update(day=today, key=key, text=text)
+        return text
+    except Exception as exc:
+        print(f"WARN: managed prompt fetch failed — {exc}; using fallback")
+        return _prompt_cache["text"] or SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Guardrail pre-flight (Bedrock Guardrails; bedrock_ops_lab.md Lab 10)
+# ---------------------------------------------------------------------------
+
+def _guardrail_blocked(text: str) -> bool:
+    """Standalone ApplyGuardrail check on the assembled user text (source=
+    INPUT) BEFORE the model call — the Anthropic SDK's Bedrock path cannot
+    attach a guardrailIdentifier to the inference request, so pre-flight is
+    the integration point. A prompt attack therefore costs one guardrail text
+    unit, zero model tokens. Fail-open on errors: the guardrail is defense in
+    depth; the hard boundary stays IAM + the app-level caps and gates."""
+    gid = os.environ.get("BEDROCK_GUARDRAIL_ID", "").strip()
+    if not gid:
+        return False
+    try:
+        import boto3
+        resp = boto3.client("bedrock-runtime", region_name=_aws_region()).apply_guardrail(
+            guardrailIdentifier=gid,
+            guardrailVersion=os.environ.get("BEDROCK_GUARDRAIL_VERSION", "DRAFT").strip() or "DRAFT",
+            source="INPUT",
+            content=[{"text": {"text": text}}],
+        )
+        return resp.get("action") == "GUARDRAIL_INTERVENED"
+    except Exception as exc:
+        print(f"WARN: guardrail check failed — {exc}; allowing request")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -455,7 +546,7 @@ def _make_record(outcome: str, req: AdvisorRequest, prompt: str, roster: str,
                  advice: Optional[str] = None) -> dict:
     return {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "outcome": outcome,  # ok | gated | refused
+        "outcome": outcome,  # ok | gated | blocked (guardrail) | refused
         "ip_hash": _ip_hash(ip),
         "scoring_type": req.scoring_type,
         "slate_date": slate_date,
@@ -470,28 +561,220 @@ def _make_record(outcome: str, req: AdvisorRequest, prompt: str, roster: str,
     }
 
 
+# ---------------------------------------------------------------------------
+# Bedrock call: client selection, backoff, optional tool loop
+# ---------------------------------------------------------------------------
+
+def _bedrock_client():
+    """Client selection by model-id prefix, so flipping model generations is a
+    BEDROCK_MODEL_ID env change with no code edit: us./eu./apac. inference-
+    profile ids run on the legacy bedrock-runtime surface; bare anthropic.*
+    ids (the newest generation, e.g. anthropic.claude-sonnet-5) route via the
+    Mantle endpoint (Messages-API Bedrock; IAM action
+    bedrock-mantle:CreateInference — see infra/advisor.tf).
+
+    SDK auto-retries are disabled: _with_backoff below is the single retry
+    authority — stacking two retry layers multiplies worst-case attempts."""
+    model = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+    if model.split(".", 1)[0] in ("us", "eu", "apac"):
+        from anthropic import AnthropicBedrock  # lazy: advisor service only
+        return AnthropicBedrock(aws_region=_aws_region(), max_retries=0)
+    from anthropic import AnthropicBedrockMantle
+    return AnthropicBedrockMantle(aws_region=_aws_region(), max_retries=0)
+
+
+def _with_backoff(call):
+    """Exponential backoff with full jitter around one Bedrock call — the
+    AWS-recommended shape: sleep = random(0, min(cap, base * 2^attempt)), so
+    concurrent throttled clients spread out instead of retrying in lockstep.
+    Retries throttling (429, honoring a server-sent retry-after), server
+    errors (>=500) and connection drops. Other 4xx are our bug, never
+    retried. RateLimitError subclasses APIStatusError — order matters."""
+    import anthropic
+    attempts = int(os.environ.get("ADVISOR_MAX_RETRIES", "3"))
+    base, cap = 1.0, 8.0
+    for attempt in range(attempts + 1):
+        retry_after = None
+        try:
+            return call()
+        except anthropic.RateLimitError as exc:
+            err = exc
+            headers = getattr(getattr(exc, "response", None), "headers", None)
+            retry_after = headers.get("retry-after") if headers else None
+        except anthropic.APIStatusError as exc:
+            if exc.status_code < 500:
+                raise
+            err = exc
+        except anthropic.APIConnectionError as exc:
+            err = exc
+        if attempt >= attempts:
+            raise err
+        try:
+            delay = min(float(retry_after), cap)
+        except (TypeError, ValueError):
+            delay = random.uniform(0, min(cap, base * (2 ** attempt)))
+        print(f"WARN: bedrock retry {attempt + 1}/{attempts} in {delay:.1f}s "
+              f"after {type(err).__name__}")
+        time.sleep(delay)
+
+
+# Client-side tool loop (bedrock_ops_lab.md Lab 15). Bedrock has no
+# server-side MCP connector, so tools are the Lab 6 pattern: the model emits
+# tool_use, THIS process runs a read-only allowlisted function, the result
+# goes back as a tool_result block. The model never touches the DB.
+ADVISOR_TOOLS = [
+    {
+        "name": "get_injury_report",
+        "description": (
+            "Latest official pre-game NBA injury report: player, team and "
+            "status (Out / Doubtful / Questionable / Probable / Available). "
+            "Call this when injury status could change the recommendation "
+            "and the data block's injury section is missing or does not "
+            "cover the player asked about. Optionally filter by team name."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "team": {
+                    "type": "string",
+                    "description": "Optional team filter, e.g. 'Celtics' or 'BOS'.",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_upcoming_schedule",
+        "description": (
+            "Games per NBA team over the next N days (1-14) — the streaming/"
+            "pickup volume signal. Call this for questions about the "
+            "upcoming week, streamer choices, or schedule density."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Days ahead to count, 1-14. Default 7.",
+                },
+            },
+        },
+    },
+]
+
+
+def _tool_injury_report(team: str = "") -> str:
+    """Backend for get_injury_report. Tries today then yesterday (the report
+    lags on off-days). Team filter is a case-insensitive substring match on
+    the team name, so 'BOS', 'Boston' and 'Celtics' all work loosely."""
+    from datetime import timedelta
+    team_f = _sanitize(team, 40).lower()
+    for offset in (0, 1):
+        day = (date.today() - timedelta(days=offset)).isoformat()
+        try:
+            rows = queries.injury_report(day)
+        except Exception:
+            rows = []
+        if not rows:
+            continue
+        out = []
+        for r in rows[:120]:
+            team_name = str(r.get("team_name") or r.get("team_id") or "")
+            if team_f and team_f not in team_name.lower():
+                continue
+            out.append({"team": team_name, "player": r.get("player_name"),
+                        "status": r.get("status")})
+        return json.dumps({
+            "report_date": day,
+            "injuries": out if out else f"no listed injuries match '{team_f}'",
+        })
+    return json.dumps({"error": "no injury report available for today or yesterday"})
+
+
+def _tool_upcoming_schedule(days: int = 7) -> str:
+    """Backend for get_upcoming_schedule — _schedule_counts with a validated,
+    parameterized horizon (the only model-controlled value; clamped 1-14 and
+    bound as a query parameter, never interpolated)."""
+    try:
+        days = max(1, min(14, int(days)))
+    except (TypeError, ValueError):
+        days = 7
+    q = """
+        SELECT t.abbrev, COUNT(*) AS n FROM (
+            SELECT homeTeam_teamTricode AS abbrev FROM league_schedule
+            WHERE gameDate >= CURDATE() AND gameDate < DATE_ADD(CURDATE(), INTERVAL :days DAY)
+            UNION ALL
+            SELECT awayTeam_teamTricode FROM league_schedule
+            WHERE gameDate >= CURDATE() AND gameDate < DATE_ADD(CURDATE(), INTERVAL :days DAY)
+        ) t GROUP BY t.abbrev ORDER BY t.abbrev
+    """
+    try:
+        with get_engine().connect() as conn:
+            rows = conn.execute(sa.text(q), {"days": days}).fetchall()
+    except Exception as exc:
+        return json.dumps({"error": f"schedule unavailable: {type(exc).__name__}"})
+    if not rows:
+        return json.dumps({"error": "no games in that window (off-day or offseason)"})
+    return json.dumps({"days_ahead": days,
+                       "games_per_team": {a: n for a, n in rows}})
+
+
+_TOOL_BACKENDS = {
+    "get_injury_report": _tool_injury_report,
+    "get_upcoming_schedule": _tool_upcoming_schedule,
+}
+
+
 def _call_bedrock(system_blocks: list, user_text: str) -> tuple:
-    # Legacy bedrock-runtime client, deliberately (2026-07-13): the newer
-    # Mantle endpoint only serves the newest model generation (Sonnet 5 etc.),
-    # and those are blocked account-wide by a known AWS/Anthropic
-    # entitlement-sync bug ("not available for this account" despite
-    # AUTHORIZED). Sonnet 4.6 via the us.* inference profile works. When the
-    # bug is fixed, switch back to AnthropicBedrockMantle + BEDROCK_MODEL_ID
-    # anthropic.claude-sonnet-5 (env change + this import).
-    from anthropic import AnthropicBedrock  # lazy: advisor service only
-    client = AnthropicBedrock(
-        aws_region=os.environ.get("AWS_REGION_NAME",
-                                  os.environ.get("AWS_REGION", "us-east-1")))
-    resp = client.messages.create(
-        model=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6"),
-        max_tokens=int(os.environ.get("ADVISOR_MAX_TOKENS", "800")),
-        system=system_blocks,
-        messages=[{"role": "user", "content": user_text}],
-    )
+    """One advisor answer. With ADVISOR_TOOLS_ENABLED=1 this is a bounded
+    client-side tool loop (first call + up to 3 tool rounds); usage is summed
+    across rounds so ADVISOR_TOKENS keeps counting real spend. Note: tools
+    render BEFORE system in the prompt, so enabling them invalidates the
+    existing prompt-cache prefix once."""
+    client = _bedrock_client()
+    model = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+    tools_on = os.environ.get("ADVISOR_TOOLS_ENABLED") == "1"
+    messages = [{"role": "user", "content": user_text}]
+    totals = {"in": 0, "out": 0, "cache_read": 0}
+    resp = None
+    for round_no in range(4):
+        kwargs = dict(
+            model=model,
+            max_tokens=int(os.environ.get("ADVISOR_MAX_TOKENS", "800")),
+            system=system_blocks,
+            messages=messages,
+        )
+        if tools_on:
+            kwargs["tools"] = ADVISOR_TOOLS
+        resp = _with_backoff(lambda: client.messages.create(**kwargs))
+        totals["in"] += resp.usage.input_tokens
+        totals["out"] += resp.usage.output_tokens
+        totals["cache_read"] += getattr(resp.usage, "cache_read_input_tokens", 0) or 0
+        if resp.stop_reason != "tool_use":
+            break
+        messages.append({"role": "assistant", "content": resp.content})
+        results = []
+        for block in resp.content:
+            if block.type != "tool_use":
+                continue
+            backend = _TOOL_BACKENDS.get(block.name)
+            is_error = backend is None
+            try:
+                content = (f"unknown tool '{block.name}'" if is_error
+                           else backend(**(block.input or {})))
+            except TypeError:  # arguments outside the schema
+                content, is_error = "invalid tool arguments", True
+            except Exception as exc:
+                content, is_error = f"tool failed: {type(exc).__name__}", True
+            print(f"ADVISOR_TOOL name={block.name} err={int(is_error)}")
+            result = {"type": "tool_result", "tool_use_id": block.id,
+                      "content": content}
+            if is_error:
+                result["is_error"] = True
+            results.append(result)
+        messages.append({"role": "user", "content": results})
     text = "".join(b.text for b in resp.content if b.type == "text")
-    usage = {"in": resp.usage.input_tokens, "out": resp.usage.output_tokens,
-             "cache_read": getattr(resp.usage, "cache_read_input_tokens", 0)}
-    return text, usage
+    if not text:  # tool-round budget exhausted without an answer
+        raise RuntimeError(f"no text after {round_no + 1} rounds "
+                           f"(stop_reason={resp.stop_reason})")
+    return text, totals
 
 
 @router.post("/api/advisor", response_model=AdvisorResponse, tags=["advisor"])
@@ -540,10 +823,21 @@ def advisor(req: AdvisorRequest, request: Request, background_tasks: BackgroundT
                                              slate_date, ip, advice=advice))
             return AdvisorResponse(advice=advice, slate_date=slate_date, dry_run=True)
 
+        # Managed-guardrail pre-flight on the assembled user text (Lab 10):
+        # a prompt attack costs one guardrail text unit, zero model tokens.
+        if _guardrail_blocked(user_text):
+            print(f"ADVISOR_GUARDRAIL_BLOCKED ip={_ip_hash(ip)}")
+            background_tasks.add_task(
+                _archive_to_s3, _make_record("blocked", req, prompt, roster,
+                                             matchup, slate_date, ip))
+            raise HTTPException(status_code=400, detail=REFUSAL_TEXT)
+
         # Stable prefix (system prompt + day's data) before the cache breakpoint;
         # the volatile user text follows. Bedrock requires the explicit marker.
+        # The system prompt comes from Bedrock Prompt Management when
+        # ADVISOR_PROMPT_ID is set (day-cached => byte-stable), else embedded.
         system_blocks = [
-            {"type": "text", "text": SYSTEM_PROMPT},
+            {"type": "text", "text": _system_prompt()},
             {"type": "text", "text": data_block, "cache_control": {"type": "ephemeral"}},
         ]
         try:

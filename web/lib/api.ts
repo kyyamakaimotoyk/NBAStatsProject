@@ -17,8 +17,9 @@ export type Prediction = {
   actual_winner: string | null;
   actual_margin: number | null;
   is_correct: boolean | null; // null until the game is played + backfilled
-  // Market closing line's implied home margin (benchmark, not model output).
-  // Only /api/performance/results populates it; null elsewhere.
+  // Market line's implied home margin (benchmark, not model output): the
+  // closing line once played, the latest pre-game line before. Populated by
+  // /api/performance/results and /api/predictions[/latest]; may be null.
   market_margin?: number | null;
   // Final score from game_list (null until the game is final).
   home_score?: number | null;

@@ -177,8 +177,9 @@ Bedrock notes: prompt caching supported via explicit `cache_control` blocks (top
 automatic caching is not); server-side MCP connector is NOT available on Bedrock — any future
 tools run as our own server-side tool loop (which fits zero-trust better anyway); Sonnet 5
 rejects non-default temperature/top_p/top_k; forced `tool_choice` on Bedrock requires thinking
-disabled (irrelevant until tools). One console step for Kai: enable Anthropic model access in
-Bedrock for the account/region.
+disabled (irrelevant until tools). ~~One console step for Kai: enable Anthropic model access in
+Bedrock for the account/region.~~ (Update 2026-08-10: the Model access page was retired
+2025-09-29 — models auto-enable on first invocation; the task-role IAM is the only gate.)
 
 **Endpoint:** `POST /api/advisor` `{prompt, roster?, matchup_score?, scoring_type?}` on the
 FastAPI service. Server fetches context itself: today's `player_predictions`, injuries,
@@ -326,7 +327,8 @@ production error is flat-to-lower. Full detail: model_tuning_log §P2.
     only, disclaimer; nav "Advisor"; EN copy with ja = en mirror.
   - **Deploy order matters**: push FIRST (CI builds the api image with
     `anthropic[bedrock]`), THEN `terraform apply` (the new service then starts on the
-    fresh image), after enabling Anthropic model access in the Bedrock console (Lab 0).
+    fresh image). (The old "enable model access in the Bedrock console first" precondition
+    is gone — page retired 2025-09-29, models auto-enable on first invocation.)
   - **Hardening pass (2026-07-11)**, layered cheapest-first (principle: prompt rules
     reduce the VALUE of abuse, code rules reduce ACCESS; the boundary is IAM + caps):
     (1) Cloudflare Turnstile, feature-flagged — widget renders only when

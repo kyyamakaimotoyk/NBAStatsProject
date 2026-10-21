@@ -7,8 +7,9 @@
 # main API task keeps zero Bedrock permissions. Kill switch = scale this
 # service to 0 (or set ADVISOR_DISABLED=1) without touching the API.
 #
-# Prerequisite (one-time, console): enable Anthropic model access in Bedrock
-# for this account/region — see docs/bedrock_lab.md Lab 0.
+# No console prerequisite since 2025-09-29 (Model access page retired):
+# serverless models auto-enable on first invocation; the task-role IAM below
+# is the ONLY access gate. See docs/bedrock_ops_lab.md Lab 9.
 # =============================================================================
 
 resource "aws_cloudwatch_log_group" "advisor" {
@@ -54,6 +55,144 @@ data "aws_iam_policy_document" "advisor_bedrock" {
       "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5*",
       "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*.anthropic.claude-sonnet-5*",
     ]
+  }
+
+  # Pre-flight prompt check (bedrock_ops_lab.md Lab 10): the app calls the
+  # standalone ApplyGuardrail API before every model call — the Anthropic SDK
+  # path can't attach guardrailIdentifier to the inference request itself.
+  statement {
+    sid       = "ApplyGuardrailPreflight"
+    actions   = ["bedrock:ApplyGuardrail"]
+    resources = [aws_bedrock_guardrail.advisor.guardrail_arn]
+  }
+}
+
+# Read-only access to the managed system prompt (Lab 11). Created only once
+# the prompt exists (console-created; ID arrives via terraform.tfvars).
+resource "aws_iam_role_policy" "advisor_prompt" {
+  count = var.advisor_prompt_id == "" ? 0 : 1
+  name  = "${var.project}-advisor-prompt"
+  role  = aws_iam_role.advisor_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "GetManagedPrompt"
+      Effect   = "Allow"
+      Action   = ["bedrock:GetPrompt"]
+      Resource = ["arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:prompt/${var.advisor_prompt_id}"]
+    }]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Bedrock Guardrail — managed pre-flight prompt screening (Lab 10)
+# -----------------------------------------------------------------------------
+# Defense-in-depth AFTER the app-level gates (rate caps, topical gate, input
+# sanitization): the prompt-attack classifier catches jailbreak/injection
+# phrasing the lexicon gate can't, and the denied topic keeps the advisor out
+# of real-money gambling advice. Checked via ApplyGuardrail with source=INPUT
+# before any model tokens are spent.
+resource "aws_bedrock_guardrail" "advisor" {
+  name                      = "${var.project}-advisor"
+  description               = "Pre-flight input screening for the fantasy advisor: prompt-attack filter + betting-advice denied topic."
+  blocked_input_messaging   = "I can only help with fantasy basketball questions."
+  blocked_outputs_messaging = "I can only help with fantasy basketball questions."
+
+  content_policy_config {
+    # PROMPT_ATTACK scans INPUT only — AWS requires output_strength = NONE.
+    filters_config {
+      type            = "PROMPT_ATTACK"
+      input_strength  = "HIGH"
+      output_strength = "NONE"
+    }
+    filters_config {
+      type            = "INSULTS"
+      input_strength  = "MEDIUM"
+      output_strength = "MEDIUM"
+    }
+  }
+
+  topic_policy_config {
+    topics_config {
+      name       = "real-money-gambling"
+      type       = "DENY"
+      definition = "Requests for real-money sports betting, parlay, or wagering advice — odds, spreads, moneylines, bet sizing, or bookmaker recommendations. Fantasy roster advice is NOT this topic."
+      examples = [
+        "What's the best parlay for tonight's games?",
+        "Should I take the over on the Lakers game?",
+        "How much should I bet on this spread?",
+      ]
+    }
+  }
+}
+
+# Immutable numbered snapshot — the app pins this version (env), so later
+# guardrail edits only take effect when a new version is cut and applied.
+resource "aws_bedrock_guardrail_version" "advisor" {
+  guardrail_arn = aws_bedrock_guardrail.advisor.guardrail_arn
+  description   = "v1 — prompt-attack HIGH + betting denied topic"
+}
+
+# -----------------------------------------------------------------------------
+# Bedrock model invocation logging — full prompt/response capture (Lab 13)
+# -----------------------------------------------------------------------------
+# ACCOUNT+REGION SINGLETON: this switches invocation logging on for ALL
+# Bedrock model calls in us-east-1, not just the advisor's. Bedrock assumes
+# the service role below to write into the log group.
+resource "aws_cloudwatch_log_group" "bedrock_invocations" {
+  name              = "/bedrock/model-invocations"
+  retention_in_days = 30
+}
+
+data "aws_iam_policy_document" "bedrock_logging_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["bedrock.amazonaws.com"]
+    }
+    # Confused-deputy guard: only THIS account's Bedrock may assume the role.
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*"]
+    }
+  }
+}
+
+resource "aws_iam_role" "bedrock_logging" {
+  name               = "${var.project}-bedrock-logging"
+  assume_role_policy = data.aws_iam_policy_document.bedrock_logging_assume.json
+}
+
+resource "aws_iam_role_policy" "bedrock_logging" {
+  name = "${var.project}-bedrock-logging"
+  role = aws_iam_role.bedrock_logging.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+      Resource = ["${aws_cloudwatch_log_group.bedrock_invocations.arn}:*"]
+    }]
+  })
+}
+
+resource "aws_bedrock_model_invocation_logging_configuration" "main" {
+  logging_config {
+    text_data_delivery_enabled      = true
+    embedding_data_delivery_enabled = false
+    image_data_delivery_enabled     = false
+
+    cloudwatch_config {
+      log_group_name = aws_cloudwatch_log_group.bedrock_invocations.name
+      role_arn       = aws_iam_role.bedrock_logging.arn
+    }
   }
 }
 
@@ -190,11 +329,23 @@ resource "aws_ecs_task_definition" "advisor" {
         # Advisor-specific:
         { name = "ADVISOR_ENABLED", value = "1" },
         { name = "AWS_REGION_NAME", value = var.aws_region },
-        # Sonnet 4.6 via inference profile, NOT Sonnet 5: the newest-gen models
-        # are blocked by a known Bedrock entitlement-sync bug (2026-07-13,
-        # "not available for this account" despite AUTHORIZED). Flip back to
-        # anthropic.claude-sonnet-5 + the Mantle client when AWS fixes it.
-        { name = "BEDROCK_MODEL_ID", value = "us.anthropic.claude-sonnet-4-6" },
+        # Model choice lives in terraform.tfvars (advisor_model_id). Default is
+        # still Sonnet 4.6 via the us.* inference profile because of the
+        # 2026-07-13 entitlement-sync bug; set anthropic.claude-sonnet-5 after
+        # Lab 9's verification passes — the app picks the Mantle client
+        # automatically from the id prefix, no code change.
+        { name = "BEDROCK_MODEL_ID", value = var.advisor_model_id },
+        # Guardrail pre-flight (Lab 10). Pinned to the numbered version so
+        # DRAFT edits in the console never change production behavior.
+        { name = "BEDROCK_GUARDRAIL_ID", value = aws_bedrock_guardrail.advisor.guardrail_id },
+        { name = "BEDROCK_GUARDRAIL_VERSION", value = aws_bedrock_guardrail_version.advisor.version },
+        # Managed system prompt (Lab 11). Empty = embedded prompt in advisor.py.
+        { name = "ADVISOR_PROMPT_ID", value = var.advisor_prompt_id },
+        { name = "ADVISOR_PROMPT_VERSION", value = var.advisor_prompt_version },
+        # Client-side injury/schedule tool loop (Lab 15). Off until verified.
+        { name = "ADVISOR_TOOLS_ENABLED", value = "0" },
+        # App-level exponential backoff attempts on 429/5xx (Lab 12).
+        { name = "ADVISOR_MAX_RETRIES", value = "3" },
         { name = "ADVISOR_DAILY_CAP", value = "300" },     # global requests/day
         { name = "ADVISOR_IP_DAILY_CAP", value = "20" },   # per-IP requests/day
         { name = "ADVISOR_MAX_CONCURRENCY", value = "4" }, # global in-flight ceiling

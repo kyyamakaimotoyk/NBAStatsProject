@@ -56,3 +56,21 @@ variable "turnstile_secret_arn" {
   default     = ""
   description = "Secrets Manager ARN holding the Cloudflare Turnstile secret key. Empty disables Turnstile verification on the advisor. Create the secret manually (never inline the key)."
 }
+
+variable "advisor_model_id" {
+  type        = string
+  default     = "us.anthropic.claude-sonnet-4-6"
+  description = "Bedrock model for the advisor. us.* inference-profile ids run on the legacy bedrock-runtime surface; bare anthropic.* ids (anthropic.claude-sonnet-5) route via the Mantle endpoint — api/advisor.py picks the client from this prefix. Flip to anthropic.claude-sonnet-5 in terraform.tfvars once bedrock_ops_lab.md Lab 9 verifies the entitlement."
+}
+
+variable "advisor_prompt_id" {
+  type        = string
+  default     = ""
+  description = "Bedrock Prompt Management prompt ID for the advisor system prompt (created in the console — bedrock_ops_lab.md Lab 11). Empty = use the prompt embedded in api/advisor.py."
+}
+
+variable "advisor_prompt_version" {
+  type        = string
+  default     = ""
+  description = "Version of the managed prompt to serve (a number as a string, e.g. \"1\"). Empty = the DRAFT working copy — fine while iterating, but pin a version once the prompt is settled."
+}

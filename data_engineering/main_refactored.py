@@ -273,9 +273,19 @@ class NBADataImporter:
                 continue
         raise ValueError(f"Date must be YYYY-MM-DD or MM/DD/YYYY (got: {s!r})")
 
-    # Default season window — preserves legacy behaviour when no dates are passed.
-    DEFAULT_DATE_FROM = '11/22/2025'
-    DEFAULT_DATE_TO = '07/01/2026'
+    # Default window = the CURRENT NBA season, computed from today's date.
+    # An NBA season runs Aug 1 -> Jul 31 here (preseason tips in early Oct,
+    # Finals end in June), so the window rolls over automatically each August.
+    # This used to be hardcoded to 11/22/2025 -> 07/01/2026, which silently
+    # stopped ingesting anything after the 2025-26 Finals: the 2026-27 opener
+    # (2026-10-20) was never requested from the API.
+    @staticmethod
+    def current_season_window(today=None):
+        """Return (date_from, date_to) covering the NBA season containing `today`."""
+        today = today or datetime.date.today()
+        start_year = today.year if today.month >= 8 else today.year - 1
+        return (datetime.date(start_year, 8, 1),
+                datetime.date(start_year + 1, 7, 31))
 
     def _games_in_window_from_db(self, date_from_obj, date_to_obj):
         """Return distinct GAME_IDs in game_list between two date objects."""
@@ -370,8 +380,7 @@ class NBADataImporter:
         ----------
         date_from, date_to : str or datetime.date, optional
             Window bounds. Accepts YYYY-MM-DD or MM/DD/YYYY. Defaults to the
-            hardcoded current-season window (DEFAULT_DATE_FROM/TO) for backwards
-            compatibility with old callers.
+            current-season window from current_season_window() (Aug 1 -> Jul 31).
         skip_processed : bool, default True
             If True, consult importedgamesmemory + game_list to short-circuit:
               - If the entire window is in the past AND every game already has
@@ -384,8 +393,9 @@ class NBADataImporter:
             Set False to force a full re-fetch (e.g. to pick up retroactive
             schedule edits).
         """
-        date_from_obj = self._parse_user_date(date_from) or self._parse_user_date(self.DEFAULT_DATE_FROM)
-        date_to_obj = self._parse_user_date(date_to) or self._parse_user_date(self.DEFAULT_DATE_TO)
+        default_from, default_to = self.current_season_window()
+        date_from_obj = self._parse_user_date(date_from) or default_from
+        date_to_obj = self._parse_user_date(date_to) or default_to
         if date_from_obj > date_to_obj:
             raise ValueError(f"date_from ({date_from_obj}) is after date_to ({date_to_obj})")
 
@@ -1634,10 +1644,12 @@ def _build_arg_parser():
     )
     p.add_argument('--date-from', type=str, default=None,
                    help='Window start (YYYY-MM-DD or MM/DD/YYYY). '
-                        f'Default: {NBADataImporter.DEFAULT_DATE_FROM}.')
+                        f'Default: {NBADataImporter.current_season_window()[0]} '
+                        '(Aug 1 of the current season).')
     p.add_argument('--date-to', type=str, default=None,
                    help='Window end (YYYY-MM-DD or MM/DD/YYYY). '
-                        f'Default: {NBADataImporter.DEFAULT_DATE_TO}.')
+                        f'Default: {NBADataImporter.current_season_window()[1]} '
+                        '(Jul 31 of the current season).')
     p.add_argument('--workers', type=int, default=None,
                    help=f'Parallel worker processes (default: {NBA_API_DEFAULT_WORKERS}).')
     p.add_argument('--sequential', action='store_true',

@@ -109,7 +109,10 @@ def predictions_for_date(game_date: str, model_type: Optional[str] = None) -> li
         params['mt'] = model_type
     q += " ORDER BY game_id, model_type"
     with get_engine().connect() as conn:
-        return _attach_scores(_rows(conn.execute(sa.text(q), params)))
+        rows = _rows(conn.execute(sa.text(q), params))
+    # The home page shows the market line beside the models' picks.
+    _attach_market(rows, _market_margins_where("game_date = :d", {'d': game_date}))
+    return _attach_scores(rows)
 
 
 # Preferred vegas_lines source order (mirrors the internal Dash app):
@@ -121,22 +124,41 @@ _VEGAS_SOURCE_PRIORITY = {
 
 
 def _market_margins(days: int) -> dict:
-    """(game_date_iso, home, away) -> the market closing line's implied home margin.
+    """Market lines for every game in the last ``days`` (see _market_margins_where)."""
+    return _market_margins_where(
+        "game_date >= DATE_SUB(CURDATE(), INTERVAL :days DAY)", {'days': days})
+
+
+def _attach_market(rows: list[dict], market: dict) -> list[dict]:
+    """Set each prediction row's market_margin from a _market_margins_where map."""
+    for r in rows:
+        gd = r['game_date']
+        key = (gd.isoformat() if hasattr(gd, 'isoformat') else str(gd),
+               r['home_team'], r['away_team'])
+        r['market_margin'] = market.get(key)
+    return rows
+
+
+def _market_margins_where(date_filter: str, params: dict) -> dict:
+    """(game_date_iso, home, away) -> the market line's implied home margin.
 
     home_spread is home-perspective (negative = home favored), so the market's
     predicted home margin is -home_spread. One line per game, best source wins.
-    Returns {} on any failure — the market benchmark is optional garnish.
+    For games not yet played this is the latest captured pre-game line, not
+    the close. ``date_filter`` is a trusted SQL fragment on game_date (callers
+    pass constants; values go through ``params``). Returns {} on any failure:
+    the market benchmark is optional garnish.
     """
-    q = """
+    q = f"""
         SELECT game_date, home_team_abbrev, away_team_abbrev, source, home_spread
         FROM vegas_lines
         WHERE home_spread IS NOT NULL
-          AND game_date >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+          AND {date_filter}
     """
     best: dict = {}
     try:
         with get_engine().connect() as conn:
-            for r in conn.execute(sa.text(q), {'days': days}).mappings():
+            for r in conn.execute(sa.text(q), params).mappings():
                 gd = r['game_date']
                 key = (gd.isoformat() if hasattr(gd, 'isoformat') else str(gd),
                        r['home_team_abbrev'], r['away_team_abbrev'])
@@ -183,12 +205,7 @@ def performance_results(days: int = 90, model_type: Optional[str] = None) -> lis
     with get_engine().connect() as conn:
         rows = _rows(conn.execute(sa.text(q), params))
     # Attach the market closing line (benchmark) to each row where one exists.
-    market = _market_margins(days)
-    for r in rows:
-        gd = r['game_date']
-        key = (gd.isoformat() if hasattr(gd, 'isoformat') else str(gd),
-               r['home_team'], r['away_team'])
-        r['market_margin'] = market.get(key)
+    _attach_market(rows, _market_margins(days))
     return _attach_scores(rows)
 
 

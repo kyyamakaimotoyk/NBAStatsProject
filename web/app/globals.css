@@ -362,6 +362,30 @@ h2 {
   background: var(--bg);
 }
 
+/* Home-page slate: one row per game; scrolls sideways on phones */
+.table-scroll {
+  overflow-x: auto;
+  margin-bottom: 1rem;
+}
+.table-scroll .pred-table {
+  margin-bottom: 0;
+}
+.slate-table td.pick {
+  white-space: nowrap;
+}
+.pick-pct {
+  font-weight: 400;
+  color: var(--muted);
+}
+.pick-sub {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+.slate-table td.muted {
+  color: var(--muted);
+}
+
 /* Model-lab results grid: all window games, scrolling in place */
 .results-scroll {
   max-height: 600px;
@@ -398,11 +422,13 @@ h2 {
 .pred-table tr.row-loss {
   background: rgba(239, 68, 68, 0.09);
 }
-.pred-table td.result-win {
+.pred-table td.result-win,
+.pred-table span.result-win {
   color: #22c55e;
   font-weight: 700;
 }
-.pred-table td.result-loss {
+.pred-table td.result-loss,
+.pred-table span.result-loss {
   color: #ef4444;
   font-weight: 700;
 }

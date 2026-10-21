@@ -106,14 +106,23 @@ const en = {
 
   predTable: {
     matchup: "Matchup",
-    model: "Model",
-    pick: "Pick",
-    winProb: "Win prob.",
-    margin: "Margin",
+    pick: "Models' pick",
+    market: "Market",
     final: "Final",
-    result: "Result",
     coinFlip: "coin flip",
-    byMargin: (n: string) => `by ${n}`,
+    pickEm: "pick'em",
+    agree: (n: number, total: number) => `${n} of ${total} models agree`,
+    pickTitle: (team: string, pct: number) =>
+      `${team} at ${pct}%: the average of the models' win probabilities`,
+    modelTitle: (winner: string, pct: number) => `${winner} at ${pct}% win probability`,
+    modelMargin: (team: string, n: string) => `${team} by ${n}`,
+    marketTitle: (line: string) =>
+      `Betting-market line: ${line}. The latest pre-game line, which becomes the closing line at tip-off.`,
+    noLine: "No market line captured for this game yet",
+    pickRight: "The models' pick won",
+    pickWrong: "The models' pick lost",
+    caption:
+      'One row per game. "Models\' pick" is the team favored by the average of the three models\' win probabilities, and how many models agree. Each model column is the margin that model expects; it turns green if that team won, red if not. "Market" is the betting line ("BOS -6.5" means BOS favored by 6.5), shown as a benchmark, not a pick. Hover a cell for details.',
   },
 
   injury: {
@@ -593,14 +602,23 @@ const ja: Dict = {
 
   predTable: {
     matchup: "対戦カード",
-    model: "モデル",
-    pick: "予測",
-    winProb: "勝率",
-    margin: "点差",
+    pick: "モデルの予測",
+    market: "市場",
     final: "最終スコア",
-    result: "結果",
     coinFlip: "五分五分",
-    byMargin: (n: string) => `${n}点差`,
+    pickEm: "互角",
+    agree: (n: number, total: number) => `${total}モデル中${n}モデルが支持`,
+    pickTitle: (team: string, pct: number) =>
+      `${team}の勝つ確率は${pct}%（各モデルの予測勝率の平均）`,
+    modelTitle: (winner: string, pct: number) => `${winner}の勝つ確率: ${pct}%`,
+    modelMargin: (team: string, n: string) => `${team} ${n}点差`,
+    marketTitle: (line: string) =>
+      `市場の予想点差: ${line}（試合前の最新値。ティップオフ時点の値が最終予想点差になります）`,
+    noLine: "この試合の市場予想点差はまだ取得していません",
+    pickRight: "モデルの予測が的中",
+    pickWrong: "モデルの予測が外れ",
+    caption:
+      "1試合を1行にまとめています。「モデルの予測」は、3つのモデルが出した勝率の平均で優勢なチームと、そのチームを支持するモデルの数です。各モデルの列はそのモデルが予想する点差で、そのチームが勝てば緑、負ければ赤で表示されます。「市場」はベッティング市場の予想点差（「BOS -6.5」はBOSが6.5点差で優勢という意味）で、予想ではなく比較の基準として掲載しています。各セルにカーソルを合わせると詳細が表示されます。",
   },
 
   injury: {

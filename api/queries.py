@@ -58,7 +58,10 @@ def latest_prediction_date(model_type: Optional[str] = None) -> Optional[str]:
 def _attach_scores(rows: list[dict]) -> list[dict]:
     """Attach the final score (home_score/away_score) to prediction rows, from
     game_list. Only final games (WL set) get scores; upcoming/in-progress rows
-    keep None. MATCHUP 'vs.' marks the home row, '@' the away row."""
+    keep None. MATCHUP 'vs.' marks the home row, '@' the away row.
+
+    Games the home drop hasn't delivered yet fall back to live_scores (the ESPN
+    poller, data_engineering/espn_score_poller.py), finals only."""
     gids = {int(r['game_id']) for r in rows if r.get('game_id') is not None}
     scores: dict[int, dict] = {}
     if gids:
@@ -75,6 +78,21 @@ def _attach_scores(rows: list[dict]) -> list[dict]:
                     scores.setdefault(int(gid), {})[side] = int(pts)
         except Exception as e:
             print(f"[scores] attach failed: {e}")
+
+        missing = sorted(g for g in gids if len(scores.get(g, {})) < 2)
+        if missing:
+            miss_list = ",".join(str(g) for g in missing)
+            q = f"""
+                SELECT game_id, home_score, away_score
+                FROM live_scores
+                WHERE game_id IN ({miss_list}) AND is_final = 1
+            """
+            try:
+                with get_engine().connect() as conn:
+                    for gid, home, away in conn.execute(sa.text(q)):
+                        scores[int(gid)] = {'home': int(home), 'away': int(away)}
+            except Exception as e:  # table absent until the poller's first run
+                print(f"[scores] live_scores fallback failed: {e}")
     for r in rows:
         s = scores.get(int(r['game_id']) if r.get('game_id') is not None else -1, {})
         r['home_score'] = s.get('home')

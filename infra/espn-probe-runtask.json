@@ -1,0 +1,29 @@
+{
+  "cluster": "nba-game-predictor-cluster",
+  "taskDefinition": "nba-game-predictor-pipeline",
+  "launchType": "FARGATE",
+  "count": 1,
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": [
+        "subnet-0654a110961e20555"
+      ],
+      "securityGroups": [
+        "sg-0f2779ed5363c863b"
+      ],
+      "assignPublicIp": "ENABLED"
+    }
+  },
+  "overrides": {
+    "containerOverrides": [
+      {
+        "name": "pipeline",
+        "command": [
+          "python",
+          "-c",
+          "\"\"\"Egress probe: can a cloud task pull FINAL SCORES without a residential IP?\n\nSame pattern as the J.5 stats.nba.com diagnostic (docs/aws_deployment_plan.md):\nhit each candidate source from inside a one-off Fargate task and distinguish\ninstant error vs full timeout vs success. Candidates:\n\n    espn_scoreboard - site.api.espn.com scoreboard for a date (scores + status)\n    espn_summary    - site.api.espn.com summary for one finished game (box score)\n    cdn_scoreboard  - cdn.nba.com live todaysScoreboard (403s even from home as of\n                      2026-10-22 \u2014 recorded for completeness only)\n    stats_scoreboard- stats.nba.com scoreboardv3 (known AWS hard block; the\n                      negative control \u2014 200 from home, timeout from Fargate)\n\nstats.nba.com fingerprints the client: plain urllib is dropped even from a\nresidential IP, so the nba.com calls go through `requests` with nba_api's\nbrowser-like headers (what the working home ingest sends). Inlined into\ninfra/espn-probe-runtask.json as a `python -c` command override.\n\nUsage (local, residential baseline):\n    python scripts/egress_probe_scores.py [YYYYMMDD]\n\"\"\"\nimport json\nimport sys\nimport time\nimport urllib.request\nfrom datetime import datetime, timedelta, timezone\n\nUA = \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36\"\n# nba_api's NBAStatsHTTP headers verbatim (UA/Sec-Ch-Ua values matter), minus Host (requests sets it per URL).\nNBA_HEADERS = {\"User-Agent\": \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36\",\n               \"Accept\": \"application/json, text/plain, */*\",\n               \"Accept-Language\": \"en-US,en;q=0.5\", \"Accept-Encoding\": \"gzip, deflate, br\",\n               \"Connection\": \"keep-alive\", \"Referer\": \"https://stats.nba.com/\",\n               \"Pragma\": \"no-cache\", \"Cache-Control\": \"no-cache\",\n               \"Sec-Ch-Ua\": '\"Chromium\";v=\"140\", \"Google Chrome\";v=\"140\", \"Not;A=Brand\";v=\"24\"',\n               \"Sec-Ch-Ua-Mobile\": \"?0\", \"Sec-Fetch-Dest\": \"empty\"}\n\n# Default: yesterday in US Eastern (UTC-5 is close enough for picking a slate date).\nday = sys.argv[1] if len(sys.argv) > 1 else (datetime.now(timezone.utc) - timedelta(hours=5, days=1)).strftime(\"%Y%m%d\")\n\n\ndef get(name, url, headers=None, timeout=20):\n    t = time.time()\n    try:\n        if headers:  # nba.com: needs requests' client fingerprint, see docstring\n            import requests\n            r = requests.get(url, headers=headers, timeout=timeout)\n            r.raise_for_status()\n            body, status = r.content, r.status_code\n        else:\n            req = urllib.request.Request(url, headers={\"User-Agent\": UA})\n            with urllib.request.urlopen(req, timeout=timeout) as r:\n                body, status = r.read(), r.status\n        print(f\"[{name}] HTTP {status} in {time.time() - t:.1f}s, {len(body)} bytes\", flush=True)\n        return json.loads(body)\n    except Exception as e:\n        print(f\"[{name}] FAILED {type(e).__name__} after {time.time() - t:.1f}s: {str(e)[:140]}\", flush=True)\n        return None\n\n\nprint(f\"probe slate date: {day}\", flush=True)\n\nsb = get(\"espn_scoreboard\", f\"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={day}\")\nfinal_id = None\nif sb:\n    events = sb.get(\"events\", [])\n    print(f\"  {len(events)} games\", flush=True)\n    for ev in events:\n        comp = ev[\"competitions\"][0]\n        teams = {c[\"homeAway\"]: f'{c[\"team\"][\"abbreviation\"]} {c.get(\"score\", \"?\")}' for c in comp[\"competitors\"]}\n        status = comp[\"status\"][\"type\"]\n        print(f'  {ev[\"id\"]}: {teams.get(\"away\")} @ {teams.get(\"home\")}  [{status[\"name\"]} completed={status[\"completed\"]}]', flush=True)\n        if status[\"completed\"] and final_id is None:\n            final_id = ev[\"id\"]\n\nif final_id:\n    sm = get(\"espn_summary\", f\"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={final_id}\")\n    if sm:\n        teams = sm.get(\"boxscore\", {}).get(\"players\", [])\n        for t in teams:\n            stats = t[\"statistics\"][0]\n            print(f'  {t[\"team\"][\"abbreviation\"]}: {len(stats[\"athletes\"])} players, columns={stats[\"labels\"]}', flush=True)\n\nget(\"cdn_scoreboard\", \"https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json\", NBA_HEADERS)\niso = f\"{day[:4]}-{day[4:6]}-{day[6:]}\"\nget(\"stats_scoreboard\", f\"https://stats.nba.com/stats/scoreboardv3?GameDate={iso}&LeagueID=00\",\n    {**NBA_HEADERS, \"x-nba-stats-origin\": \"stats\", \"x-nba-stats-token\": \"true\"}, timeout=30)\nprint(\"PROBE DONE\", flush=True)\n"
+        ]
+      }
+    ]
+  }
+}

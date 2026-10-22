@@ -234,6 +234,72 @@ resource "aws_scheduler_schedule" "pretip_refresh" {
 
 
 # =============================================================================
+# ESPN score poller (added 2026-10-22) — the cloud half of the hybrid ingest
+# =============================================================================
+# Every 30 min from 1:00 PM to 1:30 AM ET (first matinee tips ~12:30 PM; late
+# West coast games end ~1 AM). Pulls final scores from ESPN's public scoreboard
+# (not blocked from AWS, unlike stats.nba.com) into live_scores and grades
+# model_predictions from them, so finals reach the site within ~30 min instead
+# of waiting for the next home drop. Box scores / game_list still come only
+# from the home ingest. See data_engineering/espn_score_poller.py.
+#
+# Cost: the poller is tiny, so the task-level cpu/memory override runs it at
+# 0.5 vCPU / 1 GB instead of the task def's 2 vCPU / 8 GB. Most of each run's
+# ~2-3 billed minutes is pulling the ~2 GB pipeline image -> roughly $1/month
+# in season. Flip `state` to "DISABLED" for the offseason.
+resource "aws_scheduler_schedule" "score_poller" {
+  name  = "${var.project}-score-poller"
+  state = "ENABLED"
+
+  # Hours 13-23 and 0-1 ET, at :00 and :30 -> 26 runs/day.
+  schedule_expression          = "cron(0/30 0-1,13-23 * * ? *)"
+  schedule_expression_timezone = "America/New_York"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_ecs_cluster.main.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    ecs_parameters {
+      task_definition_arn = aws_ecs_task_definition.pipeline.arn
+      launch_type         = "FARGATE"
+      # Fargate is billed per task; without this the pipeline's compute shows
+      # as untagged spend in Cost Explorer.
+      propagate_tags = "TASK_DEFINITION"
+      task_count          = 1
+
+      network_configuration {
+        subnets          = aws_subnet.public[*].id
+        security_groups  = [aws_security_group.app.id]
+        assign_public_ip = true
+      }
+    }
+
+    input = jsonencode({
+      cpu    = "512"
+      memory = "1024"
+      containerOverrides = [
+        {
+          name    = "pipeline"
+          command = ["python", "data_engineering/espn_score_poller.py"]
+        }
+      ]
+    })
+
+    # A missed poll is superseded by the next one 30 min later — don't let
+    # retries stack up behind it.
+    retry_policy {
+      maximum_event_age_in_seconds = 900
+      maximum_retry_attempts       = 1
+    }
+  }
+}
+
+
+# =============================================================================
 # Weekly retrain (added 2026-07-04) — features -> train -> validate, cloud-side
 # =============================================================================
 # Monday 13:00 ET, after the weekend slates are graded. All stages are DB-only

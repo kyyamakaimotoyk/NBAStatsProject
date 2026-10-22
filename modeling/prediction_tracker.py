@@ -284,14 +284,36 @@ def update_actual_result(
 # BACKFILL ACTUAL RESULTS
 # ============================================================================
 
-def backfill_actuals(engine, lookback_days: int = 30, verbose: bool = True) -> Dict[str, int]:
+def _live_score_final(engine, game_id) -> Optional[Tuple[int, int]]:
+    """(home_score, away_score) from the ESPN poller's live_scores table if the
+    game is final there, else None. Fallback for when game_list (home-ingest
+    owned) hasn't received the game yet — see data_engineering/espn_score_poller.py.
+    Missing table (poller never ran) -> None."""
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT home_score, away_score FROM live_scores "
+                "WHERE game_id = :game_id AND is_final = 1"
+            ), {'game_id': game_id}).fetchone()
+    except Exception:
+        return None
+    return (int(row[0]), int(row[1])) if row else None
+
+
+def backfill_actuals(engine, lookback_days: int = 30, verbose: bool = True,
+                     through_today: bool = False) -> Dict[str, int]:
     """
     Scan for completed games and update predictions with actual results.
+
+    Results come from game_list (home ingest) first, then live_scores (ESPN
+    poller) for games the home drop hasn't delivered yet.
 
     Args:
         engine: SQLAlchemy engine
         lookback_days: How many days back to check (default 30)
         verbose: Print progress messages
+        through_today: Also check today's games (the score poller grades
+            same-day finals, e.g. matinees; the default nightly run skips today)
 
     Returns:
         Dict with counts of updated predictions
@@ -304,9 +326,9 @@ def backfill_actuals(engine, lookback_days: int = 30, verbose: bool = True) -> D
     FROM model_predictions p
     WHERE p.actual_winner IS NULL
       AND p.game_date >= DATE_SUB(CURDATE(), INTERVAL :lookback_days DAY)
-      AND p.game_date < CURDATE()
+      AND p.game_date {date_op} CURDATE()
     ORDER BY p.game_date DESC
-    """
+    """.format(date_op='<=' if through_today else '<')
 
     with engine.connect() as conn:
         pending = pd.read_sql(text(query), conn, params={'lookback_days': lookback_days})
@@ -343,34 +365,32 @@ def backfill_actuals(engine, lookback_days: int = 30, verbose: bool = True) -> D
             with engine.connect() as conn:
                 results = pd.read_sql(text(results_query), conn, params={'game_id': game_id})
 
-            if len(results) == 0:
-                not_found_count += 1
-                if verbose:
-                    print(f"  No results found for game {game_id}")
-                continue
-
             # Find home and away team results
             home_result = results[results['TEAM_ABBREVIATION'] == home_team]
             away_result = results[results['TEAM_ABBREVIATION'] == away_team]
-
-            if len(home_result) == 0 or len(away_result) == 0:
-                not_found_count += 1
-                if verbose:
-                    print(f"  Incomplete results for game {game_id}")
-                continue
 
             # WL=NULL means the game wasn't final when game_list captured it
             # (mid-game leaguegamefinder snapshot). Don't derive a bogus
             # actual_margin from those partial PTS — wait for the next pipeline
             # run to refresh the game_list row via _update_game_list_table.
-            if (pd.isna(home_result['WL'].iloc[0]) or pd.isna(away_result['WL'].iloc[0])):
-                not_found_count += 1
-                if verbose:
-                    print(f"  Game {game_id} not final (WL is NULL); skipping until game_list is refreshed")
-                continue
+            game_list_final = (len(home_result) > 0 and len(away_result) > 0
+                               and not pd.isna(home_result['WL'].iloc[0])
+                               and not pd.isna(away_result['WL'].iloc[0]))
 
-            home_pts = home_result['PTS'].iloc[0]
-            away_pts = away_result['PTS'].iloc[0]
+            if game_list_final:
+                home_pts = home_result['PTS'].iloc[0]
+                away_pts = away_result['PTS'].iloc[0]
+            else:
+                live = _live_score_final(engine, game_id)
+                if live is None:
+                    not_found_count += 1
+                    if verbose:
+                        reason = ("No results found" if len(results) == 0 else
+                                  "Incomplete results" if len(home_result) == 0 or len(away_result) == 0 else
+                                  "Not final (WL is NULL)")
+                        print(f"  {reason} for game {game_id}; no final in live_scores either")
+                    continue
+                home_pts, away_pts = live
             actual_margin = home_pts - away_pts
             actual_winner = home_team if actual_margin > 0 else away_team
 

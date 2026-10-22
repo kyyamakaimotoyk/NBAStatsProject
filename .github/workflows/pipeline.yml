@@ -1,0 +1,87 @@
+name: Build pipeline image
+
+# Runs only when the pipeline image's inputs change. Unlike the API there's no
+# service to roll: every scheduled task (schedule.tf) pulls :latest at launch,
+# so pushing the image IS the deploy — the next scheduled run picks it up.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "core/**"
+      - "data_engineering/**"
+      - "modeling/**"
+      - "orchestration/**"
+      - "scripts/**"
+      - "Dockerfile.pipeline"
+      - ".dockerignore"
+      - "requirements.txt"
+      - "requirements-pipeline.txt"
+      - ".github/workflows/pipeline.yml"
+  # Manual "build now" button in the Actions tab (e.g. after a requirements
+  # bump that the path filter missed, or to rebuild on a fresh base image).
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+# Two quick pushes -> only the newest image matters, so cancel the older build.
+# (Safe here: nothing is half-deployed until the final push step.)
+concurrency:
+  group: build-pipeline
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::583686634997:role/nba-game-predictor-github-deploy
+  ECR_REPO: 583686634997.dkr.ecr.us-east-1.amazonaws.com/nba-game-predictor-pipeline
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      # Buildx + the GitHub Actions layer cache: the torch and requirements
+      # layers (~1.5 GB) only rebuild when Dockerfile/requirements change, so a
+      # code-only push rebuilds just the `COPY . .` layer.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.pipeline
+          load: true # into the runner's docker, so the smoke test can run it
+          tags: |
+            ${{ env.ECR_REPO }}:latest
+            ${{ env.ECR_REPO }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Gate the push: if the entrypoints the schedules call can't even import
+      # (missing dependency, syntax error, bad refactor), keep the old :latest
+      # in ECR instead of breaking tonight's runs. Imports don't touch the DB.
+      - name: Smoke test
+        run: |
+          docker run --rm "${ECR_REPO}:${GITHUB_SHA}" python -c "
+          import modeling.batch_predict_today
+          import orchestration.pipeline
+          import data_engineering.compute_elo
+          import data_engineering.espn_score_poller
+          print('pipeline image imports OK')
+          "
+
+      # Tag both :latest (what the task definition pulls) and :<commit> (a
+      # rollback handle pointing at the exact source that built it).
+      - name: Push image
+        run: |
+          docker push "${ECR_REPO}:${GITHUB_SHA}"
+          docker push "${ECR_REPO}:latest"

@@ -192,12 +192,9 @@ const en = {
     predVsActual: "Predicted vs actual margin",
     scatterCaption:
       "One point per game (home-team perspective). On the dashed diagonal the predicted margin was exact; any point on a tinted field is a missed winner call — notice how the misses crowd the middle, games the model itself saw as close. The solid orange line is the least-squares fit through every point: the closer it hugs the diagonal, the less bias in the margin predictions.",
-    homeAway: "Home picks vs away picks",
-    pickHome: "When we pick the home team",
-    pickAway: "When we pick the away team",
-    correctAcross: (n: number) => `correct, across ${n} picks`,
-    homeAwayCaption:
-      "A sanity check on home-court bias: if the model only ever trusted home teams, the away column would collapse.",
+    pickGridTitle: (model: string) => `Winner calls — ${model}`,
+    pickGridCaption:
+      "The same games as the scatter, sorted by the winner call. Each cell shows its game count and its share of all graded games; the green diagonal adds up to the winner accuracy. TP/FP/FN/TN treat a home win as the positive class: TP = picked home and home won, FP = picked home but away won, FN = picked away but home won, TN = picked away and away won.",
   },
 
   perf: {
@@ -692,12 +689,9 @@ const ja: Dict = {
     predVsActual: "予測点差と実際の点差",
     scatterCaption:
       "1つの点が1試合を表します(ホームチーム視点)。破線の対角線上にある点は点差まで的中した予測で、色の付いた領域にある点は勝敗を外した試合です。外れがグラフ中央――モデル自身が接戦と見ていた試合――に集中していることが見て取れます。オレンジの実線は全試合に対する回帰直線で、対角線に近いほど点差予測に偏りがないことを示します。",
-    homeAway: "ホーム予測とアウェイ予測",
-    pickHome: "ホーム勝利と予測したとき",
-    pickAway: "アウェイ勝利と予測したとき",
-    correctAcross: (n: number) => `${n}件中の的中率`,
-    homeAwayCaption:
-      "ホーム側への偏りを確認するための項目です。モデルがホームチームばかりを選んでいれば、アウェイ側の的中率は大きく下がるはずです。",
+    pickGridTitle: (model: string) => `勝敗予測の内訳 — ${model}`,
+    pickGridCaption:
+      "散布図と同じ試合を、勝敗予測ごとに分けたものです。各マスには試合数と、採点済み全試合に占める割合を表示しています。緑の対角線の割合を足すと勝敗的中率になります。TP/FP/FN/TNはホーム勝利を「陽性」とした分類で、TP=ホームと予測しホームが勝利、FP=ホームと予測したがアウェイが勝利、FN=アウェイと予測したがホームが勝利、TN=アウェイと予測しアウェイが勝利です。",
   },
 
   perf: {

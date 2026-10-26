@@ -908,3 +908,8 @@ h2 {
   letter-spacing: 0.05em;
   margin-bottom: 0.15rem;
 }
+
+/* Track record: a lone 2x2 shouldn't stretch the full page width */
+.conf-row-single .conf-box {
+  flex: 0 1 460px;
+}

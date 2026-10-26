@@ -5,10 +5,10 @@ import { getPerformanceResults, type Prediction } from "@/lib/api";
 import {
   summaryByModel,
   trendSeries,
-  homeAwaySplit,
   marketCompare,
   spreadRecord,
   classificationRates,
+  confusionCounts,
   skillCurve,
   missCdf,
 } from "@/lib/perf";
@@ -18,6 +18,7 @@ import MarginScatter from "@/components/MarginScatter";
 import PicksStrip from "@/components/PicksStrip";
 import AccuracyBars from "@/components/AccuracyBars";
 import ResultsTable from "@/components/ResultsTable";
+import ConfusionMatrix from "@/components/ConfusionMatrix";
 
 const COLORS: Record<string, string> = { rf: "#3b82f6", nn: "#22c55e", xgb: "#f59e0b" };
 const MARKET_COLOR = "#cbd5e1";
@@ -55,7 +56,7 @@ export default function AccuracyPage() {
   const featuredSummary = summaries.find((s) => s.model === featured);
   const market = useMemo(() => marketCompare(featuredRows), [featuredRows]);
   const duel = useMemo(() => spreadRecord(featuredRows), [featuredRows]);
-  const split = useMemo(() => homeAwaySplit(featuredRows), [featuredRows]);
+  const confusion = useMemo(() => confusionCounts(featuredRows), [featuredRows]);
   const trend = useMemo(() => (rows ? trendSeries(rows) : { data: [], models: [] }), [rows]);
   const skill = useMemo(() => (rows ? skillCurve(rows) : { data: [], models: [] }), [rows]);
   const cdf = useMemo(() => (rows ? missCdf(rows) : { data: [], models: [] }), [rows]);
@@ -188,6 +189,23 @@ export default function AccuracyPage() {
             </div>
           </div>
 
+          <h2>{t.accuracy.predVsActual}</h2>
+          <MarginScatter rows={featuredRows} />
+          <p className="caption">{t.accuracy.scatterCaption}</p>
+
+          {confusion && (
+            <>
+              <div className="conf-row conf-row-single">
+                <ConfusionMatrix
+                  label={t.accuracy.pickGridTitle(t.models[featuredSummary.model] ?? featuredSummary.model)}
+                  counts={confusion}
+                  pickRows
+                />
+              </div>
+              <p className="caption">{t.accuracy.pickGridCaption}</p>
+            </>
+          )}
+
           {clsBars.length > 1 && (
             <>
               <h2>{t.accuracy.clsTitle}</h2>
@@ -249,29 +267,6 @@ export default function AccuracyPage() {
             yLabel={t.accuracy.cdfYLabel}
           />
           <p className="caption">{t.accuracy.cdfCaption}</p>
-
-          <h2>{t.accuracy.predVsActual}</h2>
-          <MarginScatter rows={featuredRows} />
-          <p className="caption">{t.accuracy.scatterCaption}</p>
-
-          {split && (
-            <>
-              <h2>{t.accuracy.homeAway}</h2>
-              <div className="cards">
-                <div className="card">
-                  <div className="card-title">{t.accuracy.pickHome}</div>
-                  <div className="card-metric">{split.home.pct}%</div>
-                  <div className="card-sub">{t.accuracy.correctAcross(split.home.n)}</div>
-                </div>
-                <div className="card">
-                  <div className="card-title">{t.accuracy.pickAway}</div>
-                  <div className="card-metric">{split.away.pct}%</div>
-                  <div className="card-sub">{t.accuracy.correctAcross(split.away.n)}</div>
-                </div>
-              </div>
-              <p className="caption">{t.accuracy.homeAwayCaption}</p>
-            </>
-          )}
 
           {/* The full receipts, all models side by side (heading lives under
               t.perf; the grade toggle and caption live inside the table). */}

@@ -358,25 +358,6 @@ export function classificationRates(rows: Prediction[]): ClassificationRate[] {
   return out;
 }
 
-export type HomeAwaySplit = {
-  home: { n: number; pct: number };
-  away: { n: number; pct: number };
-};
-
-/** How often the model is right when it picks the home team vs the away team. */
-export function homeAwaySplit(rows: Prediction[]): HomeAwaySplit | null {
-  const graded = rows.filter((r) => r.is_correct !== null);
-  const home = graded.filter((r) => r.predicted_winner === r.home_team);
-  const away = graded.filter((r) => r.predicted_winner !== r.home_team);
-  if (home.length === 0 && away.length === 0) return null;
-  const pct = (rs: Prediction[]) =>
-    rs.length === 0 ? 0 : Math.round((rs.filter((r) => r.is_correct === true).length / rs.length) * 100);
-  return {
-    home: { n: home.length, pct: pct(home) },
-    away: { n: away.length, pct: pct(away) },
-  };
-}
-
 export type MarketCompare = {
   n: number; // games with both a market line and a result
   modelMae: number;

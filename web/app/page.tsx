@@ -68,13 +68,21 @@ function ProofBar({
   );
 }
 
+/** Today's NBA game day as YYYY-MM-DD. game_date is a US Eastern calendar
+ * date, so compare in ET rather than the viewer's local date (in Tokyo it's
+ * already tomorrow while tonight's US games are still on). The day rolls at
+ * 6am ET so last night's late West Coast games still count as tonight. */
+function nbaGameDay(): string {
+  const shifted = new Date(Date.now() - 6 * 60 * 60 * 1000);
+  return shifted.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+
 function GamesSection({ data, error }: { data: PredictionsResponse | null; error: string | null }) {
   const { t } = useLang();
   if (error) return <p className="status error">{t.home.errLoad(error)}</p>;
   if (!data) return <p className="status">{t.home.loading}</p>;
 
-  const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD, local
-  const stale = data.game_date !== null && data.game_date < today;
+  const stale = data.game_date !== null && data.game_date < nbaGameDay();
 
   if (data.count === 0 || (stale && data.predictions.length === 0)) {
     return (

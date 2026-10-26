@@ -88,7 +88,7 @@ const en = {
     offseasonLinkExplore: "Browse team stats →",
     latestSlate: (date: string) => `Latest slate — ${date}`,
     predictionsFor: (date: string) => `Predictions for ${date}`,
-    staleNote: "No games tonight — this is the most recent slate the models predicted.",
+    staleNote: "Tonight's predictions aren't posted yet (or there are no games today) — this is the most recent slate the models predicted.",
     howTitle: "How it works",
     step1Title: "Box scores in",
     step1Body: "Every game's team stats — shooting, rebounding, hustle, tracking.",
@@ -116,13 +116,17 @@ const en = {
       `${team} at ${pct}%: the average of the models' win probabilities`,
     modelTitle: (winner: string, pct: number) => `${winner} at ${pct}% win probability`,
     modelMargin: (team: string, n: string) => `${team} by ${n}`,
+    modelWin: (team: string, pct: number) => `${team} ${pct}%`,
+    split: "split",
+    splitTitle: (marginTeam: string, winner: string, pct: number) =>
+      `Split signal: this model's margin favors ${marginTeam}, but its win-probability head gives ${winner} ${pct}%. The pick column and the "models agree" count use the win probability.`,
     marketTitle: (line: string) =>
       `Betting-market line: ${line}. The latest pre-game line, which becomes the closing line at tip-off.`,
     noLine: "No market line captured for this game yet",
     pickRight: "The models' pick won",
     pickWrong: "The models' pick lost",
     caption:
-      'One row per game. "Models\' pick" is the team favored by the average of the three models\' win probabilities, and how many models agree. Each model column is the margin that model expects; it turns green if that team won, red if not. "Market" is the betting line ("BOS -6.5" means BOS favored by 6.5), shown as a benchmark, not a pick. Hover a cell for details.',
+      'One row per game. "Models\' pick" is the team favored by the average of the three models\' win probabilities, and how many models agree. Each model column is the margin that model expects (green if that team won, red if not), with its own win probability underneath. Margin and win probability come from two separately trained parts of each model, so they can occasionally favor different teams — flagged "split". "Market" is the betting line ("BOS -6.5" means BOS favored by 6.5), shown as a benchmark, not a pick. Hover a cell for details.',
   },
 
   injury: {
@@ -583,7 +587,7 @@ const ja: Dict = {
     offseasonLinkExplore: "チーム統計を見てみる →",
     latestSlate: (date: string) => `直近の予測 — ${date}`,
     predictionsFor: (date: string) => `${date}の予測`,
-    staleNote: "今日は試合がございません。直近に予測した試合を表示しています。",
+    staleNote: "本日の予測はまだ掲載されていないか、本日は試合がありません。直近に予測した試合を表示しています。",
     howTitle: "予測のしくみ",
     step1Title: "データ収集",
     step1Body:
@@ -612,13 +616,17 @@ const ja: Dict = {
       `${team}の勝つ確率は${pct}%（各モデルの予測勝率の平均）`,
     modelTitle: (winner: string, pct: number) => `${winner}の勝つ確率: ${pct}%`,
     modelMargin: (team: string, n: string) => `${team} ${n}点差`,
+    modelWin: (team: string, pct: number) => `${team} ${pct}%`,
+    split: "判断が分かれる",
+    splitTitle: (marginTeam: string, winner: string, pct: number) =>
+      `このモデル内で判断が分かれています。点差では${marginTeam}が優勢ですが、勝率では${winner}が${pct}%です。「モデルの予測」列と支持モデル数は勝率をもとにしています。`,
     marketTitle: (line: string) =>
       `市場の予想点差: ${line}（試合前の最新値。ティップオフ時点の値が最終予想点差になります）`,
     noLine: "この試合の市場予想点差はまだ取得していません",
     pickRight: "モデルの予測が的中",
     pickWrong: "モデルの予測が外れ",
     caption:
-      "1試合を1行にまとめています。「モデルの予測」は、3つのモデルが出した勝率の平均で優勢なチームと、そのチームを支持するモデルの数です。各モデルの列はそのモデルが予想する点差で、そのチームが勝てば緑、負ければ赤で表示されます。「市場」はベッティング市場の予想点差（「BOS -6.5」はBOSが6.5点差で優勢という意味）で、予想ではなく比較の基準として掲載しています。各セルにカーソルを合わせると詳細が表示されます。",
+      "1試合を1行にまとめています。「モデルの予測」は、3つのモデルが出した勝率の平均で優勢なチームと、そのチームを支持するモデルの数です。各モデルの列はそのモデルが予想する点差（そのチームが勝てば緑、負ければ赤）と、その下にそのモデル自身の勝率を表示しています。点差と勝率はモデル内の別々の仕組みで算出するため、まれに優勢なチームが食い違うことがあり、その場合は「判断が分かれる」と表示します。「市場」はベッティング市場の予想点差（「BOS -6.5」はBOSが6.5点差で優勢という意味）で、予想ではなく比較の基準として掲載しています。各セルにカーソルを合わせると詳細が表示されます。",
   },
 
   injury: {

@@ -385,6 +385,23 @@ h2 {
 .slate-table td.muted {
   color: var(--muted);
 }
+/* Matchup (+ final score) stays pinned while the model columns scroll under it */
+.slate-table .matchup-cell {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg);
+  box-shadow: 1px 0 0 var(--line);
+}
+.result-mark {
+  margin-left: 0.3rem;
+}
+@media (max-width: 640px) {
+  .slate-table th,
+  .slate-table td {
+    padding: 0.5rem 0.55rem;
+  }
+}
 
 /* Model-lab results grid: all window games, scrolling in place */
 .results-scroll {

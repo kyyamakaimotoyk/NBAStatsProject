@@ -32,6 +32,7 @@ const en = {
     playersDeepDive: "Player deep-dive",
     advisor: "Fantasy advisor",
     drivers: "What wins games",
+    articles: "Articles",
     about: "About",
   },
 
@@ -506,6 +507,17 @@ const en = {
     },
   },
 
+  articles: {
+    title: "Articles",
+    subtitle:
+      "Findings from the experiments behind HoopModel: what makes NBA games predictable, what doesn't, and how we decide whether a model change is real.",
+    readTime: (n: number) => `${n} min read`,
+    byline: "By Kai Y.",
+    back: "← All articles",
+    englishOnlyTag: "English only",
+    englishOnlyNotice: "",
+  },
+
   marginScatter: {
     xLabel: "Predicted home margin (pts)",
     yLabel: "Actual home margin (pts)",
@@ -534,6 +546,7 @@ const ja: Dict = {
     playersDeepDive: "選手の詳細分析",
     advisor: "ファンタジー・バスケ相談所",
     drivers: "勝敗の分かれ目",
+    articles: "記事",
     about: "このサイトについて",
   },
 
@@ -1008,6 +1021,18 @@ const ja: Dict = {
       min: "最小値",
       gamesLabel: (n: number) => `${n}試合`,
     },
+  },
+
+  articles: {
+    title: "記事",
+    subtitle:
+      "HoopModel の裏側で行ってきた検証の結果をまとめています。NBAの試合で予測できること・できないこと、そしてモデルの変更が本当に改善なのかをどう判断しているかについてです。",
+    readTime: (n: number) => `約${n}分で読めます`,
+    byline: "執筆: Kai Y.",
+    back: "← 記事一覧へ",
+    englishOnlyTag: "英語のみ",
+    englishOnlyNotice:
+      "この記事の本文は現在、英語版のみ公開しています。日本語版は準備中です。",
   },
 
   marginScatter: {

@@ -85,7 +85,7 @@ function ContactJapanese() {
       <h2>お受けできないご相談</h2>
       <p>
         賭けに関する個別の助言や予想の販売は行っていません。ファンタジーの個別のご相談もメールではお答えできませんので、
-        <Link href="/advisor">ファンタジーアドバイザー</Link>をご利用ください。
+        「<Link href="/advisor">ファンタジー・バスケ相談所</Link>」をご利用ください。
       </p>
     </section>
   );

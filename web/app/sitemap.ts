@@ -1,4 +1,5 @@
 import type { MetadataRoute } from "next";
+import { ARTICLES } from "@/lib/articles";
 
 // Emitted as /sitemap.xml by the static export. Every public page, nothing
 // else; the advisor is included because its page carries real prose even
@@ -17,6 +18,12 @@ const PAGES: { path: string; changeFrequency: "daily" | "weekly" | "monthly"; pr
   { path: "/scatter/", changeFrequency: "weekly", priority: 0.5 },
   { path: "/drivers/", changeFrequency: "weekly", priority: 0.5 },
   { path: "/advisor/", changeFrequency: "monthly", priority: 0.5 },
+  { path: "/articles/", changeFrequency: "weekly", priority: 0.7 },
+  ...ARTICLES.map((a) => ({
+    path: `/articles/${a.slug}/`,
+    changeFrequency: "monthly" as const,
+    priority: 0.6,
+  })),
   { path: "/about/", changeFrequency: "monthly", priority: 0.6 },
   { path: "/contact/", changeFrequency: "monthly", priority: 0.3 },
   { path: "/privacy/", changeFrequency: "monthly", priority: 0.3 },

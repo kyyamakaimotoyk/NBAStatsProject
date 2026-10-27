@@ -1,0 +1,79 @@
+// Registry for /articles. Each entry's body lives in components/articles/<slug>.tsx
+// and is wired up in app/articles/[slug]/page.tsx (BODIES). Newest first.
+//
+// Disclosure line for everything published here: questions, methods, verdicts
+// and effect sizes are fine; exact feature lists/counts, hyperparameter values,
+// the injury/availability feature design, and pipeline internals are not.
+
+export type Article = {
+  slug: string;
+  date: string; // YYYY-MM-DD, publication date
+  readMinutes: number;
+  title: { en: string; ja: string };
+  summary: { en: string; ja: string };
+  // false = body is English-only for now; Japanese readers see a notice.
+  hasJapanese: boolean;
+};
+
+export const ARTICLES: Article[] = [
+  {
+    slug: "signal-or-noise",
+    date: "2026-10-27",
+    readMinutes: 6,
+    title: {
+      en: "Signal or noise? How we decide whether a model change is real",
+      ja: "その改善は本物か？ モデル変更を採用するかどうかの判断基準",
+    },
+    summary: {
+      en: "A new feature that 'adds 2.6 points of accuracy' on a month of games usually adds nothing. Here is the testing routine that caught it, and the one change it let through.",
+      ja: "1か月分の試合で「的中率が2.6ポイント上がった」新機能は、たいてい何も改善していません。それを見抜いた検証の手順と、検証を通過した唯一の変更を紹介します。",
+    },
+    hasJapanese: false,
+  },
+  {
+    slug: "margin-floor",
+    date: "2026-10-27",
+    readMinutes: 5,
+    title: {
+      en: "Why nobody predicts NBA margins within five points",
+      ja: "NBAの点差を5点以内で当てられる人がいない理由",
+    },
+    summary: {
+      en: "Our models miss the final margin by about 11.5 points on average, and the betting market by about 10.8. That isn't a bug. Here's how much of an NBA margin is predictable at all.",
+      ja: "モデルの平均点差誤差は約11.5点、賭け市場でも約10.8点です。これは欠陥ではありません。NBAの点差のうち、そもそも予測できる部分はどれくらいなのかを考えます。",
+    },
+    hasJapanese: false,
+  },
+  {
+    slug: "impact-ratings",
+    date: "2026-10-27",
+    readMinutes: 6,
+    title: {
+      en: "Last season's impact ratings don't help predict this season",
+      ja: "前シーズンの選手インパクト指標は、今シーズンの予測に役立たない",
+    },
+    summary: {
+      en: "All-in-one player impact metrics look like an obvious input. We tested them twice, in the player model and the team model, and both times they added nothing the models didn't already know.",
+      ja: "選手の総合インパクト指標は、一見すると予測に欠かせない材料に思えます。選手モデルとチームモデルの両方で検証しましたが、どちらもモデルがすでに持っている以上の情報はありませんでした。",
+    },
+    hasJapanese: false,
+  },
+  {
+    slug: "playoff-predictability",
+    date: "2026-10-27",
+    readMinutes: 5,
+    title: {
+      en: "Playoff games are harder to predict, and it's not the model's fault",
+      ja: "プレーオフの勝敗予測が難しいのは、モデルのせいではない",
+    },
+    summary: {
+      en: "Trained on the regular season, our models lose about 7 points of winner accuracy in the playoffs, yet their margin ranges stay just as honest. What changes when the postseason starts.",
+      ja: "レギュラーシーズンで学習したモデルは、プレーオフになると勝敗的中率が約7ポイント下がります。それでも点差の予測幅は信頼できるままです。ポストシーズンで何が変わるのかを見ていきます。",
+    },
+    hasJapanese: false,
+  },
+];
+
+export function getArticle(slug: string): Article | undefined {
+  return ARTICLES.find((a) => a.slug === slug);
+}

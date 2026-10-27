@@ -61,6 +61,7 @@ export default function SiteHeader() {
         </div>
         <Link href="/advisor">{t.nav.advisor}</Link>
         <Link href="/drivers">{t.nav.drivers}</Link>
+        <Link href="/articles">{t.nav.articles}</Link>
         <Link href="/about">{t.nav.about}</Link>
       </nav>
     </header>

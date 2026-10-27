@@ -18,6 +18,7 @@ variable "apex_txt_values" {
     # SPF: authorises ImprovMX to send (forward) mail on the domain's behalf.
     "v=spf1 include:spf.improvmx.com ~all",
     # Add e.g. "google-site-verification=..." here when verifying Search Console.
+    "google-site-verification=KYyDDL3xLcoukOKlRTL5YCHu7D4kSJdKFGNgpxY7Ubs", # Search Console (2026/10/27)
   ]
 }
 

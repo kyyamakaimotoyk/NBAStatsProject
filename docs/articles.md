@@ -11,11 +11,12 @@ general basketball audience.
 
 ## How to publish one
 
-1. Write the body as a component in `web/components/articles/<Name>.tsx`
-   (plain JSX prose; `Link` for internal links).
+1. Write the body in `web/components/articles/<Name>.tsx` as two named
+   exports, `<Name>En` and `<Name>Ja` (plain JSX prose; `Link` for internal
+   links).
 2. Add the metadata entry (slug, date, read time, EN/JA title + summary,
    `hasJapanese`) to the top of `ARTICLES` in `web/lib/articles.ts`.
-3. Register the body in `BODIES` in `web/app/articles/[slug]/page.tsx`.
+3. Register `{ en, ja }` in `BODIES` in `web/app/articles/[slug]/page.tsx`.
    The index page, per-article metadata and sitemap pick it up automatically.
 4. Recompute any live numbers from the API right before publishing
    (`/api/performance/results?days=1100` etc.). Never copy stale figures from
@@ -45,10 +46,10 @@ finding is only interesting *because* of a specific production feature, mark it
 
 | # | Working title | Source(s) | Status |
 |---|---|---|---|
-| 1 | Signal or noise? How we decide whether a model change is real | tuning log E12, E24, P7/P7b; `e3_ablation_report.md` | **Published** 2026-10-27 (EN) |
-| 2 | Why nobody predicts NBA margins within five points | `post_e11_synthesis.md` + live API numbers | **Published** 2026-10-27 (EN) |
-| 3 | Last season's impact ratings don't help predict this season | `p3_impact_metrics_report.md`, tuning log E25, assessment §5 | **Published** 2026-10-27 (EN) |
-| 4 | Playoff games are harder to predict, and it's not the model's fault | `e15_cross_context_report.md` (Q2) | **Published** 2026-10-27 (EN) |
+| 1 | Signal or noise? How we decide whether a model change is real | tuning log E12, E24, P7/P7b; `e3_ablation_report.md` | **Published** 2026-10-27 (EN + JA) |
+| 2 | Why nobody predicts NBA margins within five points | `post_e11_synthesis.md` + live API numbers | **Published** 2026-10-27 (EN + JA) |
+| 3 | Last season's impact ratings don't help predict this season | `p3_impact_metrics_report.md`, tuning log E25, assessment §5 | **Published** 2026-10-27 (EN + JA) |
+| 4 | Playoff games are harder to predict, and it's not the model's fault | `e15_cross_context_report.md` (Q2) | **Published** 2026-10-27 (EN + JA) |
 | 5 | What does "70% confident" actually mean? | `e13_calibration_report.md`, tuning log E19–E21 | Ready |
 | 6 | More data didn't help: how much history a model needs | `e15_cross_context_report.md` (Q1), tuning log E2/E3 | Ready (timely: early season) |
 | 7 | Even the betting market can't call the playoffs | tuning log E16/E17, `playoff_improvement_plan.md` | Ready |
@@ -65,7 +66,7 @@ finding is only interesting *because* of a specific production feature, mark it
 | 18 | How a static website grades itself every night | `aws_deployment_plan.md`, ops labs | Ready (no security details) |
 | 19 | Most of our traffic isn't human | `traffic_lab.md` | Idea (check numbers) |
 | 20 | Monthly check-in: how the models are doing this season | live API | Recurring (first: late Nov 2026) |
-| 21 | Japanese versions of #1–#4 | — | Ready (task, not an idea) |
+| 21 | Japanese versions of #1–#4 | — | **Done** 2026-10-27 |
 
 ## Published
 
@@ -225,7 +226,12 @@ A short monthly post: how each model did last month, the market comparison,
 notable hits and misses. Fresh content signals an active site to AdSense and
 search. First one late November 2026, once a month of 2026-27 games is graded.
 
-### 21. Japanese versions of #1–#4 (Task)
-Transcreate per the glossary in `web/lib/translations.ts`; Kai edits
-terminology. Flip `hasJapanese` and branch the body on `useLang()` (or add a
-JA body component) once written.
+### 21. Japanese versions of #1–#4 (Done 2026-10-27)
+Each body file exports `<Name>En` and `<Name>Ja`; `BODIES` in
+`app/articles/[slug]/page.tsx` maps slug → `{ en, ja }` and `ArticleShell`
+picks by language (English body + notice when `ja` is missing). Kai's
+glossary at the top of `web/lib/translations.ts` is the authority for
+terminology (e.g. 市場の最終予想点差, 予測, スタッツ). Conventions used in the
+article prose (not part of Kai's glossary): です・ます without ございます/おります,
+and page names written as they appear in the nav. New articles should ship
+with both versions.

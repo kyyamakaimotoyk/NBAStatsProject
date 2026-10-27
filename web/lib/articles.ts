@@ -11,7 +11,8 @@ export type Article = {
   readMinutes: number;
   title: { en: string; ja: string };
   summary: { en: string; ja: string };
-  // false = body is English-only for now; Japanese readers see a notice.
+  // false = body is English-only for now; Japanese readers see a notice
+  // (and the index tags it). Keep in sync with BODIES[slug].ja.
   hasJapanese: boolean;
 };
 
@@ -26,9 +27,9 @@ export const ARTICLES: Article[] = [
     },
     summary: {
       en: "A new feature that 'adds 2.6 points of accuracy' on a month of games usually adds nothing. Here is the testing routine that caught it, and the one change it let through.",
-      ja: "1か月分の試合で「的中率が2.6ポイント上がった」新機能は、たいてい何も改善していません。それを見抜いた検証の手順と、検証を通過した唯一の変更を紹介します。",
+      ja: "1か月分の試合で「的中率が2.6ポイント上がった」新しい特徴量は、たいてい何も改善していません。それを見抜いた検証の手順と、検証を通過した唯一の変更を紹介します。",
     },
-    hasJapanese: false,
+    hasJapanese: true,
   },
   {
     slug: "margin-floor",
@@ -42,7 +43,7 @@ export const ARTICLES: Article[] = [
       en: "Our models miss the final margin by about 11.5 points on average, and the betting market by about 10.8. That isn't a bug. Here's how much of an NBA margin is predictable at all.",
       ja: "モデルの平均点差誤差は約11.5点、賭け市場でも約10.8点です。これは欠陥ではありません。NBAの点差のうち、そもそも予測できる部分はどれくらいなのかを考えます。",
     },
-    hasJapanese: false,
+    hasJapanese: true,
   },
   {
     slug: "impact-ratings",
@@ -56,7 +57,7 @@ export const ARTICLES: Article[] = [
       en: "All-in-one player impact metrics look like an obvious input. We tested them twice, in the player model and the team model, and both times they added nothing the models didn't already know.",
       ja: "選手の総合インパクト指標は、一見すると予測に欠かせない材料に思えます。選手モデルとチームモデルの両方で検証しましたが、どちらもモデルがすでに持っている以上の情報はありませんでした。",
     },
-    hasJapanese: false,
+    hasJapanese: true,
   },
   {
     slug: "playoff-predictability",
@@ -70,7 +71,7 @@ export const ARTICLES: Article[] = [
       en: "Trained on the regular season, our models lose about 7 points of winner accuracy in the playoffs, yet their margin ranges stay just as honest. What changes when the postseason starts.",
       ja: "レギュラーシーズンで学習したモデルは、プレーオフになると勝敗的中率が約7ポイント下がります。それでも点差の予測幅は信頼できるままです。ポストシーズンで何が変わるのかを見ていきます。",
     },
-    hasJapanese: false,
+    hasJapanese: true,
   },
 ];
 

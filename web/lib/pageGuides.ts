@@ -50,7 +50,7 @@ export const pageGuides: Record<GuideKey, Record<Lang, Guide>> = {
       ],
     },
     ja: {
-      title: "的中実績の見方",
+      title: "予測モデルの実績の見方",
       sections: [
         {
           heading: "採点の対象",

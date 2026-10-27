@@ -2,17 +2,23 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { ARTICLES, getArticle } from "@/lib/articles";
 import ArticleShell from "./ArticleShell";
-import SignalOrNoise from "@/components/articles/SignalOrNoise";
-import MarginFloor from "@/components/articles/MarginFloor";
-import ImpactRatings from "@/components/articles/ImpactRatings";
-import PlayoffPredictability from "@/components/articles/PlayoffPredictability";
+import { SignalOrNoiseEn, SignalOrNoiseJa } from "@/components/articles/SignalOrNoise";
+import { MarginFloorEn, MarginFloorJa } from "@/components/articles/MarginFloor";
+import { ImpactRatingsEn, ImpactRatingsJa } from "@/components/articles/ImpactRatings";
+import {
+  PlayoffPredictabilityEn,
+  PlayoffPredictabilityJa,
+} from "@/components/articles/PlayoffPredictability";
 
-// Article bodies by slug (metadata lives in lib/articles.ts).
-const BODIES: Record<string, () => React.ReactNode> = {
-  "signal-or-noise": SignalOrNoise,
-  "margin-floor": MarginFloor,
-  "impact-ratings": ImpactRatings,
-  "playoff-predictability": PlayoffPredictability,
+type Body = () => React.ReactNode;
+
+// Article bodies by slug (metadata lives in lib/articles.ts). `ja` is optional:
+// without it, Japanese readers get the English body plus a notice.
+const BODIES: Record<string, { en: Body; ja?: Body }> = {
+  "signal-or-noise": { en: SignalOrNoiseEn, ja: SignalOrNoiseJa },
+  "margin-floor": { en: MarginFloorEn, ja: MarginFloorJa },
+  "impact-ratings": { en: ImpactRatingsEn, ja: ImpactRatingsJa },
+  "playoff-predictability": { en: PlayoffPredictabilityEn, ja: PlayoffPredictabilityJa },
 };
 
 // Static export: every article is prerendered; unknown slugs 404.
@@ -44,11 +50,10 @@ export default async function ArticlePage({
 }) {
   const { slug } = await params;
   const article = getArticle(slug);
-  const Body = BODIES[slug];
-  if (!article || !Body) notFound();
-  return (
-    <ArticleShell article={article}>
-      <Body />
-    </ArticleShell>
-  );
+  const body = BODIES[slug];
+  if (!article || !body) notFound();
+  const { en: En, ja: Ja } = body;
+  // Both versions are rendered here on the server; the shell picks one by the
+  // reader's language. The prerendered HTML carries the English body.
+  return <ArticleShell article={article} en={<En />} ja={Ja ? <Ja /> : null} />;
 }

@@ -6,8 +6,6 @@ import { useLang } from "@/lib/i18n";
 // Same convention as AboutContent: two full JSX versions, and the Japanese is
 // a transcreation, not a sentence-by-sentence translation — keep it that way.
 
-const CONTACT_URL = "https://www.linkedin.com/in/kaiyamamoto1/";
-
 function PrivacyEnglish() {
   return (
     <section>
@@ -15,7 +13,7 @@ function PrivacyEnglish() {
       <p className="subtle">
         HoopModel is a personal side project. It has no user accounts and never
         sells personal information. This page lists everything the site
-        collects and why. Last updated: July 17, 2026.
+        collects and why. Last updated: October 27, 2026.
       </p>
 
       <h2>Server logs</h2>
@@ -72,9 +70,7 @@ function PrivacyEnglish() {
         clear cookies and local storage in your browser at any time, and use an
         ad or content blocker — the site works fine with one. For any privacy
         question or request (including deletion of advisor submissions),{" "}
-        <a href={CONTACT_URL} rel="noreferrer" target="_blank">
-          contact me
-        </a>
+        <Link href="/contact">contact me</Link>
         .
       </p>
     </section>
@@ -88,7 +84,7 @@ function PrivacyJapanese() {
       <p className="subtle">
         HoopModelは個人が運営する趣味のプロジェクトです。会員登録の仕組みはなく、
         個人情報を販売することもありません。このページでは、本サイトが収集する情報と
-        その目的をすべて記載しています。最終更新日: 2026年7月17日
+        その目的をすべて記載しています。最終更新日: 2026年10月27日
       </p>
 
       <h2>サーバーログ</h2>
@@ -141,11 +137,8 @@ function PrivacyJapanese() {
         同意バナーが表示される地域では、同意を断る・後から取り消すことができます。
         ブラウザのCookieとローカルストレージはいつでも削除できますし、広告ブロッカーを
         使っていてもサイトは問題なく動作します。プライバシーに関するご質問やご要望
-        （アドバイザーへの送信内容の削除依頼を含む）は、
-        <a href={CONTACT_URL} rel="noreferrer" target="_blank">
-          こちら
-        </a>
-        からご連絡ください。
+        （相談所への送信内容の削除依頼を含む）は、
+        「<Link href="/contact">お問い合わせ</Link>」のページからご連絡ください。
       </p>
     </section>
   );

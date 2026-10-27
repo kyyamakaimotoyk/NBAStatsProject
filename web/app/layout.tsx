@@ -6,9 +6,17 @@ import AdSlot from "@/components/AdSlot";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "HoopModel — NBA game predictions",
+  metadataBase: new URL("https://hoopmodel.com"),
+  // Child pages set a short title ("Track record") and get the suffix; the
+  // home page uses the default. Distinct per-page titles matter to search and
+  // to ad-network site review, which reads them as distinct content.
+  title: {
+    default: "HoopModel — NBA game predictions",
+    template: "%s — HoopModel",
+  },
   description:
     "Nightly machine-learning predictions for NBA games, with historical accuracy.",
+  openGraph: { siteName: "HoopModel", type: "website" },
 };
 
 // Both ids are injected at build time in .github/workflows/frontend.yml.

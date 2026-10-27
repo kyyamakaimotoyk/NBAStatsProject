@@ -2,3 +2,5 @@
 # Everything here is public; crawl away.
 User-agent: *
 Allow: /
+
+Sitemap: https://hoopmodel.com/sitemap.xml

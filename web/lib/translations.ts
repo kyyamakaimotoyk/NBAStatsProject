@@ -38,6 +38,7 @@ const en = {
   footer: {
     disclaimer: "Predictions are machine-learning model output, not betting advice.",
     privacy: "Privacy policy",
+    contact: "Contact",
   },
 
   ads: {
@@ -148,6 +149,11 @@ const en = {
       "Every prediction is logged before tip-off and graded after the final buzzer. This page is the full scoreboard — nothing is edited after the fact.",
     errLoad: (e: string) => `Couldn't load the track record: ${e}`,
     loading: "Loading the track record…",
+    snapshotTitle: "The last 12 months at a glance",
+    snapshotLine: (model: string, k: number, n: number, pct: string, mae: string | null) =>
+      `${model}: called ${k.toLocaleString()} of ${n.toLocaleString()} winners (${pct}%)${mae ? `, missing the final margin by ${mae} points on average` : ""}.`,
+    snapshotCaption:
+      "Summary as of the last site build. The charts below load the full game-by-game record.",
     windowLabel: "Window:",
     modelLabel: "Model:",
     windows: [
@@ -535,6 +541,7 @@ const ja: Dict = {
     disclaimer:
       "本サイトの予測は機械学習モデルの出力であり、賭けを推奨するものではありません。",
     privacy: "プライバシーポリシー",
+    contact: "お問い合わせ",
   },
 
   ads: {
@@ -645,6 +652,11 @@ const ja: Dict = {
       "すべての予測を試合前に記録し、試合終了後に採点しています。このページはその全成績表です。あとからの修正は一切ありません。",
     errLoad: (e: string) => `実績を読み込めませんでした: ${e}`,
     loading: "実績を読み込んでいます…",
+    snapshotTitle: "直近12か月の成績",
+    snapshotLine: (model: string, k: number, n: number, pct: string, mae: string | null) =>
+      `${model}: ${n.toLocaleString()}試合中${k.toLocaleString()}試合で勝敗を的中（${pct}%）${mae ? `。平均点差誤差は${mae}点` : ""}。`,
+    snapshotCaption:
+      "サイト更新時点の集計です。下のグラフでは全試合の結果を読み込みます。",
     windowLabel: "期間:",
     modelLabel: "モデル:",
     windows: [

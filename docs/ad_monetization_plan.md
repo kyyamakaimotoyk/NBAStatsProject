@@ -127,3 +127,39 @@ email-magic-link auth, Stripe subscription (~$2–3/mo), a `subscriber` flag the
 static site checks client-side to suppress `AdSlot` rendering. Only worth the
 maintenance once ad revenue per user is meaningful — i.e. after the premium
 network gate, not before.
+
+## AdSense rejection #1 and fixes (2026-10-27)
+
+The first review came back with the generic 「AdSense の申請を修正」 email whose
+only hint was content quantity/quality ("Low value content" in practice).
+Diagnosis: the static export prerendered almost nothing for crawlers — every
+data page fetched its content client-side, so `/accuracy` was 45 words
+("Loading the track record…"), and 9 of 11 pages shared one `<title>`.
+
+Fixes shipped:
+
+- **Build-time data bake** (`web/lib/serverData.ts`): `/` (latest slate +
+  proof bar), `/players` (latest slate) and `/accuracy` (12-month summary in
+  prose) fetch the API during `next build`; the client still refreshes on
+  mount. Never fails the build if the API is down.
+- **Daily rebuild**: `frontend.yml` now also runs at 23:30 UTC (after the
+  5:45pm ET pre-tip refresh) so the bake stays current; `workflow_dispatch`
+  added for manual runs.
+- **Page guides** (`web/lib/pageGuides.ts`, `<PageGuide/>`): an evergreen
+  bilingual "how to read this page" essay at the foot of every data page.
+- **Per-page titles/descriptions/canonicals** via a `%s — HoopModel` template;
+  `sitemap.xml` (`app/sitemap.ts`) + `Sitemap:` line in robots.txt.
+- **Contact page** (`/contact`, linked from the footer) showing
+  `contact@hoopmodel.com`.
+
+Result: prerendered text went from 45–156 words to ~300–675 words per page.
+
+Manual steps (Kai):
+
+1. Set up mail forwarding for `contact@hoopmodel.com` **before pushing**
+   (e.g. ImprovMX free tier: add its two MX records + SPF TXT in Route 53),
+   and send a test mail.
+2. Push; confirm the deploy, then check https://hoopmodel.com/sitemap.xml.
+3. Submit the sitemap in Google Search Console (verify the domain there if
+   not done — helps Google discover the new pages before re-review).
+4. Wait ~2–4 weeks, then AdSense → 「申請内容を見直す」 → request review.

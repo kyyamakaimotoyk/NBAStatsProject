@@ -1,12 +1,19 @@
 name: Deploy frontend
 
-# Runs only when the site source changes (or this workflow itself).
+# Runs when the site source changes (or this workflow itself), and daily.
 on:
   push:
     branches: [main]
     paths:
       - "web/**"
       - ".github/workflows/frontend.yml"
+  # Daily rebuild so the data baked into the static HTML at build time (latest
+  # slate, track-record summary, player projections — see web/lib/serverData.ts)
+  # stays current for crawlers. 23:30 UTC = 7:30pm EDT / 6:30pm EST: after the
+  # 5:45pm ET prediction refresh, before most tip-offs.
+  schedule:
+    - cron: "30 23 * * *"
+  workflow_dispatch:
 
 # id-token: write is what lets the run request a GitHub OIDC token to assume the
 # AWS role. contents: read is enough to check out the code.

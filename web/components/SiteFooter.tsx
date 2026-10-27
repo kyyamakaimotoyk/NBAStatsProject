@@ -8,6 +8,8 @@ export default function SiteFooter() {
   return (
     <footer className="site-footer">
       {t.footer.disclaimer} <Link href="/privacy">{t.footer.privacy}</Link>
+      {" · "}
+      <Link href="/contact">{t.footer.contact}</Link>
     </footer>
   );
 }

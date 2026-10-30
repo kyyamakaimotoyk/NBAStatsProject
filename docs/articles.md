@@ -108,7 +108,7 @@ from numbers must let the reader see those numbers, not just read about them.
 | 8 | Minutes explain only a sixth of a player's scoring miss | `p2_player_validation.json` | **Published** 2026-10-30 (EN + JA) |
 | 9 | The simple baseline that wasn't: testing our player projections | `p2_player_validation.json`, `p6_stl_marcel.json` | **Published** 2026-10-30 (EN + JA) |
 | 10 | Why we predict steals and blocks as chances, not numbers | `p2_player_validation.json` (Poisson tables), `p5_tail_calibration.json` | **Published** 2026-10-30 (EN + JA) |
-| 11 | Is the random forest really the worst model? | assessment §2.3, tuning log E1/E21 | Ready |
+| 11 | Is the random forest really the worst model? | assessment §2.3, tuning log E1/E21 | **Blocked** 2026-10-30 (track-record rows inconsistent, see #11) |
 | 12 | Leakage: how a model can cheat without anyone noticing | tuning log E7, E18 | Hold (availability design) |
 | 13 | Fewer features, better model | tuning log E22, assessment §2.1 | Ready (with care; wording fixed) |
 | 14 | 99.9% training accuracy: what overfitting looks like | tuning log E1 | Needs re-run (no stored output) |
@@ -365,9 +365,31 @@ calibration); with vs without the flexible tail correction
 (`p5_tail_calibration.json`), worse with it.
 
 ### 11. Is the random forest really the worst model?
-*(2026-10-30: backtest numbers verified. Live record: RF led 2023-24 and
-2024-25, XGB led 2025-26, the season RF's stale calibrator skewed its picks.
-Include that.)*
+**Blocked 2026-10-30, do not write on current track-record numbers.** Public
+track record, paired on the same regular-season games:
+
+| Season | Acc RF / NN / XGB | Margin MAE RF / NN / XGB | RF - XGB MAE (95% CI) |
+|---|---|---|---|
+| 2023-24 | .657 / .646 / .634 | 11.12 / 11.19 / 11.33 | -0.22 (-0.43, 0.00) |
+| 2024-25 | .667 / .643 / .658 | 11.05 / 11.27 / 11.44 | -0.40 (-0.59, -0.19) |
+| 2025-26 | .609 / .640 / .662 | 12.08 / 11.71 / 11.67 | +0.40 (+0.10, +0.72) |
+
+RF was better than XGB on margins Oct-Dec 2025, then much worse Feb-Mar 2026
+(13.91 vs 12.00, 12.88 vs 11.24), which the calibration layer (#5) can't
+explain. Cause found in `model_predictions` (read-only query): for Jan-Apr
+2026 the rows the API serves for **RF** come from `v1.0_567features_2026052x`
+(logged 2026-05-22/25/27), while **XGB** rows for the same games are
+walk-forward `wf_2026-0x` (logged 2026-07-03). The July walk-forward backfill
+wrote XGB rows for every month but RF rows for only 57 Jan / 8 Feb / 0 Mar-Apr
+games, so the API's latest-row-wins dedup kept the May RF rows. 2025-12 RF is
+also a mix of live Dec versions and wf rows. So the 2025-26 RF-vs-XGB
+comparison on /accuracy is between different kinds of prediction.
+NN not yet checked (a second read-only query was blocked by the permission
+classifier). **Needs Kai:** decide whether to backfill RF (and check NN)
+walk-forward rows for 2025-26 so the season is like-for-like, then re-run this.
+The assessment's "XGB/NN ~0.2-0.3 better on MAE" came from one 230-game window
+(E2 W5); the like-for-like seasons show the opposite. Backtest (e21) RF .657/.709
+vs XGB .643/.689 still holds.
 
 A single noisy month once suggested RF was much worse; across multi-season,
 multi-seed tests it actually leads on winner accuracy and ranking (e.g. 3-season

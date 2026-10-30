@@ -393,6 +393,50 @@ def calibration():
     })
 
 
+# --- player-baselines ------------------------------------------------------
+
+def player_baselines():
+    # P2 validation (the pre-launch gate): three walk-forward seasons, each
+    # predictor scored on every player-game of the test season.
+    p2 = load("p2_player_validation.json")
+    folds = p2["folds"]
+    season = lambda name: "20" + name[-4:-2] + "-" + name[-2:]  # F1_train2223_test2324 -> 2023-24
+    stats = []
+    for st in PLAYER_STATS:
+        pct = lambda a, b: [(f["metrics"][a][st]["mae"] - f["metrics"][b][st]["mae"]) / f["metrics"][b][st]["mae"] * 100
+                            for f in folds]
+        marcel_vs_naive, model_vs_naive, model_vs_marcel = pct("marcel", "naive"), pct("xgb", "naive"), pct("xgb", "marcel")
+        stats.append({
+            "stat": st,
+            "marcel_vs_naive": r(np.mean(marcel_vs_naive), 2),
+            "model_vs_naive": r(np.mean(model_vs_naive), 2),
+            "model_vs_naive_worse_folds": int(sum(x > 0 for x in model_vs_naive)),
+            "model_vs_marcel": r(np.mean(model_vs_marcel), 2),
+            "model_vs_marcel_lo": r(min(model_vs_marcel), 2),
+            "model_vs_marcel_hi": r(max(model_vs_marcel), 2),
+            # paired t-test of model vs Marcel, per season
+            "sig_folds": int(sum(f["paired_tests"][st]["p"] < 0.05 and f["paired_tests"][st]["delta_mae"] < 0 for f in folds)),
+            "p_max": float(f"{max(f['paired_tests'][st]['p'] for f in folds):.2g}"),
+            "mae": {k: r(np.mean([f["metrics"][k][st]["mae"] for f in folds]), 3) for k in ("naive", "marcel", "xgb")},
+        })
+    fantasy = [{"season": season(f["name"]), "n": f["n_test"],
+                **{k: r(f["fantasy"][k]["fp_mae"], 2) for k in ("naive", "marcel", "xgb")}} for f in folds]
+
+    # P6: serving Marcel's steals number instead of the model's (3 folds x 3 seeds).
+    p6 = load("p6_stl_marcel.json")
+    p6_runs = [{"season": season(run["fold"]), "seed": run["seed"],
+                "delta": r(run["arms"]["mstl"]["vs_baseline"]["STL"]["delta_mae"], 4),
+                "p": float(f"{run['arms']['mstl']['vs_baseline']['STL']['p']:.2g}")} for run in p6["runs"]]
+    write("player-baselines", {
+        "source": "Player-projection validation before launch: three walk-forward test seasons.",
+        "n_rows": sum(f["n_test"] for f in folds),
+        "seasons": [season(f["name"]) for f in folds],
+        "stats": stats,
+        "fantasy": fantasy,
+        "p6": p6_runs,
+    })
+
+
 BUILDERS = {
     "signal-or-noise": signal_or_noise,
     "margin-floor": margin_floor,
@@ -400,6 +444,7 @@ BUILDERS = {
     "playoff-predictability": playoff_predictability,
     "early-season": early_season,
     "calibration": calibration,
+    "player-baselines": player_baselines,
 }
 
 if __name__ == "__main__":

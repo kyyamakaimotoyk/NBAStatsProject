@@ -23,6 +23,20 @@ export type Article = {
 
 export const ARTICLES: Article[] = [
   {
+    slug: "player-baselines",
+    date: "2026-10-30",
+    readMinutes: 6,
+    title: {
+      en: "The simple baseline that wasn't: testing our player projections",
+      ja: "手ごわいはずの基準は、そうでもなかった：選手の成績予測の検証",
+    },
+    summary: {
+      en: "Before launch, our player model had to beat two simple methods. The famous one, Marcel, lost to a plain 10-game average on most stats. Our model beat both almost everywhere, with two honest exceptions.",
+      ja: "公開前、選手の成績予測モデルは2つの単純な方法に勝つ必要がありました。有名なMarcelは、ほとんどのスタッツで直近10試合の平均に負けました。モデルはほぼすべてで両方に勝ちましたが、正直に書いておくべき例外が2つあります。",
+    },
+    hasJapanese: true,
+  },
+  {
     slug: "win-probability",
     date: "2026-10-30",
     readMinutes: 6,

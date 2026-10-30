@@ -1,0 +1,104 @@
+{
+ "generated": "2026-10-30",
+ "source": "Five seasons (2022-2026); models trained on regular-season games before each season's playoffs, 5 seeds.",
+ "metrics": [
+  {
+   "model": "rf",
+   "phase": "regular",
+   "n": 631,
+   "acc": 71.3,
+   "auc": 0.79,
+   "cov90": 89.9,
+   "mae": 11.9
+  },
+  {
+   "model": "rf",
+   "phase": "playoffs",
+   "n": 403,
+   "acc": 63.5,
+   "auc": 0.637,
+   "cov90": 88.3,
+   "mae": 12.1
+  },
+  {
+   "model": "xgb",
+   "phase": "regular",
+   "n": 631,
+   "acc": 69.1,
+   "auc": 0.781,
+   "cov90": 89.9,
+   "mae": 11.9
+  },
+  {
+   "model": "xgb",
+   "phase": "playoffs",
+   "n": 403,
+   "acc": 62.0,
+   "auc": 0.6,
+   "cov90": 89.6,
+   "mae": 12.2
+  }
+ ],
+ "favourite": [
+  {
+   "phase": "regular",
+   "bucket": "50-60",
+   "pct": 25.9,
+   "n": 212
+  },
+  {
+   "phase": "regular",
+   "bucket": "60-70",
+   "pct": 25.9,
+   "n": 212
+  },
+  {
+   "phase": "regular",
+   "bucket": "70-80",
+   "pct": 23.2,
+   "n": 190
+  },
+  {
+   "phase": "regular",
+   "bucket": "80+",
+   "pct": 25.1,
+   "n": 206
+  },
+  {
+   "phase": "regular",
+   "bucket": "median",
+   "pct": 69.2,
+   "n": 820
+  },
+  {
+   "phase": "playoffs",
+   "bucket": "50-60",
+   "pct": 32.3,
+   "n": 130
+  },
+  {
+   "phase": "playoffs",
+   "bucket": "60-70",
+   "pct": 35.0,
+   "n": 141
+  },
+  {
+   "phase": "playoffs",
+   "bucket": "70-80",
+   "pct": 23.8,
+   "n": 96
+  },
+  {
+   "phase": "playoffs",
+   "bucket": "80+",
+   "pct": 8.9,
+   "n": 36
+  },
+  {
+   "phase": "playoffs",
+   "bucket": "median",
+   "pct": 64.2,
+   "n": 403
+  }
+ ]
+}

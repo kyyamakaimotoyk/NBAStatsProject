@@ -1,0 +1,148 @@
+{
+ "generated": "2026-10-30",
+ "source": "Player model: 3 seasons x 3 seeds. Team model: 2022-2026 games with a prior-season rating for both sides; in-model tests on a held-out month and 21 monthly windows.",
+ "player": [
+  {
+   "stat": "MIN",
+   "pct": -0.03,
+   "lo": -0.388,
+   "hi": 0.279
+  },
+  {
+   "stat": "PTS",
+   "pct": -0.138,
+   "lo": -0.329,
+   "hi": 0.018
+  },
+  {
+   "stat": "REB",
+   "pct": -0.02,
+   "lo": -0.324,
+   "hi": 0.261
+  },
+  {
+   "stat": "AST",
+   "pct": -0.002,
+   "lo": -0.217,
+   "hi": 0.298
+  },
+  {
+   "stat": "STL",
+   "pct": -0.042,
+   "lo": -0.168,
+   "hi": 0.077
+  },
+  {
+   "stat": "BLK",
+   "pct": 0.119,
+   "lo": -0.315,
+   "hi": 0.395
+  },
+  {
+   "stat": "TOV",
+   "pct": -0.002,
+   "lo": -0.165,
+   "hi": 0.125
+  },
+  {
+   "stat": "FG3M",
+   "pct": -0.013,
+   "lo": -0.125,
+   "hi": 0.082
+  },
+  {
+   "stat": "FG3A",
+   "pct": -0.026,
+   "lo": -0.128,
+   "hi": 0.087
+  },
+  {
+   "stat": "FTM",
+   "pct": -0.017,
+   "lo": -0.299,
+   "hi": 0.116
+  },
+  {
+   "stat": "FTA",
+   "pct": -0.01,
+   "lo": -0.269,
+   "hi": 0.16
+  }
+ ],
+ "team_corr": 0.28,
+ "team_pos_win_pct": 65.0,
+ "team_n": 6249,
+ "buckets": [
+  {
+   "q": 1,
+   "win_pct": 39.0,
+   "n": 1250
+  },
+  {
+   "q": 2,
+   "win_pct": 50.6,
+   "n": 1250
+  },
+  {
+   "q": 3,
+   "win_pct": 54.7,
+   "n": 1249
+  },
+  {
+   "q": 4,
+   "win_pct": 63.4,
+   "n": 1250
+  },
+  {
+   "q": 5,
+   "win_pct": 70.8,
+   "n": 1250
+  }
+ ],
+ "inmodel": [
+  {
+   "stage": "month",
+   "model": "rf",
+   "n": 230,
+   "auc": -0.0052,
+   "auc_lo": -0.0117,
+   "auc_hi": 0.0018,
+   "mae": 0.02,
+   "mae_lo": -0.015,
+   "mae_hi": 0.054
+  },
+  {
+   "stage": "month",
+   "model": "xgb",
+   "n": 230,
+   "auc": 0.0021,
+   "auc_lo": -0.0088,
+   "auc_hi": 0.0125,
+   "mae": 0.161,
+   "mae_lo": -0.05,
+   "mae_hi": 0.366
+  },
+  {
+   "stage": "pooled",
+   "model": "rf",
+   "n": 4032,
+   "auc": -0.0009,
+   "auc_lo": -0.0037,
+   "auc_hi": 0.002,
+   "mae": -0.005,
+   "mae_lo": -0.018,
+   "mae_hi": 0.009
+  },
+  {
+   "stage": "pooled",
+   "model": "xgb",
+   "n": 4032,
+   "auc": 0.0017,
+   "auc_lo": -0.0039,
+   "auc_hi": 0.0075,
+   "mae": -0.034,
+   "mae_lo": -0.105,
+   "mae_hi": 0.042
+  }
+ ]
+}

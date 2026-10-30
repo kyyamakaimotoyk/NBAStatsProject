@@ -1,4 +1,9 @@
 import Link from "next/link";
+import {
+  InModelFigure,
+  PlayerNullFigure,
+  StandaloneSignalFigure,
+} from "./figures/ImpactRatingsFigures";
 
 export function ImpactRatingsEn() {
   return (
@@ -40,6 +45,7 @@ export function ImpactRatingsEn() {
         ranked fairly high among its inputs by importance. It just got no better at
         predicting anything with them.
       </p>
+      <PlayerNullFigure n={1} lang="en" />
 
       <h2>Test two: the team model, where it should matter</h2>
       <p>
@@ -57,6 +63,7 @@ export function ImpactRatingsEn() {
         the final margin at <strong>0.28</strong>, and when the home team had the
         higher rating it won <strong>65%</strong> of the time.
       </p>
+      <StandaloneSignalFigure n={2} lang="en" />
       <p>
         Added to the model, it did nothing. On the held-out test month: no significant
         change in accuracy, margin error or ranking quality, for any model. Pooled
@@ -65,6 +72,7 @@ export function ImpactRatingsEn() {
         season&apos;s box scores are thin and last season&apos;s knowledge should be
         most valuable. There the ratings did slightly <em>worse</em>.
       </p>
+      <InModelFigure n={3} lang="en" />
 
       <h2>A strong signal isn&apos;t the same as new information</h2>
       <p>
@@ -138,6 +146,7 @@ export function ImpactRatingsJa() {
         不思議なのは、モデルが新しい入力を明らかに<em>使っていた</em>ことです。
         重要度で見ると入力のなかでもかなり上位に入っていたのに、予測の精度は何も上がりませんでした。
       </p>
+      <PlayerNullFigure n={1} lang="ja" />
 
       <h2>検証2: 本来の出番であるチームモデル</h2>
       <p>
@@ -152,12 +161,14 @@ export function ImpactRatingsJa() {
         両チームの指標の差は最終点差と<strong>0.28</strong>の相関があり、ホームチームの指標が上回っている試合では、
         ホームチームが<strong>65%</strong>勝っていたのです。
       </p>
+      <StandaloneSignalFigure n={2} lang="ja" />
       <p>
         ところが、モデルに加えると何も変わりませんでした。検証用の1か月では、どのモデルでも的中率・点差誤差・
         勝率の並べ方の質に、はっきりした変化はありません。さらに21のテスト期間をまとめて見ても、やはり変化なし。
         最も効果が期待できたシーズン序盤（10月から12月）、つまり今シーズンのボックススコアがまだ少なく、
         前シーズンの知識が最も役立つはずの時期も確かめましたが、そこではむしろわずかに<em>悪化</em>しました。
       </p>
+      <InModelFigure n={3} lang="ja" />
 
       <h2>強い手がかりと、新しい情報は別物</h2>
       <p>

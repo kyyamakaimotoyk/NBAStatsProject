@@ -1,0 +1,198 @@
+{
+ "generated": "2026-10-30",
+ "source": "Feature ablation, 10 seeds x 1,000 resamples of a 230-game test month; tuning check on a held-out month; player tuning over 3 seasons x 3 seeds.",
+ "n_test": 230,
+ "ranges": [
+  {
+   "config": "base",
+   "model": "rf",
+   "mean": 76.1,
+   "lo": 70.4,
+   "hi": 81.7
+  },
+  {
+   "config": "base",
+   "model": "xgb",
+   "mean": 77.3,
+   "lo": 71.3,
+   "hi": 83.0
+  },
+  {
+   "config": "elo",
+   "model": "rf",
+   "mean": 78.0,
+   "lo": 72.2,
+   "hi": 83.5
+  },
+  {
+   "config": "elo",
+   "model": "xgb",
+   "mean": 76.9,
+   "lo": 70.9,
+   "hi": 82.6
+  },
+  {
+   "config": "oppadj",
+   "model": "rf",
+   "mean": 75.4,
+   "lo": 69.6,
+   "hi": 80.9
+  },
+  {
+   "config": "oppadj",
+   "model": "xgb",
+   "mean": 76.6,
+   "lo": 70.4,
+   "hi": 82.6
+  },
+  {
+   "config": "lineup",
+   "model": "rf",
+   "mean": 76.3,
+   "lo": 70.4,
+   "hi": 81.7
+  },
+  {
+   "config": "lineup",
+   "model": "xgb",
+   "mean": 76.5,
+   "lo": 70.4,
+   "hi": 82.2
+  }
+ ],
+ "splits": [
+  {
+   "change": "elo",
+   "model": "rf",
+   "new": 8,
+   "old": 3,
+   "p": 0.23
+  },
+  {
+   "change": "elo",
+   "model": "xgb",
+   "new": 5,
+   "old": 8,
+   "p": 0.58
+  },
+  {
+   "change": "oppadj",
+   "model": "rf",
+   "new": 1,
+   "old": 3,
+   "p": 0.62
+  },
+  {
+   "change": "oppadj",
+   "model": "xgb",
+   "new": 5,
+   "old": 8,
+   "p": 0.58
+  },
+  {
+   "change": "lineup",
+   "model": "rf",
+   "new": 1,
+   "old": 2,
+   "p": 1.0
+  },
+  {
+   "change": "lineup",
+   "model": "xgb",
+   "new": 2,
+   "old": 4,
+   "p": 0.68
+  },
+  {
+   "change": "tuning",
+   "model": "xgb",
+   "new": 7,
+   "old": 7,
+   "p": 0.79
+  }
+ ],
+ "player_tuning": [
+  {
+   "stat": "MIN",
+   "pct": -0.4,
+   "lo": -0.7,
+   "hi": -0.08,
+   "keep": true
+  },
+  {
+   "stat": "PTS",
+   "pct": -0.66,
+   "lo": -1.29,
+   "hi": -0.42,
+   "keep": true
+  },
+  {
+   "stat": "REB",
+   "pct": -0.63,
+   "lo": -1.0,
+   "hi": -0.33,
+   "keep": true
+  },
+  {
+   "stat": "AST",
+   "pct": -0.7,
+   "lo": -1.11,
+   "hi": -0.16,
+   "keep": true
+  },
+  {
+   "stat": "STL",
+   "pct": -0.29,
+   "lo": -0.5,
+   "hi": -0.15,
+   "keep": true
+  },
+  {
+   "stat": "BLK",
+   "pct": 0.25,
+   "lo": -0.41,
+   "hi": 0.72,
+   "keep": false
+  },
+  {
+   "stat": "TOV",
+   "pct": -0.27,
+   "lo": -0.52,
+   "hi": -0.03,
+   "keep": false
+  },
+  {
+   "stat": "FG3M",
+   "pct": -0.24,
+   "lo": -0.34,
+   "hi": -0.16,
+   "keep": true
+  },
+  {
+   "stat": "FG3A",
+   "pct": -0.39,
+   "lo": -0.63,
+   "hi": -0.2,
+   "keep": true
+  },
+  {
+   "stat": "FTM",
+   "pct": -0.39,
+   "lo": -0.58,
+   "hi": -0.04,
+   "keep": true
+  },
+  {
+   "stat": "FTA",
+   "pct": -0.4,
+   "lo": -0.66,
+   "hi": -0.02,
+   "keep": true
+  }
+ ],
+ "player_tuning_fp": {
+  "pct": -0.41,
+  "lo": -0.77,
+  "hi": -0.06
+ }
+}

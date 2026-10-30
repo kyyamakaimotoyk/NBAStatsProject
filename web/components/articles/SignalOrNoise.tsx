@@ -1,4 +1,9 @@
 import Link from "next/link";
+import {
+  DisagreementFigure,
+  NoiseRangesFigure,
+  PlayerTuningFigure,
+} from "./figures/SignalOrNoiseFigures";
 
 export function SignalOrNoiseEn() {
   return (
@@ -40,6 +45,7 @@ export function SignalOrNoiseEn() {
         sources alone. Against that backdrop, &quot;76.1% vs 76.5%&quot; isn&apos;t a
         result. It&apos;s two numbers whose error bars almost completely overlap.
       </p>
+      <NoiseRangesFigure n={1} lang="en" />
 
       <h2>Compare on the same games, not side by side</h2>
       <p>
@@ -94,6 +100,7 @@ export function SignalOrNoiseEn() {
         One keeper out of three is a fairly typical hit rate. Most plausible-sounding
         basketball features are already captured, in some form, by the ones a model has.
       </p>
+      <DisagreementFigure n={2} lang="en" />
 
       <h2>The same trap, in tuning</h2>
       <p>
@@ -106,18 +113,20 @@ export function SignalOrNoiseEn() {
         Then we tested it on a fifth month the search had never seen. Scored one seed at a
         time, it looked better there too: 79.9% against 78.2%. But once we averaged across
         seeds and compared game by game, the two configurations disagreed on 14 games and
-        split them exactly <strong>7–7</strong>. The margin errors were indistinguishable.
+        split them exactly <strong>7–7</strong> (the bottom row of Figure 2). The margin errors were indistinguishable.
         The search had found settings that fit those four months, not settings that
         predict basketball better. We kept the original.
       </p>
       <p>
         The interesting twist came when we ran the same procedure on the{" "}
         <Link href="/players">player projection model</Link>. There the tuned settings{" "}
-        <em>did</em> hold up on held-out data: 9 of the 11 projected stats improved, with
-        better fantasy-point accuracy in every test period. The one exception, blocks,
-        got slightly worse, so that stat kept its original settings while the rest
-        switched. Same method, opposite verdict. That&apos;s the point of having a method.
+        <em>did</em> hold up on held-out data: 9 of the 11 projected stats cleared the bar
+        and turnovers improved slightly, with better fantasy-point accuracy in every test
+        period. The one exception, blocks, got slightly worse, so that stat kept its
+        original settings while the rest switched. Same method, opposite verdict.
+        That&apos;s the point of having a method.
       </p>
+      <PlayerTuningFigure n={3} lang="en" />
 
       <h2>The rules we work by now</h2>
       <ul>
@@ -179,6 +188,7 @@ export function SignalOrNoiseJa() {
         これを踏まえると、「76.1%と76.5%」の違いは結果とは呼べません。
         誤差の幅がほとんど重なっている2つの数字にすぎないのです。
       </p>
+      <NoiseRangesFigure n={1} lang="ja" />
 
       <h2>並べて比べず、同じ試合で比べる</h2>
       <p>
@@ -228,6 +238,7 @@ export function SignalOrNoiseJa() {
         3つのうち1つだけ採用、というのはよくある割合です。いかにも効きそうなバスケットボールの特徴量の多くは、
         モデルがすでに持っている特徴量で、何らかの形ですでに捉えられています。
       </p>
+      <DisagreementFigure n={2} lang="ja" />
 
       <h2>パラメータ調整でも、同じ落とし穴</h2>
       <p>
@@ -239,17 +250,19 @@ export function SignalOrNoiseJa() {
         そこで、探索に一度も使っていない5か月目で試しました。シード値1つずつで見ると、
         ここでも79.9%対78.2%と良く見えました。ところが、シード値をまたいで平均し、
         1試合ずつ比べると、2つの設定の予測が分かれたのは14試合で、その勝ち負けは
-        きっかり<strong>7対7</strong>でした。点差の誤差も見分けがつきません。
+        きっかり<strong>7対7</strong>でした（図2のいちばん下の行）。点差の誤差も見分けがつきません。
         探索が見つけたのは、その4か月にたまたま合う設定であって、バスケットボールをより正確に予測する設定ではなかったのです。
         元の設定をそのまま使うことにしました。
       </p>
       <p>
         面白いのは、同じ手順を<Link href="/players">選手の成績予測</Link>モデルに使ったときです。
         こちらでは調整後の設定が、探索に使っていないデータでも<em>きちんと</em>通用しました。
-        予測している11スタッツのうち9つが改善し、ファンタジーポイントの精度はすべてのテスト期間で向上しました。
+        予測している11スタッツのうち9つが合格ラインを越え、ターンオーバーもわずかに改善しました。
+        ファンタジーポイントの精度は、すべてのテスト期間で向上しています。
         唯一の例外はブロックで、わずかに悪化したため、ブロックだけ元の設定を残し、ほかはすべて切り替えました。
         同じ手順で、正反対の結論。決まった手順を持つ意味はまさにそこにあります。
       </p>
+      <PlayerTuningFigure n={3} lang="ja" />
 
       <h2>いま守っているルール</h2>
       <ul>

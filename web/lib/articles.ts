@@ -4,6 +4,11 @@
 // Disclosure line for everything published here: questions, methods, verdicts
 // and effect sizes are fine; exact feature lists/counts, hyperparameter values,
 // the injury/availability feature design, and pipeline internals are not.
+//
+// Figures rule: if an article argues from data, it shows the data. At least one
+// figure per article, built from real results by scripts/build_article_figures.py
+// (web/data/articles/<slug>.json) and drawn with components/articles/figures/.
+// Full rule in docs/articles.md.
 
 export type Article = {
   slug: string;
@@ -40,8 +45,8 @@ export const ARTICLES: Article[] = [
       ja: "NBAの点差を5点以内で当てられる人がいない理由",
     },
     summary: {
-      en: "Our models miss the final margin by about 11.5 points on average, and the betting market by about 10.8. That isn't a bug. Here's how much of an NBA margin is predictable at all.",
-      ja: "モデルの平均点差誤差は約11.5点、賭け市場でも約10.8点です。これは欠陥ではありません。NBAの点差のうち、そもそも予測できる部分はどれくらいなのかを考えます。",
+      en: "Our models miss the final margin by about 11.7 points on average, and the betting market by about 10.8. That isn't a bug. Here's how much of an NBA margin is predictable at all.",
+      ja: "モデルの平均点差誤差は約11.7点、賭け市場でも約10.8点です。これは欠陥ではありません。NBAの点差のうち、そもそも予測できる部分はどれくらいなのかを考えます。",
     },
     hasJapanese: true,
   },

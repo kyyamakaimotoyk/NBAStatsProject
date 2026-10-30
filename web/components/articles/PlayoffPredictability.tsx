@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { MatchupGapFigure, PlayoffMetricsFigure } from "./figures/PlayoffFigures";
 
 export function PlayoffPredictabilityEn() {
   return (
@@ -49,6 +50,7 @@ export function PlayoffPredictabilityEn() {
         as usual. What disappears is the ability to tell in advance <em>which side</em>{" "}
         of that spread a game will land on.
       </p>
+      <PlayoffMetricsFigure n={1} lang="en" />
 
       <h2>What changes when the playoffs start</h2>
       <p>
@@ -73,6 +75,7 @@ export function PlayoffPredictabilityEn() {
           months of games against 29 different teams don&apos;t capture that.
         </li>
       </ul>
+      <MatchupGapFigure n={2} lang="en" />
       <p>
         None of this means the model is broken. A coin flip between two evenly matched
         contenders is genuinely less predictable than a contender visiting a lottery
@@ -141,6 +144,7 @@ export function PlayoffPredictabilityJa() {
         レギュラーシーズンと変わらず、ばらつきはいつもと同じくらいです。失われるのは、試合がその幅の
         <em>どちら側</em>に転ぶのかを事前に見分ける力のほうなのです。
       </p>
+      <PlayoffMetricsFigure n={1} lang="ja" />
 
       <h2>プレーオフに入ると、何が変わるのか</h2>
       <p>
@@ -164,6 +168,7 @@ export function PlayoffPredictabilityJa() {
           29の異なる相手と何か月も戦ってきた成績の平均では、それを捉えきれません。
         </li>
       </ul>
+      <MatchupGapFigure n={2} lang="ja" />
       <p>
         モデルが壊れているわけではありません。実力の拮抗した優勝候補同士の五分五分の試合は、
         2月に優勝候補がドラフト上位指名権を狙う下位チームの本拠地に乗り込む試合よりも、本当に予測しにくいのです。

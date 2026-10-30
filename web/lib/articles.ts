@@ -115,8 +115,8 @@ export const ARTICLES: Article[] = [
       ja: "NBAの点差を5点以内で当てられる人がいない理由",
     },
     summary: {
-      en: "Our models miss the final margin by about 11.7 points on average, and the betting market by about 10.8. That isn't a bug. Here's how much of an NBA margin is predictable at all.",
-      ja: "モデルの平均点差誤差は約11.7点、賭け市場でも約10.8点です。これは欠陥ではありません。NBAの点差のうち、そもそも予測できる部分はどれくらいなのかを考えます。",
+      en: "Our models miss the final margin by about 11.6 points on average, and the betting market by about 10.8. That isn't a bug. Here's how much of an NBA margin is predictable at all.",
+      ja: "モデルの平均点差誤差は約11.6点、賭け市場でも約10.8点です。これは欠陥ではありません。NBAの点差のうち、そもそも予測できる部分はどれくらいなのかを考えます。",
     },
     hasJapanese: true,
   },

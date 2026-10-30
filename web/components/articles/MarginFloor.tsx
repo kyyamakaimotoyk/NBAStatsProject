@@ -12,7 +12,7 @@ export function MarginFloorEn() {
         Every night, each of our three models predicts not just a winner but a final
         margin, like &quot;BOS by 6.&quot; Across the games on our{" "}
         <Link href="/accuracy">track record</Link>, those margins miss the real result by
-        about <strong>11.7 points</strong>{" "}on average. That can look embarrassing next to
+        about <strong>11.6 points</strong>{" "}on average. That can look embarrassing next to
         a confident-sounding &quot;by 6.&quot;
       </p>
       <p>
@@ -111,7 +111,7 @@ export function MarginFloorJa() {
       <p>
         3つのモデルは毎晩、勝者だけでなく「BOSが6点差で勝つ」といった最終点差も予測しています。
         <Link href="/accuracy">予測モデルの実績</Link>に載っている試合で見ると、この予測は実際の点差から
-        平均で<strong>約11.7点</strong>ずれています。自信ありげな「6点差」と並べると、
+        平均で<strong>約11.6点</strong>ずれています。自信ありげな「6点差」と並べると、
         ずいぶん外れているように見えるかもしれません。
       </p>
       <p>

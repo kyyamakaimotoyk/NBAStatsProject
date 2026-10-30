@@ -130,9 +130,9 @@ def margin_floor():
     for mt in ("rf", "nn", "xgb"):
         sub = df[(df["model_type"] == mt) & df["game_id"].isin(lined_ids) & df["predicted_margin"].notna()]
         sub = sub.drop_duplicates("game_id")
-        # predicted_margin is the winner's margin; sign it home-positive
-        signed = np.where(sub["predicted_winner"] == sub["home_team"], sub["predicted_margin"].abs(), -sub["predicted_margin"].abs())
-        err = (signed - sub["actual_margin"]).abs()
+        # predicted_margin is already home-positive (the regressor's own call; it
+        # can disagree with predicted_winner, which comes from the classifier)
+        err = (sub["predicted_margin"] - sub["actual_margin"]).abs()
         model_errs[mt] = err.to_numpy()
         miss.append({"key": mt, "mae": r(err.mean(), 2), "n": len(sub)})
     mkt_err = (lined["market_margin"] - lined["actual_margin"]).abs().to_numpy()

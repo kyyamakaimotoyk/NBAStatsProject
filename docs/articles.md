@@ -188,8 +188,12 @@ error p50 9.5 / p80 18.7. Explains shooting variance, game state, late info.
 1-point bins; (2) average miss by predictor (naive "home by 2", RF, NN, XGB,
 market) on the **same** 3,642 games with a closing line; (3) share of games
 within X points of the prediction, market vs models. Text updated to the
-same-games numbers: models ~11.7 (was 11.5 over all games), naive 12.8 (was
-12.7); market 10.8 and 31% within 5 unchanged.
+same-games numbers: models ~11.6, naive 12.8 (was 12.7); market 10.8 and 31%
+within 5 unchanged. **Correction 2026-10-30:** the first figures pass said
+~11.7 because the builder re-signed `predicted_margin` from `predicted_winner`.
+`predicted_margin` is already home-positive and can disagree with the pick (the
+"split" badge), so re-signing flipped split games. Fixed in the builder; the
+site's own pages were never affected.
 
 ### 3. Last season's impact ratings don't help predict this season
 `/articles/impact-ratings/`. Player model: 0/11 stats pass, biggest ΔMAE −0.007,

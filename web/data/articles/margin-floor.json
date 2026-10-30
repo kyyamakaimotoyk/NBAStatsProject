@@ -3,8 +3,8 @@
  "source": "Every graded game on the track record (public API).",
  "from": "2023-10-26",
  "to": "2026-10-29",
- "n_games": 4208,
- "n_lined": 3642,
+ "n_games": 4209,
+ "n_lined": 3643,
  "margin_sd": 16.0,
  "margin_median_abs": 10.0,
  "share_within5_actual": 24.9,
@@ -107,8 +107,8 @@
   },
   {
    "x": -21,
-   "pct": 0.83,
-   "n": 35
+   "pct": 0.86,
+   "n": 36
   },
   {
    "x": -20,
@@ -177,7 +177,7 @@
   },
   {
    "x": -7,
-   "pct": 2.31,
+   "pct": 2.3,
    "n": 97
   },
   {
@@ -257,7 +257,7 @@
   },
   {
    "x": 9,
-   "pct": 2.5,
+   "pct": 2.49,
    "n": 105
   },
   {
@@ -277,7 +277,7 @@
   },
   {
    "x": 13,
-   "pct": 2.12,
+   "pct": 2.11,
    "n": 89
   },
   {
@@ -420,27 +420,27 @@
   {
    "key": "naive",
    "mae": 12.84,
-   "n": 3642
+   "n": 3643
   },
   {
    "key": "rf",
    "mae": 11.65,
-   "n": 3640
+   "n": 3641
   },
   {
    "key": "nn",
-   "mae": 11.69,
-   "n": 3640
+   "mae": 11.6,
+   "n": 3641
   },
   {
    "key": "xgb",
-   "mae": 11.77,
-   "n": 3631
+   "mae": 11.64,
+   "n": 3632
   },
   {
    "key": "market",
    "mae": 10.82,
-   "n": 3642
+   "n": 3643
   }
  ],
  "within": [
@@ -452,12 +452,12 @@
   {
    "x": 1,
    "market": 6.5,
-   "models": 5.4
+   "models": 5.5
   },
   {
    "x": 2,
-   "market": 13.2,
-   "models": 11.0
+   "market": 13.1,
+   "models": 11.1
   },
   {
    "x": 3,
@@ -467,7 +467,7 @@
   {
    "x": 4,
    "market": 25.8,
-   "models": 21.6
+   "models": 21.4
   },
   {
    "x": 5,
@@ -477,72 +477,72 @@
   {
    "x": 6,
    "market": 36.0,
-   "models": 32.7
+   "models": 32.8
   },
   {
    "x": 7,
    "market": 41.0,
-   "models": 37.9
+   "models": 38.0
   },
   {
    "x": 8,
-   "market": 46.2,
-   "models": 42.9
+   "market": 46.1,
+   "models": 43.1
   },
   {
    "x": 9,
    "market": 51.1,
-   "models": 47.4
+   "models": 47.5
   },
   {
    "x": 10,
    "market": 55.6,
-   "models": 52.0
+   "models": 52.4
   },
   {
    "x": 11,
    "market": 59.3,
-   "models": 56.0
+   "models": 56.3
   },
   {
    "x": 12,
    "market": 63.0,
-   "models": 60.2
+   "models": 60.6
   },
   {
    "x": 13,
    "market": 66.8,
-   "models": 63.6
+   "models": 64.0
   },
   {
    "x": 14,
    "market": 70.4,
-   "models": 67.1
+   "models": 67.5
   },
   {
    "x": 15,
    "market": 73.1,
-   "models": 70.4
+   "models": 70.7
   },
   {
    "x": 16,
    "market": 76.1,
-   "models": 73.5
+   "models": 73.8
   },
   {
    "x": 17,
    "market": 79.1,
-   "models": 76.1
+   "models": 76.3
   },
   {
    "x": 18,
-   "market": 81.8,
-   "models": 78.7
+   "market": 81.7,
+   "models": 78.8
   },
   {
    "x": 19,
    "market": 83.7,
-   "models": 80.8
+   "models": 80.9
   },
   {
    "x": 20,
@@ -552,54 +552,54 @@
   {
    "x": 21,
    "market": 87.5,
-   "models": 84.9
+   "models": 85.0
   },
   {
    "x": 22,
    "market": 88.9,
-   "models": 86.7
+   "models": 86.9
   },
   {
    "x": 23,
    "market": 90.3,
-   "models": 88.1
+   "models": 88.4
   },
   {
    "x": 24,
    "market": 91.2,
-   "models": 89.5
+   "models": 89.7
   },
   {
    "x": 25,
    "market": 92.2,
-   "models": 90.6
+   "models": 90.9
   },
   {
    "x": 26,
    "market": 93.3,
-   "models": 91.8
+   "models": 92.0
   },
   {
    "x": 27,
    "market": 94.2,
-   "models": 92.6
+   "models": 92.8
   },
   {
    "x": 28,
    "market": 94.8,
-   "models": 93.4
+   "models": 93.5
   },
   {
    "x": 29,
    "market": 95.6,
-   "models": 94.1
+   "models": 94.3
   },
   {
    "x": 30,
    "market": 96.2,
-   "models": 94.8
+   "models": 95.0
   }
  ],
  "model_p50": 9.5,
- "model_p80": 18.6
+ "model_p80": 18.5
 }

@@ -404,7 +404,31 @@ def load_model_bundles(engine, model_keys: Iterable[str]) -> dict:
             print(f"WARN: unknown model key {key!r}")
     if not bundles:
         raise RuntimeError("No models loaded — check models/bundles/*_current.joblib")
+    _check_bundles_in_sync(bundles)
     return bundles
+
+
+def _check_bundles_in_sync(bundles: dict) -> None:
+    """P-2: alert when the loaded models don't come from one training run.
+
+    In 2025-26 RF/NN ran a preseason bundle all season while XGB never ran, and
+    the public record compared them as equals. Alert-only (ERROR line -> the
+    CloudWatch filter emails): a stale model's picks still beat no picks.
+    """
+    if len(bundles) < 2:
+        return
+    try:
+        from modeling.bundle_sync import check_bundle_sync
+        in_sync, lines = check_bundle_sync(tuple(bundles))
+    except Exception as exc:
+        print(f"WARN: bundle sync check failed - {exc}")
+        return
+    if in_sync:
+        print(f"bundle sync: OK ({', '.join(bundles)})")
+        return
+    print("ERROR: MODEL_BUNDLE_SYNC loaded models come from different training runs")
+    for line in lines:
+        print(line)
 
 
 # ---------------------------------------------------------------------------

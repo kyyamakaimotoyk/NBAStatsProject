@@ -386,31 +386,22 @@ class FeaturesStage(StageSpec):
 @dataclass
 class TrainStage(StageSpec):
     name: str = 'train'
-    description: str = 'Retrain RF and NN models. Implemented as a thin wrapper invoking predict_games._force_retrain().'
+    description: str = ('Retrain RF, XGB and NN together (modeling/retrain_models.py). Each model '
+                        'trains independently; the stage fails if any model did not retrain or '
+                        'the three bundles end up out of sync.')
+    args: List[Dict[str, Any]] = field(default_factory=lambda: [
+        {'name': 'models', 'cli': '--models', 'type': 'str',
+         'help': 'Comma-separated subset of rf,xgb,nn (default: all three).'},
+    ])
 
     def build_cmd(self, **kwargs) -> List[str]:
-        # Force retrain by importing predict_games and calling the loaders with force_retrain=True.
-        # CWD will be the project root (set in run_stage_blocking), and the bootstrap inside
-        # predict_games.py adds the project root to sys.path so its own cross-folder imports work.
-        # But the -c subprocess starts fresh, so we must also seed sys.path before the import here.
-        # E8 cleanup: XGBoost added — was previously omitted, causing the production XGB bundle
-        # to drift behind RF/NN whenever this stage ran.
-        code = (
-            "import sys, os; "
-            "sys.path.insert(0, os.getcwd()); "
-            "from core.db import get_engine; "
-            "from modeling.predict_games import (load_or_train_rf_models, load_or_train_pytorch_models, "
-            "                                     load_or_train_xgb_models, PYTORCH_AVAILABLE, XGBOOST_AVAILABLE); "
-            "eng = get_engine(); "
-            "print('[pipeline.train] Forcing RF retrain...'); "
-            "load_or_train_rf_models(eng, force_retrain=True); "
-            "print('[pipeline.train] Forcing XGB retrain...') if XGBOOST_AVAILABLE else print('[pipeline.train] xgboost unavailable, skipping XGB'); "
-            "XGBOOST_AVAILABLE and load_or_train_xgb_models(eng, force_retrain=True); "
-            "print('[pipeline.train] Forcing NN retrain...') if PYTORCH_AVAILABLE else print('[pipeline.train] PyTorch unavailable, skipping NN'); "
-            "PYTORCH_AVAILABLE and load_or_train_pytorch_models(eng, force_retrain=True); "
-            "print('[pipeline.train] done.')"
-        )
-        return [sys.executable, '-c', code]
+        # P-2 (2026-10-30): was an inline `python -c` chain where one exception skipped
+        # the remaining models and a missing library was only a print line. See
+        # retrain_models.py for the isolation + bundle-sync check.
+        cmd = [sys.executable, 'modeling/retrain_models.py']
+        if kwargs.get('models'):
+            cmd += ['--models', kwargs['models']]
+        return cmd
 
 
 @dataclass

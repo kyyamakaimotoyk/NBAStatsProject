@@ -19,12 +19,22 @@ These rows are retrospective (not logged before tip-off). Per user decision
 2026-07-03 they are NOT badged on the site; the wf_ version prefix in the DB is
 the only provenance marker.
 
+``--supersede-non-wf`` (P-2, 2026-10-30): the skip rule above left RF/NN 2025-26
+on retrospective rows from a preseason-trained bundle while XGB got wf_ rows,
+so the public record compared two different processes. With the flag, a pair
+is (re)logged whenever the row the API serves (latest prediction_timestamp) is
+not a wf_ row. Old rows stay in the table for audit; the new wf_ row wins the
+dedup because it is newer. Pairs already served from a wf_ row are untouched.
+Use it only for a closed season: Kai's decision is all walk-forward for 2025-26.
+
 Usage (Phase B, gaps in 2025-26; xgb stops at March because Apr-Jun came from the
 live-era bundle on the cloud):
     python modeling/walkforward_backfill.py --models rf,nn --start 2025-10 --end 2026-06
     python modeling/walkforward_backfill.py --models xgb --start 2025-10 --end 2026-03
 Phase C (prior seasons):
     python modeling/walkforward_backfill.py --models rf,nn,xgb --start 2023-10 --end 2025-06
+P-2 (2025-26 all walk-forward; dry-run first, it lists what would be superseded):
+    python modeling/walkforward_backfill.py --models rf,nn,xgb --start 2025-10 --end 2026-06 --supersede-non-wf --dry-run
 """
 from __future__ import annotations
 
@@ -88,11 +98,36 @@ def _game_meta(engine) -> dict:
     return meta
 
 
-def _existing_pairs(engine) -> set:
-    """(game_id, model_type) pairs that already have ANY logged prediction."""
+def _served_versions(engine) -> dict:
+    """(game_id, model_type) -> model_version of the row the API serves (latest
+    prediction_timestamp, the same dedup as api/queries.py)."""
+    q = """
+        SELECT game_id, model_type, model_version FROM (
+            SELECT game_id, model_type, model_version,
+                   ROW_NUMBER() OVER (PARTITION BY game_id, model_type
+                                      ORDER BY prediction_timestamp DESC) AS rn
+            FROM model_predictions) x
+        WHERE rn = 1
+    """
     with engine.connect() as conn:
-        return {(int(g), m) for g, m in conn.execute(
-            sa.text("SELECT DISTINCT game_id, model_type FROM model_predictions"))}
+        return {(int(g), m): v for g, m, v in conn.execute(sa.text(q))}
+
+
+def _wf_feature_counts(engine, start: str, end: str) -> dict:
+    """feature_count -> rows among existing wf_ rows in the window range. A
+    superseding run must use the same model inputs as the wf_ rows it sits
+    beside, or the record is still not like-for-like."""
+    q = """
+        SELECT feature_count, COUNT(*) FROM model_predictions
+        WHERE model_version LIKE 'wf!_%' ESCAPE '!'
+          AND game_date >= :s AND game_date < :e
+        GROUP BY feature_count
+    """
+    s = pd.Period(start, freq='M').to_timestamp().date()
+    e = (pd.Period(end, freq='M') + 1).to_timestamp().date()
+    with engine.connect() as conn:
+        return {(int(fc) if fc is not None else None): int(n)
+                for fc, n in conn.execute(sa.text(q), {'s': s, 'e': e})}
 
 
 def _predict_window(model_key, X_tr, y_clf_tr, y_reg_tr, X_te):
@@ -152,6 +187,9 @@ def main():
     ap.add_argument('--start', required=True, help='first window month, YYYY-MM')
     ap.add_argument('--end', required=True, help='last window month, YYYY-MM')
     ap.add_argument('--dry-run', action='store_true', help='no DB writes')
+    ap.add_argument('--supersede-non-wf', action='store_true',
+                    help='P-2: also log a wf_ row where the served row is not wf_ '
+                         '(retrospective or live). Closed seasons only.')
     args = ap.parse_args()
 
     models = [m.strip() for m in args.models.split(',') if m.strip()]
@@ -166,8 +204,19 @@ def main():
     print(f"snapshot {args.snapshot_version}: {len(df)} games, {len(feat_cols)} features")
 
     meta = _game_meta(engine)
-    existing = _existing_pairs(engine)
-    print(f"existing (game, model) pairs to skip: {len(existing)}")
+    served = _served_versions(engine)
+    if args.supersede_non_wf:
+        counts = _wf_feature_counts(engine, args.start, args.end)
+        print(f"existing wf_ rows in range by feature_count: {counts}")
+        if counts and set(counts) != {len(feat_cols)}:
+            raise SystemExit(
+                f"ABORT: this run uses {len(feat_cols)} features but the wf_ rows it would "
+                f"sit beside used {sorted(counts, key=str)}. Superseded rows would not be "
+                f"like-for-like; check --snapshot-version and core/features.py defaults.")
+        print("mode: supersede - (re)log every pair whose served row is not wf_")
+    else:
+        print(f"existing (game, model) pairs to skip: {len(served)}")
+    superseded = {}  # (model, superseded version) -> rows, for the summary
 
     months = pd.period_range(args.start, args.end, freq='M')
     total_logged = 0
@@ -190,10 +239,23 @@ def main():
 
         for mk in models:
             # Which of this window's games still need a row for this model?
-            need_idx = [i for i, gid in enumerate(te['GAME_ID'].values)
-                        if (int(gid), mk) not in existing]
+            # Default: only pairs with no row at all. Supersede mode: any pair whose
+            # served row is not walk-forward.
+            need_idx = []
+            for i, gid in enumerate(te['GAME_ID'].values):
+                cur = served.get((int(gid), mk))
+                if cur is None:
+                    need_idx.append(i)
+                elif args.supersede_non_wf and not str(cur).startswith('wf_'):
+                    need_idx.append(i)
+                    superseded[(mk, cur)] = superseded.get((mk, cur), 0) + 1
             if not need_idx:
                 print(f"{period} {mk}: 0 gaps")
+                continue
+            if args.dry_run:  # listing only: no training needed
+                n_would = sum(int(te['GAME_ID'].values[i]) in meta for i in need_idx)
+                total_logged += n_would
+                print(f"{period} {mk}: would log {n_would} of {len(te)} window games")
                 continue
             p_raw, margins, p_disp = _predict_window(mk, X_tr, y_clf, y_reg, X_te)
             n_logged = 0
@@ -218,7 +280,11 @@ def main():
             print(f"{period} {mk}: logged {n_logged} of {len(te)} window games "
                   f"({len(te) - len(need_idx)} already had rows)")
 
-    print(f"\ntotal wf rows logged: {total_logged}")
+    if superseded:
+        print("\nsuperseded served rows (model, old model_version, rows):")
+        for (mk, ver), n in sorted(superseded.items()):
+            print(f"  {mk:4s} {ver:40s} {n}")
+    print(f"\ntotal wf rows {'that would be ' if args.dry_run else ''}logged: {total_logged}")
     if not args.dry_run and total_logged:
         print("grading...")
         res = backfill_actuals(engine, lookback_days=1100, verbose=False)

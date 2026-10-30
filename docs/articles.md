@@ -376,19 +376,52 @@ track record, paired on the same regular-season games:
 
 RF was better than XGB on margins Oct-Dec 2025, then much worse Feb-Mar 2026
 (13.91 vs 12.00, 12.88 vs 11.24), which the calibration layer (#5) can't
-explain. Cause found in `model_predictions` (read-only query): for Jan-Apr
-2026 the rows the API serves for **RF** come from `v1.0_567features_2026052x`
-(logged 2026-05-22/25/27), while **XGB** rows for the same games are
-walk-forward `wf_2026-0x` (logged 2026-07-03). The July walk-forward backfill
-wrote XGB rows for every month but RF rows for only 57 Jan / 8 Feb / 0 Mar-Apr
-games, so the API's latest-row-wins dedup kept the May RF rows. 2025-12 RF is
-also a mix of live Dec versions and wf rows. So the 2025-26 RF-vs-XGB
-comparison on /accuracy is between different kinds of prediction.
-NN not yet checked (a second read-only query was blocked by the permission
-classifier). **Needs Kai:** decide whether to backfill RF (and check NN)
-walk-forward rows for 2025-26 so the season is like-for-like, then re-run this.
+explain. **Checked against `model_predictions` + `model_registry` (read-only,
+local DB; local served rows match the public API 100% for 2025-26):**
+
+Provenance of the rows the API serves (regular season):
+
+| Season | RF | NN | XGB |
+|---|---|---|---|
+| 2023-24 | 1,230 walk-forward | 1,230 wf | 1,230 wf |
+| 2024-25 | 1,217 wf + 7 other | 1,224 wf | 1,224 wf |
+| 2025-26 | 474 wf, 59 live, 686 retrospective | 488 wf, 45 live, 686 retro | 1,119 wf |
+
+So 2023-24 and 2024-25 ARE like-for-like (all walk-forward), and 2025-26 is
+not, for **both RF and NN**. It is *not* live-vs-walk-forward: live rows are
+only ~50 per model (the site wasn't public before late May 2026). The 686
+"retrospective" rows were logged after their games, 664 of them on
+2026-05-22/25/27 by the then-production 567-feature models; the remaining ~22
+are Dec 2025 / Jan 2026 versions logged a day or more after game day.
+- Rows logged 05-22 (484) and 05-25 (93): no models were trained on those dates
+  (registry has only validation runs); the current models were the
+  `*_20260520` family, trained 2022-01-01 -> 2025-10-22. So these are
+  **out-of-sample predictions from a preseason-trained model never updated
+  in-season**, carrying that bundle's calibration layer (E19's ~97% home
+  collapse). Inferred from dates: the logged version string has no training id.
+- Rows logged 05-27 (87, April games): `*_20260527` models trained through
+  2026-03-23 (or 03-05 for `_2`): also out-of-sample.
+- XGB's rows are monthly-retrained walk-forward. `walkforward_backfill.py`
+  skips any (game, model) pair that already has a row ("can't supersede a live
+  prediction"), so RF/NN kept the May rows; XGB never ran in-season (E19
+  Finding 3) and got wf rows everywhere.
+- Like-for-like 2025-26 (474 games, Oct-Jan, wf for all three): RF .656 /
+  10.89 MAE, NN .631 / 11.11, XGB .637 / 11.27; RF-XGB MAE -0.38 (-0.75, -0.01).
+- On the 586 games where RF's row is retrospective: RF .551 / 12.80, NN .640 /
+  11.91, XGB .672 / 11.59.
+- Also: E19's "RF live acc 0.583" and E21's "live" pairs were computed on these
+  same rows, which were mostly May retrospective predictions, not pre-game live
+  ones. The calibration finding stands; the "live" label doesn't.
+
+**Needs Kai:** whether to replace the retrospective RF/NN 2025-26 rows with
+walk-forward ones (`walkforward_backfill.py` would need an override for its
+skip rule) so /accuracy is like-for-like; that changes #5's Figure 2 source
+rows too. #5's wording ("from January 2026 the forest picked...") should say
+these were predictions made after the fact by the production model of the
+time. Then re-run #11.
 The assessment's "XGB/NN ~0.2-0.3 better on MAE" came from one 230-game window
-(E2 W5); the like-for-like seasons show the opposite. Backtest (e21) RF .657/.709
+(E2 W5); every like-for-like comparison shows RF equal or better.
+Backtest (e21) RF .657/.709
 vs XGB .643/.689 still holds.
 
 A single noisy month once suggested RF was much worse; across multi-season,

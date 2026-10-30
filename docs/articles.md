@@ -105,7 +105,7 @@ from numbers must let the reader see those numbers, not just read about them.
 | 5 | What a 70% win probability actually means, and the fix that broke our picks | `e13_calibration.json`, `e21_backtest.json`, live API | **Published** 2026-10-30 (EN + JA) |
 | 6 | Early-season picks are weaker, and so is the betting market's | live API by month + `e15_learning_curve.json` | **Published** 2026-10-30 (EN + JA) |
 | 7 | Even the betting market can't call the playoffs | tuning log E16/E17, `playoff_improvement_plan.md` | Ready |
-| 8 | Minutes explain only a sixth of a player's scoring miss (was: ...is luck) | `p1_`/`p2_player_validation_report.md`, assessment §3.1 | Ready (retitled) |
+| 8 | Minutes explain only a sixth of a player's scoring miss | `p2_player_validation.json` | **Published** 2026-10-30 (EN + JA) |
 | 9 | The simple baseline that wasn't: testing our player projections | `p2_player_validation.json`, `p6_stl_marcel.json` | **Published** 2026-10-30 (EN + JA) |
 | 10 | Why we predict steals and blocks as chances, not numbers | `p2_player_validation.json` (Poisson tables), `p5_tail_calibration.json` | **Published** 2026-10-30 (EN + JA) |
 | 11 | Is the random forest really the worst model? | assessment §2.3, tuning log E1/E21 | Ready |
@@ -256,6 +256,16 @@ the most common STL and BLK bands; (2) actual minus predicted share of 0 and
 2+ gap with run range. Points readers to the deep-dive's "Model-implied" tile
 (JA: モデル推定) and says how to adjust for elite shot-blockers. Open item it
 names: an overdispersed distribution (e.g. negative binomial), untested.
+
+### 8. Minutes explain only a sixth of a player's scoring miss
+`/articles/minutes-and-misses/`. Figures: (1) share of each stat's MAE removed
+by swapping in actual minutes (PTS 15.8%, REB/3PA ~12%, STL/BLK/TOV 2-3%);
+(2) PTS decile calibration, projected vs actual average (all within 0.4 pts);
+(3) 90% conformal-range coverage per stat with season range (88.5-92.6%;
+PTS range +-10.6). States plainly that the per-minute remainder includes model
+rate error, not just luck. The site doesn't display these ranges on /players
+(the article gives the rule of thumb instead): **product idea for Kai,
+showing the 80/90% range on /players.**
 
 ## Ready to write
 

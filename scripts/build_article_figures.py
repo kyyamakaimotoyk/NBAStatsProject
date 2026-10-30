@@ -492,6 +492,48 @@ def count_stats():
     })
 
 
+# --- minutes-and-misses ----------------------------------------------------
+
+def minutes_and_misses():
+    p2 = load("p2_player_validation.json")
+    folds = p2["folds"]
+    # How much of each stat's average miss disappears when the model is handed
+    # the minutes actually played (rate model x actual minutes).
+    decomp = []
+    for st, _ in folds[0]["minutes_decomposition"].items():
+        rows = [f["minutes_decomposition"][st] for f in folds]
+        shares = [x["share_from_minutes"] * 100 for x in rows]
+        decomp.append({"stat": st, "share": r(np.mean(shares), 1), "lo": r(min(shares), 1), "hi": r(max(shares), 1),
+                       "mae": r(np.mean([x["mae_full"] for x in rows]), 2),
+                       "mae_actual_min": r(np.mean([x["mae_actual_minutes"] for x in rows]), 2)})
+    decomp.sort(key=lambda x: -x["share"])
+    # Points calibration by decile of the projection (deciles have equal size,
+    # so averaging across seasons is row-weighted).
+    deciles = [{"decile": i + 1,
+                "pred": r(np.mean([f["deciles"]["PTS"][i]["pred_mean"] for f in folds]), 1),
+                "actual": r(np.mean([f["deciles"]["PTS"][i]["actual_mean"] for f in folds]), 1)}
+               for i in range(len(folds[0]["deciles"]["PTS"]))]
+    # 80% / 90% ranges (split conformal): width and how often they held.
+    ranges = []
+    for st in PLAYER_STATS:
+        c = [f["conformal"][st] for f in folds]
+        cov90 = [x["coverage_90"] * 100 for x in c]
+        ranges.append({"stat": st, "half90": r(np.mean([x["halfwidth_90"] for x in c]), 1),
+                       "cov90": r(np.mean(cov90), 1), "cov90_lo": r(min(cov90), 1), "cov90_hi": r(max(cov90), 1),
+                       "half80": r(np.mean([x["halfwidth_80"] for x in c]), 1),
+                       "cov80": r(np.mean([x["coverage_80"] * 100 for x in c]), 1)})
+    write("minutes-and-misses", {
+        "source": "Player-projection validation before launch: three walk-forward test seasons.",
+        "n_rows": sum(f["n_test"] for f in folds),
+        "seasons": ["20" + f["name"][-4:-2] + "-" + f["name"][-2:] for f in folds],
+        "decomp": decomp,
+        "deciles": deciles,
+        "ranges": ranges,
+        "pts_mae_starter": r(np.mean([f["slices"]["starter"]["mae_PTS"] for f in folds]), 2),
+        "pts_mae_bench": r(np.mean([f["slices"]["bench"]["mae_PTS"] for f in folds]), 2),
+    })
+
+
 BUILDERS = {
     "signal-or-noise": signal_or_noise,
     "margin-floor": margin_floor,
@@ -501,6 +543,7 @@ BUILDERS = {
     "calibration": calibration,
     "player-baselines": player_baselines,
     "count-stats": count_stats,
+    "minutes-and-misses": minutes_and_misses,
 }
 
 if __name__ == "__main__":

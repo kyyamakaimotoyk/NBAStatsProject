@@ -1,0 +1,247 @@
+{
+ "generated": "2026-10-30",
+ "source": "Player-projection validation before launch: three walk-forward test seasons.",
+ "n_rows": 62156,
+ "seasons": [
+  "2023-24",
+  "2024-25",
+  "2025-26"
+ ],
+ "decomp": [
+  {
+   "stat": "PTS",
+   "share": 15.8,
+   "lo": 15.5,
+   "hi": 16.0,
+   "mae": 4.97,
+   "mae_actual_min": 4.19
+  },
+  {
+   "stat": "REB",
+   "share": 11.9,
+   "lo": 11.1,
+   "hi": 12.5,
+   "mae": 2.0,
+   "mae_actual_min": 1.76
+  },
+  {
+   "stat": "FG3A",
+   "share": 11.9,
+   "lo": 11.7,
+   "hi": 12.1,
+   "mae": 1.6,
+   "mae_actual_min": 1.41
+  },
+  {
+   "stat": "AST",
+   "share": 7.3,
+   "lo": 7.1,
+   "hi": 7.4,
+   "mae": 1.48,
+   "mae_actual_min": 1.37
+  },
+  {
+   "stat": "FG3M",
+   "share": 6.7,
+   "lo": 6.2,
+   "hi": 7.0,
+   "mae": 0.98,
+   "mae_actual_min": 0.91
+  },
+  {
+   "stat": "FTA",
+   "share": 4.5,
+   "lo": 4.4,
+   "hi": 4.6,
+   "mae": 1.77,
+   "mae_actual_min": 1.69
+  },
+  {
+   "stat": "FTM",
+   "share": 4.3,
+   "lo": 4.1,
+   "hi": 4.4,
+   "mae": 1.48,
+   "mae_actual_min": 1.42
+  },
+  {
+   "stat": "STL",
+   "share": 3.3,
+   "lo": 3.1,
+   "hi": 3.5,
+   "mae": 0.76,
+   "mae_actual_min": 0.74
+  },
+  {
+   "stat": "BLK",
+   "share": 2.9,
+   "lo": 2.6,
+   "hi": 3.1,
+   "mae": 0.58,
+   "mae_actual_min": 0.56
+  },
+  {
+   "stat": "TOV",
+   "share": 2.1,
+   "lo": 2.0,
+   "hi": 2.4,
+   "mae": 0.96,
+   "mae_actual_min": 0.94
+  }
+ ],
+ "deciles": [
+  {
+   "decile": 1,
+   "pred": 4.8,
+   "actual": 4.8
+  },
+  {
+   "decile": 2,
+   "pred": 6.8,
+   "actual": 6.7
+  },
+  {
+   "decile": 3,
+   "pred": 8.2,
+   "actual": 8.2
+  },
+  {
+   "decile": 4,
+   "pred": 9.5,
+   "actual": 9.5
+  },
+  {
+   "decile": 5,
+   "pred": 10.9,
+   "actual": 10.9
+  },
+  {
+   "decile": 6,
+   "pred": 12.3,
+   "actual": 12.4
+  },
+  {
+   "decile": 7,
+   "pred": 14.1,
+   "actual": 14.0
+  },
+  {
+   "decile": 8,
+   "pred": 16.8,
+   "actual": 16.8
+  },
+  {
+   "decile": 9,
+   "pred": 20.3,
+   "actual": 19.9
+  },
+  {
+   "decile": 10,
+   "pred": 25.7,
+   "actual": 25.4
+  }
+ ],
+ "ranges": [
+  {
+   "stat": "MIN",
+   "half90": 10.4,
+   "cov90": 91.6,
+   "cov90_lo": 91.0,
+   "cov90_hi": 92.6,
+   "half80": 7.8,
+   "cov80": 82.6
+  },
+  {
+   "stat": "PTS",
+   "half90": 10.6,
+   "cov90": 90.9,
+   "cov90_lo": 89.8,
+   "cov90_hi": 92.0,
+   "half80": 8.0,
+   "cov80": 80.9
+  },
+  {
+   "stat": "REB",
+   "half90": 4.2,
+   "cov90": 90.5,
+   "cov90_lo": 90.0,
+   "cov90_hi": 90.8,
+   "half80": 3.1,
+   "cov80": 80.2
+  },
+  {
+   "stat": "AST",
+   "half90": 3.2,
+   "cov90": 90.1,
+   "cov90_lo": 90.1,
+   "cov90_hi": 90.2,
+   "half80": 2.3,
+   "cov80": 80.2
+  },
+  {
+   "stat": "STL",
+   "half90": 1.4,
+   "cov90": 89.4,
+   "cov90_lo": 88.5,
+   "cov90_hi": 90.1,
+   "half80": 1.1,
+   "cov80": 78.8
+  },
+  {
+   "stat": "BLK",
+   "half90": 1.2,
+   "cov90": 90.1,
+   "cov90_lo": 89.7,
+   "cov90_hi": 90.7,
+   "half80": 0.8,
+   "cov80": 80.0
+  },
+  {
+   "stat": "TOV",
+   "half90": 1.9,
+   "cov90": 89.8,
+   "cov90_lo": 89.5,
+   "cov90_hi": 90.3,
+   "half80": 1.4,
+   "cov80": 79.1
+  },
+  {
+   "stat": "FG3M",
+   "half90": 2.2,
+   "cov90": 90.6,
+   "cov90_lo": 89.2,
+   "cov90_hi": 91.7,
+   "half80": 1.6,
+   "cov80": 80.8
+  },
+  {
+   "stat": "FG3A",
+   "half90": 3.6,
+   "cov90": 90.5,
+   "cov90_lo": 89.0,
+   "cov90_hi": 91.6,
+   "half80": 2.7,
+   "cov80": 80.7
+  },
+  {
+   "stat": "FTM",
+   "half90": 3.1,
+   "cov90": 89.9,
+   "cov90_lo": 88.9,
+   "cov90_hi": 90.9,
+   "half80": 2.2,
+   "cov80": 79.3
+  },
+  {
+   "stat": "FTA",
+   "half90": 3.7,
+   "cov90": 89.8,
+   "cov90_lo": 88.6,
+   "cov90_hi": 91.2,
+   "half80": 2.6,
+   "cov80": 79.2
+  }
+ ],
+ "pts_mae_starter": 5.36,
+ "pts_mae_bench": 4.4
+}

@@ -23,6 +23,20 @@ export type Article = {
 
 export const ARTICLES: Article[] = [
   {
+    slug: "minutes-and-misses",
+    date: "2026-10-30",
+    readMinutes: 5,
+    title: {
+      en: "Minutes explain only a sixth of a player's scoring miss",
+      ja: "得点予測の外れのうち、出場時間で説明できるのは6分の1だけ",
+    },
+    summary: {
+      en: "When a points projection misses, playing time gets the blame. We handed the model the real minutes after the fact and only about a sixth of the miss went away. What that says about reading projections.",
+      ja: "得点予測が外れると、出場時間のせいにされがちです。試合後に実際の出場時間をモデルに渡してみると、消えた誤差は約6分の1だけでした。そこから見える、予測の読み方を紹介します。",
+    },
+    hasJapanese: true,
+  },
+  {
     slug: "count-stats",
     date: "2026-10-30",
     readMinutes: 5,

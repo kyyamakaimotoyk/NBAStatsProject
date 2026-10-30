@@ -12,7 +12,7 @@ export function MarginFloorEn() {
         Every night, each of our three models predicts not just a winner but a final
         margin, like &quot;BOS by 6.&quot; Across the games on our{" "}
         <Link href="/accuracy">track record</Link>, those margins miss the real result by
-        about <strong>11.7 points</strong> on average. That can look embarrassing next to
+        about <strong>11.7 points</strong>{" "}on average. That can look embarrassing next to
         a confident-sounding &quot;by 6.&quot;
       </p>
       <p>
@@ -58,7 +58,7 @@ export function MarginFloorEn() {
           intentional fouls that add free throws at the end.
         </li>
         <li>
-          <strong>Late information.</strong> A star ruled out an hour before tip-off
+          <strong>Late information.</strong>{" "}A star ruled out an hour before tip-off
           changes the game, and the market reacts within minutes. That&apos;s a large
           part of the gap between our models and the closing line.
         </li>

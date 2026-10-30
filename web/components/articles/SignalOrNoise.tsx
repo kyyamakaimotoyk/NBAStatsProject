@@ -41,7 +41,7 @@ export function SignalOrNoiseEn() {
       <p>
         We measured both directly, retraining each model with ten different seeds and
         resampling the test games a thousand times per seed. On 230 games, a model&apos;s
-        accuracy wobbles by roughly <strong>±5 percentage points</strong> from those two
+        accuracy wobbles by roughly <strong>±5 percentage points</strong>{" "}from those two
         sources alone. Against that backdrop, &quot;76.1% vs 76.5%&quot; isn&apos;t a
         result. It&apos;s two numbers whose error bars almost completely overlap.
       </p>
@@ -86,7 +86,7 @@ export function SignalOrNoiseEn() {
           versions of the dataset. We kept it.
         </li>
         <li>
-          <strong>Five-man lineup statistics</strong> were the source of that exciting
+          <strong>Five-man lineup statistics</strong>{" "}were the source of that exciting
           &quot;+2.6 points.&quot; They failed every paired test, on every model and every
           metric. We dropped them.
         </li>
@@ -120,7 +120,7 @@ export function SignalOrNoiseEn() {
       <p>
         The interesting twist came when we ran the same procedure on the{" "}
         <Link href="/players">player projection model</Link>. There the tuned settings{" "}
-        <em>did</em> hold up on held-out data: 9 of the 11 projected stats cleared the bar
+        <em>did</em>{" "}hold up on held-out data: 9 of the 11 projected stats cleared the bar
         and turnovers improved slightly, with better fantasy-point accuracy in every test
         period. The one exception, blocks, got slightly worse, so that stat kept its
         original settings while the rest switched. Same method, opposite verdict.

@@ -16,7 +16,7 @@ export function PlayoffPredictabilityEn() {
       <p>
         For each of five seasons, we trained the models only on regular-season games
         played before that season&apos;s playoffs. Then we scored them on three sets of
-        games that all came <em>after</em> training: the last three weeks of the regular
+        games that all came <em>after</em>{" "}training: the last three weeks of the regular
         season (the control group), the play-in tournament, and the playoffs. Pooled
         across seasons, that&apos;s about 630 late-regular-season games and 400 playoff
         games.
@@ -59,7 +59,7 @@ export function PlayoffPredictabilityEn() {
       </p>
       <ul>
         <li>
-          <strong>The matchups are closer.</strong> Only the best teams are left, so the gap
+          <strong>The matchups are closer.</strong>{" "}Only the best teams are left, so the gap
           in team strength between the two sides is significantly smaller. Most of a
           model&apos;s accuracy comes from spotting mismatches, and the playoffs remove
           most of them.
@@ -70,7 +70,7 @@ export function PlayoffPredictabilityEn() {
           models learned from.
         </li>
         <li>
-          <strong>Series change the game.</strong> By Game 4, both coaching staffs have
+          <strong>Series change the game.</strong>{" "}By Game 4, both coaching staffs have
           spent a week adjusting to one specific opponent. Rolling averages built over
           months of games against 29 different teams don&apos;t capture that.
         </li>

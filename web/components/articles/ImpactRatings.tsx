@@ -23,9 +23,9 @@ export function ImpactRatingsEn() {
 
       <h2>Test one: player projections</h2>
       <p>
-        Our <Link href="/players">player projections</Link> predict counting stats
+        Our <Link href="/players">player projections</Link>{" "}predict counting stats
         (points, rebounds, assists and so on) for every rotation player each night. We
-        added each player&apos;s <em>previous-season</em> impact rating as extra inputs.
+        added each player&apos;s <em>previous-season</em>{" "}impact rating as extra inputs.
         Using last season&apos;s numbers keeps the test honest: nothing from the future
         leaks into a prediction. About 87% of players matched to a rating each season;
         the rest were mostly rookies, who simply have no prior season.
@@ -102,7 +102,7 @@ export function ImpactRatingsEn() {
 
       <h2>What we haven&apos;t ruled out</h2>
       <p>
-        Both tests used <em>static</em> ratings from the previous season. Some impact
+        Both tests used <em>static</em>{" "}ratings from the previous season. Some impact
         metrics update daily during the season, which could help exactly where a frozen
         number can&apos;t: a breakout player in November, or a team reshaped by a
         mid-season trade. That&apos;s still untested, and it would have to clear the same

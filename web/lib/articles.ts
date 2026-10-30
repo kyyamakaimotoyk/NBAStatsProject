@@ -23,6 +23,20 @@ export type Article = {
 
 export const ARTICLES: Article[] = [
   {
+    slug: "count-stats",
+    date: "2026-10-30",
+    readMinutes: 5,
+    title: {
+      en: "Why we predict steals and blocks as chances, not numbers",
+      ja: "スティールとブロックを、数字ではなく確率で予測する理由",
+    },
+    summary: {
+      en: "Nobody gets 0.7 steals. We turn each projection into the chance of 0, 1 or 2+, and three seasons of results show it works for typical players, slips for the busiest shot-blockers, and resists an easy fix.",
+      ja: "0.7回スティールする選手はいません。予測を0回・1回・2回以上の確率に変換する方法は、3シーズン分の結果を見ると、平均的な選手ではうまくいき、リーグ屈指のショットブロッカーではずれ、簡単な補正では直りませんでした。",
+    },
+    hasJapanese: true,
+  },
+  {
     slug: "player-baselines",
     date: "2026-10-30",
     readMinutes: 6,

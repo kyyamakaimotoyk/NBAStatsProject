@@ -41,7 +41,7 @@ def r(x, nd=3):
 def write(slug, payload):
     DEST.mkdir(parents=True, exist_ok=True)
     payload = {"generated": date.today().isoformat(), **payload}
-    (DEST / f"{slug}.json").write_text(json.dumps(payload, indent=1, ensure_ascii=False) + "\n")
+    (DEST / f"{slug}.json").write_text(json.dumps(payload, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"wrote web/data/articles/{slug}.json")
 
 
@@ -437,6 +437,61 @@ def player_baselines():
     })
 
 
+# --- count-stats -----------------------------------------------------------
+
+def count_stats():
+    # P2 validation: per predicted-rate bin, implied (Poisson) vs actual share of
+    # 0 / 1 / 2+ games, pooled over the three test seasons (row-weighted).
+    p2 = load("p2_player_validation.json")
+    keys = ("lambda_mean", "actual_mean", "emp_p0", "imp_p0", "emp_p1", "imp_p1", "emp_p2plus", "imp_p2plus")
+    bins = {}
+    for st in ("STL", "BLK"):
+        pooled = {}
+        for f in p2["folds"]:
+            for row in f["poisson_calibration"][st]["rows"]:
+                b = pooled.setdefault(row["bin"], {"n": 0, "seasons": [], **{k: 0.0 for k in keys}})
+                b["n"] += row["n"]
+                for k in keys:
+                    b[k] += row[k] * row["n"]
+                b["seasons"].append({"d_p0": r((row["emp_p0"] - row["imp_p0"]) * 100, 1),
+                                     "d_p2": r((row["emp_p2plus"] - row["imp_p2plus"]) * 100, 1)})
+        out = []
+        for name, b in pooled.items():
+            n = b["n"]
+            if n < 200:  # too few player-games to read (e.g. one season's 38-row 3+ bin)
+                continue
+            m = {k: b[k] / n for k in keys}
+            out.append({"bin": name.replace("[", "").replace(")", "").replace(",", "-"), "n": n,
+                        "rate": r(m["lambda_mean"], 2), "actual": r(m["actual_mean"], 2),
+                        **{f"{w}_{o}": r(m[f"{w}_{o}"] * 100, 1) for w in ("emp", "imp") for o in ("p0", "p1", "p2plus")},
+                        "d_p0": r((m["emp_p0"] - m["imp_p0"]) * 100, 1),
+                        "d_p2": r((m["emp_p2plus"] - m["imp_p2plus"]) * 100, 1),
+                        "d_p0_lo": min(s["d_p0"] for s in b["seasons"]), "d_p0_hi": max(s["d_p0"] for s in b["seasons"]),
+                        "seasons": len(b["seasons"])})
+        bins[st] = sorted(out, key=lambda x: x["rate"])
+
+    # P5: flexible (isotonic) tail correction vs plain Poisson, 3 seasons x 3 seeds.
+    p5 = load("p5_tail_calibration.json")
+    tail = []
+    for st in p5["stats"]:
+        for arm in ("poisson", "isotonic"):
+            gaps = [run["stats"][st][f"{arm}_p2plus_gap"] * 100 for run in p5["runs"]]
+            briers = [run["stats"][st][f"{arm}_brier3"] for run in p5["runs"]]
+            tail.append({"stat": st, "arm": arm, "gap": r(np.mean(gaps), 2), "lo": r(min(gaps), 2), "hi": r(max(gaps), 2),
+                         "brier": r(np.mean(briers), 4)})
+    brier_worse = sum(run["stats"][st]["isotonic_brier3"] > run["stats"][st]["poisson_brier3"]
+                      for run in p5["runs"] for st in p5["stats"])
+    write("count-stats", {
+        "source": "Player-projection validation before launch: three walk-forward test seasons.",
+        "n_rows": sum(f["n_test"] for f in p2["folds"]),
+        "seasons": ["20" + f["name"][-4:-2] + "-" + f["name"][-2:] for f in p2["folds"]],
+        "bins": bins,
+        "tail": tail,
+        "tail_runs": len(p5["runs"]) * len(p5["stats"]),
+        "tail_brier_worse": int(brier_worse),
+    })
+
+
 BUILDERS = {
     "signal-or-noise": signal_or_noise,
     "margin-floor": margin_floor,
@@ -445,6 +500,7 @@ BUILDERS = {
     "early-season": early_season,
     "calibration": calibration,
     "player-baselines": player_baselines,
+    "count-stats": count_stats,
 }
 
 if __name__ == "__main__":

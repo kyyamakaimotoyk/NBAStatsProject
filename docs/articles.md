@@ -107,7 +107,7 @@ from numbers must let the reader see those numbers, not just read about them.
 | 7 | Even the betting market can't call the playoffs | tuning log E16/E17, `playoff_improvement_plan.md` | Ready |
 | 8 | Minutes explain only a sixth of a player's scoring miss (was: ...is luck) | `p1_`/`p2_player_validation_report.md`, assessment §3.1 | Ready (retitled) |
 | 9 | The simple baseline that wasn't: testing our player projections | `p2_player_validation.json`, `p6_stl_marcel.json` | **Published** 2026-10-30 (EN + JA) |
-| 10 | Why steals and blocks are counted, not measured | P1/P2 reports (Poisson), tuning log P5 | Ready |
+| 10 | Why we predict steals and blocks as chances, not numbers | `p2_player_validation.json` (Poisson tables), `p5_tail_calibration.json` | **Published** 2026-10-30 (EN + JA) |
 | 11 | Is the random forest really the worst model? | assessment §2.3, tuning log E1/E21 | Ready |
 | 12 | Leakage: how a model can cheat without anyone noticing | tuning log E7, E18 | Hold (availability design) |
 | 13 | Fewer features, better model | tuning log E22, assessment §2.1 | Ready (with care; wording fixed) |
@@ -144,7 +144,12 @@ Kai: **#6 → #5 → #20 → #9, #10, #8 → #7 (April).**
   the strong baseline. It loses to the naive 10-game average on 8/11 stats
   (worst 3PA +5.3%); wins only MIN/STL/TOV. And the model ties the naive
   average on BLK (worse in 2/3 seasons). Published reframed, see #9.
-- **#10 holds**; Poisson tables are in `p1`/`p2_player_validation.json`.
+- **#10 holds, with a sharper finding** (2026-10-30): pooled over 3 seasons the
+  Poisson shape fits typical players within ~2 pts, but the surplus of zero
+  nights grows with the expected rate (BLK 2-3: 15.2% actual vs 10.3%
+  predicted, positive every season) while means stay right: real counts are
+  lumpier than Poisson. P5's isotonic fix was worse (STL 2+ gap 2.3 -> 4.3 pts;
+  error score worse in 14/18 runs).
   Those files also hold feature importances: the builder must not export them.
 - **#11 holds** on the backtest (RF .657/.709 vs XGB .643/.689, 16 windows); live
   record adds that XGB beat RF in 2025-26, the stale-calibrator season.
@@ -243,6 +248,14 @@ fantasy-points MAE by season (8.49 / 8.43 / 8.05 avg). Text covers P6 (serving
 Marcel for STL was significantly worse in 2024-25 on all seeds) and the BLK tie
 with the naive average. Marcel described by its ideas; **weights not published.**
 Numbers are pre-tuning (P7b changed the model since; BLK kept original settings).
+
+### 10. Why we predict steals and blocks as chances, not numbers
+`/articles/count-stats/`. Figures: (1) predicted vs actual share of 0/1/2+ for
+the most common STL and BLK bands; (2) actual minus predicted share of 0 and
+2+ games by expected-rate band, both stats; (3) P5 tail fix vs plain Poisson,
+2+ gap with run range. Points readers to the deep-dive's "Model-implied" tile
+(JA: モデル推定) and says how to adjust for elite shot-blockers. Open item it
+names: an overdispersed distribution (e.g. negative binomial), untested.
 
 ## Ready to write
 

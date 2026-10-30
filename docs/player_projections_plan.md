@@ -355,6 +355,8 @@ production error is flat-to-lower. Full detail: model_tuning_log §P2.
     submit personal information.
 - **Phase E (optional/parked):** NN-embed experiment (B), distributional outputs (D), MCP
   tool loop, Tier-2 feature ablation rounds.
+  Related low-priority study (2026-10-30): showing the existing 80/90% conformal
+  ranges on /players, see `docs/articles.md` P-1.
 
 Timing: offseason now — A/B on historical data; nightly output live from October tip-off.
 

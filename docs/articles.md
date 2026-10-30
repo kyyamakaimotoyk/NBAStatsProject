@@ -264,8 +264,8 @@ by swapping in actual minutes (PTS 15.8%, REB/3PA ~12%, STL/BLK/TOV 2-3%);
 (3) 90% conformal-range coverage per stat with season range (88.5-92.6%;
 PTS range +-10.6). States plainly that the per-minute remainder includes model
 rate error, not just luck. The site doesn't display these ranges on /players
-(the article gives the rule of thumb instead): **product idea for Kai,
-showing the 80/90% range on /players.**
+(the article gives the rule of thumb instead); logged as product idea P-1
+(low priority).
 
 ## Ready to write
 
@@ -426,6 +426,30 @@ IAM details, or endpoints beyond the public API.**
 **Figures:** a data-flow diagram (scheduled jobs -> database -> API -> static site),
 plus a timeline of one night's runs (JST). System article, so a diagram counts
 as the figure. No resource names.
+
+## Product ideas surfaced by articles
+
+Not articles: changes to the site that writing an article made look worth
+studying. Each needs its own look before any work starts.
+
+### P-1. Show 80% / 90% ranges on the player pages (study, **low priority**)
+*Added 2026-10-30, from #8.* The player model already produces split-conformal
+ranges that held 88.5-92.6% of the time at the 90% level across all 11 stats
+(PTS about +-10.6, REB +-4.2, AST +-3.2; `p2_player_validation.json`), but
+`/players` and `/players/explore` show only the point projection. #8 has to
+give readers a rule of thumb ("20 points means roughly 9 to 31") instead of
+pointing at the site.
+
+To study before deciding:
+- Are the ranges stored with each nightly player prediction, or would the
+  nightly job and API need to carry the half-widths? (Team predictions already
+  ship `margin_uncertainty`; check whether the player path has an equivalent.)
+- Symmetric +- ranges go below zero for low projections (a 4-point projection
+  +-10.6); clip at 0, or move to per-stat quantile/distributional outputs,
+  which `player_projections_plan.md` Phase E already parks.
+- Where it fits in the UI: a column in the sortable table vs only on the
+  deep-dive next to the clearing-a-line panel; mobile width.
+- Re-check coverage on 2026-27 games once enough are graded.
 
 ## Blocked / Hold / Ideas
 

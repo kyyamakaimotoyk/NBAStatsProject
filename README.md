@@ -50,7 +50,7 @@ Two halves, one repo:
 - Fetches NBA game data via the NBA API and stores it in MySQL
 - Engineers ~770 columns of rolling/context features: form, fatigue, ELO, player availability from official pre-game injury reports
 - Trains Random Forest, XGBoost, and PyTorch neural-net models with probability calibration (isotonic) and conformal margin intervals
-- Evaluation discipline: walk-forward validation, multi-seed ablations with paired tests, and an append-only experiment log — **`docs/model_tuning_log.md` (E1–E21) is the source of truth for every modeling decision**
+- Evaluation discipline: walk-forward validation, multi-seed ablations with paired tests, and an append-only experiment log — **`docs/model_tuning_log.md` (E1–E26, P1–P7) is the source of truth for every modeling decision**
 
 **The product (AWS, deployed from this repo)**
 - Static Next.js site + read-only FastAPI serving predictions, the fully graded 3-season track record, and data exploration
@@ -60,13 +60,13 @@ Two halves, one repo:
 
 ## Key Documentation
 
-The README is the map; the deep dives live in `docs/`. The ones worth knowing about:
+The README is the map; the deep dives live in `docs/`. **Start with [`docs/INDEX.md`](docs/INDEX.md)** (which doc is canonical for what, its status and size) and **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)** (dated history of changes, each linked to its write-up). The ones worth knowing about:
 
 **Plans & assessments**
 
 | Doc | What it is |
 |---|---|
-| [`docs/model_tuning_log.md`](docs/model_tuning_log.md) | ⭐ **The canonical experiment log (E1–E21)** — append-only; every modeling decision traces back to an entry here |
+| [`docs/model_tuning_log.md`](docs/model_tuning_log.md) | ⭐ **The canonical experiment log (E1–E26, P1–P7)** — append-only; every modeling decision traces back to an entry here |
 | [`docs/model_assessment_2026-07.md`](docs/model_assessment_2026-07.md) | July 2026 full-model assessment (premise checks, feature saturation, impact-metric adoption targets) |
 | [`docs/player_projections_plan.md`](docs/player_projections_plan.md) | P-series plan: player counting-stat models → public `/players` pages → the LLM fantasy advisor (§5) |
 | [`docs/advisor_scope_plan.md`](docs/advisor_scope_plan.md) | Plan to widen the advisor beyond tonight's slate (season-wide grounding → week-ahead projections → copy) |
@@ -119,7 +119,7 @@ HOME PC (residential IP)                AWS (us-east-1)
                             └──────────────┬──────────────────────────┘
                                            ▼
      RDS MySQL ◄──── weekly retrain (Mon): ELO → player_impact →
-         │           full-history features → train → validate
+         │           full-history features → train (rf+xgb+nn, sync-checked) → validate
          │                         └──► model bundles → S3 artifact store
          ▼
   FastAPI, read-only (Fargate + ALB) ──► CloudFront api.hoopmodel.com
@@ -355,7 +355,11 @@ All scripts call `db.get_engine()` from `core/db.py`, which reads the `NBA_DB_*`
 | `batch_predict_today.py` | **Nightly cloud job** - S3 load → grade yesterday → vegas refresh → freshness + drift checks → predict → heartbeat |
 | `home_ingest_push.py` | Home-side fetch + parquet export + S3 upload (residential-IP half of the ingest handoff) |
 | `s3_ingest_loader.py` | Cloud-side half: loads manifest-gated S3 drops into MySQL (game/date/version/replace modes) |
-| `walkforward_backfill.py` | Train-before-window walk-forward backfill (`wf_` provenance rows; never touches live receipts) |
+| `walkforward_backfill.py` | Train-before-window walk-forward backfill (`wf_` provenance rows; never touches existing rows unless `--supersede-non-wf`, used to make 2025-26 all walk-forward — E26) |
+| `retrain_models.py` | Backs the pipeline `train` stage: retrains RF/XGB/NN independently, fails on any skipped model or out-of-sync bundles (`ERROR: RETRAIN_FAILED`) |
+| `bundle_sync.py` | Checks the three `*_current` bundles share `data_through_date` / `feature_set_version` / features; the nightly alerts `MODEL_BUNDLE_SYNC` on a mismatch |
+| `scripts/check_track_record.py` | Read-only audit: weekly retrain runs per model, bundle sync, served-row provenance + paired per-season accuracy/MAE |
+| `scripts/ship_wf_predictions.py` | Ships local `wf_` prediction rows to RDS through the S3 handoff (`version_window` mode) |
 | `compute_elo.py` | Chronological pre-game ELO build → `team_elo_pregame` |
 | `historical_injury_scraper.py` | Official pre-game injury-report PDFs → `historical_injury_report` |
 | `feature_engineering.py` | Builds the versioned feature snapshot (~770 columns incl. player slot features) |
@@ -739,6 +743,8 @@ For predictions actually made via `predict_games.py` (either daily live, or back
 
 Live tracking is the only path that catches concept drift (the world changes; the model doesn't). The other two paths only tell you "how well does the model fit historical data."
 
+**Provenance matters (E26, 2026-10-30).** `model_predictions` holds rows from different processes, told apart by `model_version`: `wf_YYYY-MM` = walk-forward backfill, retrained monthly, logged after the fact but out-of-sample by construction; anything else = the production bundle of that date, logged either before tip-off (true live) or retrospectively. The API serves the latest row per (game, model). Before comparing models on a season, check all of them come from one process: `python scripts/check_track_record.py`. The public record for past seasons is all walk-forward; 2025-26 was mixed until E26.
+
 ### When to trust which number
 
 | Question | Use |
@@ -815,6 +821,8 @@ A `models/bundles/<key>_current.joblib` pointer is updated on every retrain — 
 Legacy fixed-name files (`models/rf_classifier.joblib` etc.) are also still written for any reader that hasn't been migrated; they're not the source of truth anymore.
 
 **In production the artifact store is S3**: `scripts/sync_models.py` pushes bundles up, and cloud containers hydrate `models/bundles/` from S3 on first use (a fresh container is fully functional with only env vars + network). Every bundle records its `feature_set_version` and `data_through_date` for lineage and the leakage guard.
+
+**The three models retrain as one unit (E26).** The weekly `train` stage runs `modeling/retrain_models.py`: each model trains in isolation, a missing library is a failure, and afterwards `modeling/bundle_sync.py` checks the rf/xgb/nn current bundles share `data_through_date`, `feature_set_version` and the feature list. The nightly repeats the check after loading and prints `bundle sync: OK` or `ERROR: MODEL_BUNDLE_SYNC` (emailed by the ERROR alarm; it still predicts). Why: in 2025-26 RF/NN ran a preseason bundle all season and XGB never ran, and nothing noticed. Check by hand with `python modeling/bundle_sync.py`.
 
 ---
 
@@ -1643,6 +1651,8 @@ NBAStatsProject/
 │   ├── predict_games.py               # MAIN prediction CLI (RF/XGB/NN, SHAP, calibration, backfill)
 │   ├── batch_predict_today.py         # Nightly cloud entrypoint (load→grade→check→predict→heartbeat)
 │   ├── walkforward_backfill.py        # Train-before-window backfill (wf_ provenance rows)
+│   ├── retrain_models.py              # Weekly train stage: rf+xgb+nn, isolated, sync-checked
+│   ├── bundle_sync.py                 # Do the three current bundles come from one run?
 │   ├── prediction_tracker.py          # Prediction logging + actuals backfill
 │   ├── validate_models.py             # Held-out validation runner
 │   ├── model_types.py                 # Model-type registry (dispatch for rf/nn/xgb/nn-embed)
@@ -1683,14 +1693,17 @@ NBAStatsProject/
 │   ├── home_ingest.bat                # Windows Task Scheduler wrapper (must stay ASCII+CRLF)
 │   ├── sync_models.py                 # Push/pull model bundles ↔ S3 artifact store
 │   ├── migrate_features_csv_to_db.py  # CSV → features-table migration
-│   └── ship_features_version.py       # One-off: ship a local feature version to RDS via S3
+│   ├── ship_features_version.py       # One-off: ship a local feature version to RDS via S3
+│   ├── ship_wf_predictions.py         # Ship local wf_ prediction rows to RDS via S3
+│   └── check_track_record.py          # Read-only: retrain cadence, bundle sync, record provenance
 │
 ├── .github/workflows/                 # CI/CD (OIDC, no stored keys)
 │   ├── api.yml                        # api/** → build → ECR → roll service
 │   └── frontend.yml                   # web/** → build → S3 → CloudFront invalidation
 │
 ├── docs/                              # Working notes + reports
-│   ├── model_tuning_log.md            # ⭐ Canonical experiment log (E1–E21)
+│   ├── INDEX.md / CHANGELOG.md        # Start here: doc map + dated change history
+│   ├── model_tuning_log.md            # ⭐ Canonical experiment log (E1–E26, P1–P7)
 │   ├── DATABASE_SCHEMA.md / aws_deployment_plan.md / preseason_checklist.md
 │   └── *_lab.md                       # terraform / docker / cicd / ops / traffic / frontend labs
 │

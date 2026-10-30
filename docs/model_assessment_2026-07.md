@@ -21,7 +21,9 @@ this review:
    one noisy 230-game window. Across every multi-seed, multi-window measurement in
    this repo, RF *wins* winner accuracy and AUC. RF's real, documented weaknesses
    are timid probabilities (a direct side effect of the E1 regularization) and no
-   edge on margin MAE. Details in §2.3.
+   edge on margin MAE. Details in §2.3. *(2026-10-30: the "no margin edge" half
+   doesn't survive the like-for-like track record, where RF leads on margins
+   too. See the Addendum.)*
 2. **You are not catastrophically overfitting anymore, but you are feature-saturated.**
    The E1 fix cut the RF train-test gap from 24pp to ~5pp, and the E12 noise-aware
    protocol has been correctly killing weak features (E10, E11, series context).
@@ -158,6 +160,11 @@ RF's two *real* deficits, both documented and both already partially addressed:
 2. **No margin edge.** RF regressor at depth 5 tops out around MAE 11.9 / R² 0.33;
    XGB/NN are ~0.2–0.3 points better on MAE. If one model family had to own the
    margin head, it would not be RF.
+   > **Correction 2026-10-30 (Addendum, E26):** the 0.2–0.3 came from the single
+   > E2 W5 window (n=230). On the walk-forward track record, paired on the same
+   > games, RF has the *lowest* margin MAE in 2023-24 (11.11 vs XGB 11.32 / NN
+   > 11.18), 2024-25 (11.05 / 11.44 / 11.27) and the like-for-like part of 2025-26
+   > (10.89 / 11.27 / 11.11). Deficit 2 is withdrawn; deficit 1 stands.
 
 **Recommendation:** stop treating the three families as competitors to be ranked —
 their disagreement is signal. A probability-average (or logistic-stack) ensemble
@@ -279,6 +286,12 @@ espn_draftkings).
 
 Caveat printed on the tab: registry metrics come from the in-file 80/20 split —
 trust *direction* there, *magnitude* in the walk-forward docs.
+
+*(2026-10-30: `model_predictions` mixes processes. Rows tagged `wf_` are monthly
+walk-forward; for 2025-26 most RF/NN rows were instead logged after the games by a
+preseason-trained bundle, and only ~50 per model were truly pre-game. Filter on
+`model_version` before comparing models, or run `scripts/check_track_record.py`.
+See the Addendum.)*
 
 (Pre-existing quirk noticed while testing: the Dash app prints "PyTorch not
 available (OSError)" at import although torch 2.9.1 is installed — the nn bundle
@@ -406,3 +419,29 @@ falsified), further single-window model-ranking debates (E12 falsified).
 | 8 | Player Phase D un-park: quantile/NB heads for tails; minutes distribution | `modeling/player_projection_models.py` |
 | 9 | Residual-vs-volatility + blowup/dud slices in P-harness | `experiments/p1_player_validation.py` |
 | 10 | Torch OSError in dashboard process | `visualization/dataExploration.py` import path |
+
+---
+
+## Addendum — 2026-10-30: the 2025-26 track record and the retrain schedule (E26 / P-2)
+
+Found while writing article #11; full detail in `docs/model_tuning_log.md` §E26.
+
+1. **The public 2025-26 record compared two processes.** XGB's rows are monthly
+   walk-forward (`wf_`). Most RF/NN rows were logged May 22-27 2026, after the games,
+   by a production bundle trained through 2025-10-22 and never updated in-season,
+   carrying the stale E19 calibrator. That is why RF looks worst on `/accuracy` for
+   2025-26 (.600 vs XGB .651 on 1,119 paired games). On the 474 games where all three
+   are walk-forward, RF leads: .656 / MAE 10.89 vs XGB .637 / 11.27 and NN .631 / 11.11.
+   This strengthens §2.3's conclusion and withdraws its "no margin edge" deficit.
+2. **"Live" in E19-E21 mostly wasn't.** Only 59 RF / 45 NN 2025-26 rows were logged
+   before tip-off; the Apr-Jun pairs E20/E21 used were all logged afterwards. The
+   calibration conclusions stand (still out-of-sample); the label is corrected inline.
+3. **The three models now retrain as one unit with a sync check.** The weekly `train`
+   stage isolates each model, fails on any skipped model, and checks the three bundles
+   share `data_through_date` / `feature_set_version` / features; the nightly alerts on
+   a mismatch (`MODEL_BUNDLE_SYNC`). Kai's decision: rebuild 2025-26 as all walk-forward
+   (`walkforward_backfill.py --supersede-non-wf`).
+
+Effect on §6/§7: §6.3's ensemble rationale ("RF picks, XGB/NN margins") loses its
+margin half. Ensembling may still pay for calibration and variance, but the
+complementarity argument is weaker than stated.

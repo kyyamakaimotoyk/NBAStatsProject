@@ -526,20 +526,25 @@ write to RDS and were **not verified** from here.
 - Covers the 686 retrospective rows per model, the ~50 live rows and the mixed
   Dec 2025 versions, so the whole season is one process for all three models.
 
-**Session checklist:**
-- [ ] Verify the weekly retrain ran every Monday since 2026-07-06 for all three
-      (RDS `model_registry` training_date per model_type; CloudWatch logs).
-- [ ] Isolate per-model training in `TrainStage`; fail the stage (non-zero
-      exit, alert) if any requested model didn't retrain.
-- [ ] Nightly guard: refuse or alert when the loaded rf/xgb/nn bundles differ
-      in training date or feature_set_version.
-- [ ] Override flag for `walkforward_backfill.py`; dry-run listing what would
-      be superseded; Kai runs the RF/NN 2025-26 backfill locally and on RDS.
+**Session checklist** (code done 2026-10-30, tuning log §E26; Kai's run order is in
+`preseason_checklist.md` "P-2 / E26"):
+- [ ] Verify the weekly retrain ran every Monday since 2026-07-06 for all three.
+      Tool built: `scripts/check_track_record.py` (reads RDS `model_registry`;
+      CloudWatch keeps pipeline logs only 14 days). Kai runs it as a one-off task.
+- [x] Isolate per-model training in `TrainStage`; fail the stage (non-zero
+      exit, alert) if any requested model didn't retrain (`retrain_models.py`).
+- [x] Nightly guard: alert (not refuse) when the loaded rf/xgb/nn bundles differ
+      in data_through_date / feature_set_version / features (`MODEL_BUNDLE_SYNC`).
+- [x] Override flag `--supersede-non-wf`; dry run lists 1,837 rows (RF 832 and
+      NN 818 superseded, XGB 187 Apr-Jun gaps filled). `scripts/ship_wf_predictions.py`
+      for RDS.
+- [ ] Kai runs the 2025-26 backfill locally, then ships it to RDS.
 - [ ] Re-check `/accuracy` 2025-26 per model; re-run the #11 analysis.
 - [ ] Rework #5 Figure 2 (its source rows get superseded; use E19/E20 audit
       data, framed as the production model's predictions) and its wording.
-- [ ] Note in the tuning log that E19's "RF live acc 0.583" and E21's "live"
-      pairs were mostly May 2026 retrospective rows, not pre-game predictions.
+- [x] Tuning-log notes: E19/E20/E21 "live" rows were logged after the games
+      (0 of 178 Apr-Jun pairs pre-game; 59 RF / 45 NN pre-game rows all season).
+- [ ] Decide item 4 (cadence). Recommendation in §E26: document, don't align.
 
 ### P-1. Show 80% / 90% ranges on the player pages (study, **low priority**)
 *Added 2026-10-30, from #8.* The player model already produces split-conformal

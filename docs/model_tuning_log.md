@@ -49,6 +49,7 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **E24** | **First-ever hyperparameter search (Optuna TPE, XGB)** | Assessment §2.4 gap #1: HPs were hand-set once in E1 (2026-05-18) and never searched — "zero search has ever been done." Cheapest unknown-payoff item on the ranked list. | `experiments/e24_hp_search.py`: 60-trial TPE per task on the E22 top250 loop-incumbent set; objective = mean W1–W4 walk-forward logloss (clf) / MAE (reg), 2 seeds, MedianPruner, SQLite storage; incumbent enqueued as trial 0; **W5 excluded from selection**. Winner gated via `loop_ab.py` on W5 (10 seeds, paired tests vs incumbent HPs, superiority gate pre-registered). | Search preferred heavy regularization (depth 2, lr .04–.06, 500–600 trees, λ 15–30) and beat the incumbent on its own objective (logloss −0.014, MAE −0.21 on W1–W4). **On held-out W5 the advantage vanished**: paired acc diff 0.0000 (McNemar 7w/7l), MAE +0.02 (p=.82), AUC −0.001 (p=.83). Marginal per-seed metrics flattered the tuned config (acc .799 vs .782) but seed-averaged predictions were indistinguishable. | **REJECT — E1 HPs stand** 2026-07-16 — §E24 below |
 | **E25** | **Team-level prior-season eRAPTOR roster-strength aggregates** | P3's own caveat: impact metrics measure margin/possession, so the TEAM model is the natural consumer (assessment §6.2, expected 0.1–0.3 MAE). Standalone signal looked real: corr(DIFF_WMEAN, margin)=0.28, home wins 65% when positive. | `experiments/e25_eraptor_team.py`: pregame-honest roster (trailing-45d appearances minus official Out/Doubtful via `historical_injury_report`), MPG-weighted (last-10, shift-1) prior-season eRAPTOR via P3's name join → 12 cols (WMEAN/MINSUM/match-frac × HOME/AWAY/DIFF), 98.6% coverage. A/B vs the E22 top250 incumbent via `loop_ab.py`: W5 10 seeds (superiority gate, pre-registered) + 21-window diagnostic. | **W5: nothing FOR the augmented arm** (RF 3w/3l acc; XGB −2.2pp ns; all MAE/AUC ns) → gate failed, verdict locked. Diagnostic windows (labeled, could not change verdict): pooled null (best case RF acc +0.6pp, McNemar p=.074); **early-season Oct–Dec slice refutes the "helps early" hypothesis** (RF −0.35pp, XGB −1.1pp acc). Team-level twin of the P3 null: redundant with cross-season ELO + availability-aware slot impacts. | **REJECT** 2026-07-16 — §E25 below |
 | **P3** | **Prior-season Estimated RAPTOR as player-projection features** | Kai asked whether RAPTOR/LEBRON-class impact metrics improve the models. Sourcing: real RAPTOR dead (data ends 2021-22), LEBRON no export/API, DARKO DPM = only free daily point-in-time series covering 2023-26; Paine Estimated RAPTOR (0.89 corr w/ RAPTOR, thru 2024-25, `outputs/nba_estimated_RAPTOR.csv`) = the backtest source. P2 model had zero RAPM-family signal (only PIE_L10/USG_PCT_L10). | `experiments/p3_impact_metrics.py`: +PREV_ERAPTOR_{OFF,DEF,TOT,WAR82} (previous-season rating, minutes-weighted across stints, normalized-name join, 87.5% match every season, rookies NaN — point-in-time safe by construction). 3 seeds × the 3 P2 walk-forward folds, baseline-vs-augmented paired t-test on per-row \|error\|; keep-gate = ΔMAE<0 AND p<0.05 in all folds for ≥2/3 seeds. | **NULL: 0/11 stats keep, 0 seeds pass the gate anywhere.** Mean ΔMAE: PTS −0.0068, all others ≤ \|0.0013\|. The trees USED the features (gain rank 16-30 of 139 in MIN/PTS models) but zero out-of-sample gain — redundant with L5/L10 form + usage + PREV_*36 priors. Counting stats are the wrong target for a margin-impact metric. | **Rejected for player model 2026-07-10** — open follow-up: eRAPTOR/DARKO in the TEAM model (availability weighting in `player_impact.py` Approach B; roster-strength aggregate = E22 candidate); §P3 below |
+| **E26** | **Common retrain schedule + all-walk-forward 2025-26 track record** (articles.md P-2) | Writing article #11 found the public 2025-26 record compares two processes: XGB = monthly walk-forward `wf_` rows; RF/NN = mostly retrospective rows logged May 22-27 2026 by a preseason-trained bundle (stale E13 calibrator). Like-for-like, RF is the best model; on the mixed record it looks like the worst. The weekly `train` stage also had silent-skip paths. | `modeling/retrain_models.py` (per-model isolation, missing library = failure, post-train bundle-sync check, `ERROR: RETRAIN_FAILED`); `modeling/bundle_sync.py` + nightly `MODEL_BUNDLE_SYNC` alert; `walkforward_backfill.py --supersede-non-wf`; `scripts/ship_wf_predictions.py` (RDS via S3 `version_window`); `scripts/check_track_record.py` (read-only audit). | Dry run: 1,837 rows (RF supersedes 832, NN 818, XGB fills 187 Apr-Jun gaps); feature count matches existing wf_ rows (567). E19/E20/E21 "live" rows re-audited: of the 178 graded Apr-Jun pairs per model, **0 were logged before tip-off**. Only 59 RF / 45 NN served 2025-26 rows were pre-game. | **Code shipped 2026-10-30**; DB rebuild + RDS ship + cloud verification = Kai — §E26 below |
 
 ---
 
@@ -588,6 +589,12 @@ record `feature_set_version` lineage in the registry (shipped 2026-07-03).
 
 Actual home-win base rate: **0.554** (832 games).
 
+*(Correction 2026-10-30, E26: "Live accuracy" here is not pre-game live. Of the 2025-26
+RF/NN rows audited, only ~50 per model were logged before tip-off; most were written
+May 22-27 2026, after the games, by the then-production bundles (trained before those
+games, so still out-of-sample). The calibration finding stands; read "live" as
+"production model, logged retrospectively".)*
+
 **Finding 1 — RF's home-pick collapse is the E13 calibration layer, not the trees.**
 The isotonic map (fit on a ~209-game Mar-Apr eval holdout, applied to the full-data
 production model — the step-7 subtlety flagged in E18) now pushes ~97% of calibrated
@@ -760,6 +767,9 @@ raw 0.72 → calibrated **0.94**. That +22pp live shift is >2× the guard thresh
 tripwire would have caught the actual incident. These same 186 pairs are enough to
 PILOT online recalibration (refit weekly on trailing live raw probs — the most
 distribution-matched fit data possible); certification needs next season's volume.
+*(Correction 2026-10-30, E26: none of these pairs was logged before tip-off; they are
+production-bundle predictions logged after the games, mostly on 2026-05-27. Same
+conclusion, wrong label.)*
 
 ### Residuals / honest caveats
 - The guard is a tripwire, not a cure: a calibrator can be subtly bad without crossing
@@ -1057,6 +1067,8 @@ stale-RF level (+22pp) sits in the true tail (2–4%). E20's "healthy fits obser
 was an artifact of a small sample from one window.
 
 **Leg 3 — online pilot on live pairs (129 games, Apr 10 → Jun 13):**
+*(Correction 2026-10-30, E26: "live" = production-bundle predictions logged after the
+games, not pre-game; see the E19 correction note.)*
 
 | protocol | RF acc | RF ECE | RF home% | NN acc | NN ECE |
 |---|---|---|---|---|---|
@@ -1943,3 +1955,108 @@ games). **Feasibility answered: Phase D distributional heads work at
 conformal-equivalent honesty with adaptivity conformal can't give — the
 go/no-go is now a scoping decision, not a research question.** Artifacts:
 `outputs/p_stretch_quantile.json`.
+
+---
+
+## 2026-10-30 — Experiment 26: Common retrain schedule + all-walk-forward 2025-26 track record
+
+*Tracked as P-2 (HIGH) in `docs/articles.md`. Not a model change: an evaluation-integrity
+and ops fix. Model performance claims elsewhere in this log are unaffected; the public
+2025-26 record and the "live" labels in E19-E21 are.*
+
+### Why this experiment exists
+Writing article #11 ("Is the random forest really the worst model?") compared the three
+models on the public `/accuracy` record and found 2025-26 inconsistent with every other
+measurement: RF last on accuracy and margins, after leading in 2023-24, 2024-25 and the
+E21 backtest. Provenance of the served rows (latest `prediction_timestamp` per game and
+model, the API's dedup):
+
+| Season (regular) | RF | NN | XGB |
+|---|---|---|---|
+| 2023-24 | 1,230 wf | 1,230 wf | 1,230 wf |
+| 2024-25 | 1,217 wf + 7 other | 1,224 wf | 1,224 wf |
+| 2025-26 | 474 wf + 745 other | 488 wf + 731 other | 1,119 wf (none for April) |
+
+The "other" 2025-26 rows were mostly logged May 22-27 2026, after the games, by the
+then-production bundles (the `*_20260520` family trained through 2025-10-22, i.e. a
+preseason model never updated in-season, carrying the E19 calibrator). XGB never ran
+in-season (E19 Finding 3), so `walkforward_backfill.py` gave it monthly-retrained wf_
+rows everywhere, while its skip rule ("never supersede an existing row") kept RF/NN on
+the May rows. Two different processes, compared as equals.
+
+Like-for-like on the 474 games where all three have wf_ rows (Oct-Jan): RF .656 / MAE
+10.89, NN .631 / 11.11, XGB .637 / 11.27 — the same ordering as the earlier seasons.
+
+The weekly cloud retrain (`infra/schedule.tf` `weekly_retrain`, since 2026-07-04) also had
+silent-skip paths in the `train` stage: one inline `python -c` process, so an RF exception
+skipped XGB and NN; a missing xgboost/torch import printed a line and moved on (the same
+class of silence that hid XGB all season); nothing checked the three bundles in S3 came
+from one run.
+
+### Hypothesis
+Not falsifiable in the usual sense; the claims checked are: (1) the dry run supersedes
+only non-wf served rows in 2025-26 and touches nothing already walk-forward; (2) the new
+rows use the same model inputs as the wf_ rows beside them; (3) after the rebuild the
+2025-26 like-for-like ordering matches 2023-24/2024-25 (RF best on picks and margins).
+
+### What changed in code
+- `modeling/retrain_models.py` (new) backs the pipeline `train` stage: each requested
+  model trains in its own try block; a missing library is a failure; after training,
+  `modeling/bundle_sync.py` checks the three `*_current` bundles agree on
+  `data_through_date`, `feature_set_version` and the feature list. Any failure prints
+  `ERROR: RETRAIN_FAILED ...` (CloudWatch ERROR filter emails) and exits non-zero.
+- `modeling/batch_predict_today.py`: after loading bundles, the nightly prints
+  `bundle sync: OK (...)` or `ERROR: MODEL_BUNDLE_SYNC ...`. Alert-only: a stale
+  model's picks still beat no picks.
+- `modeling/walkforward_backfill.py --supersede-non-wf`: (re)logs a wf_ row for every
+  pair whose served row is not wf_. Old rows stay for audit; the new row wins the dedup.
+  Aborts if its feature count differs from the existing wf_ rows in range. `--dry-run`
+  no longer trains (listing only) and prints what would be superseded.
+- `scripts/ship_wf_predictions.py` (new): ships all local wf_ rows to RDS through the S3
+  handoff, `version_window` mode on `model_version` (delete `wf_%`, insert).
+- `scripts/check_track_record.py` (new, read-only): weekly training runs per family from
+  `model_registry` (CloudWatch keeps pipeline logs only 14 days), bundle sync, served-row
+  provenance and paired per-season accuracy/MAE.
+
+### Results (dry run, local DB, 2026-10-30)
+`walkforward_backfill.py --models rf,nn,xgb --start 2025-10 --end 2026-06 --supersede-non-wf --dry-run`:
+snapshot `20260703T072718Z`, 567 features; existing wf_ rows in range all 567 (2,300 rows).
+1,837 rows would be logged: RF 832 superseded (745 May 22-27 retrospective + 87 Dec-Jan
+live/next-day), NN 818, XGB 187 new (Apr-Jun 2026, incl. play-in/playoffs; no XGB rows
+existed). Oct-Nov: 0 for every model.
+
+Re-audit of the E19-E21 "live" rows: of the 178 graded Apr 2 - Jun 13 pairs per model
+still served, **0** were logged before tip-off (`created_at` date > `game_date` for all;
+170 from the 2026-05-27 batch). Across 2025-26 only 59 RF / 45 NN served rows were
+pre-game. E19-E21 conclusions hold (rows are out-of-sample); the "live" label does not.
+Inline correction notes added at E19, E20 (live confirmation) and E21 (Leg 3).
+
+Local `check_track_record.py` (pre-rebuild, paired regular-season games):
+
+| Season | games | acc RF / XGB / NN | MAE RF / XGB / NN |
+|---|---|---|---|
+| 2023-24 | 1,230 | .654 / .631 / .644 | 11.11 / 11.32 / 11.18 |
+| 2024-25 | 1,224 | .667 / .658 / .643 | 11.05 / 11.44 / 11.27 |
+| 2025-26 | 1,119 | .600 / .651 / .629 | 11.87 / 11.44 / 11.54 |
+
+### Decision
+- **All walk-forward for 2025-26** (Kai, 2026-10-30). Rebuild locally, ship to RDS.
+- **Cadence (open, recommendation: document, don't align):** historical wf_ rows retrain
+  monthly; production retrains weekly. Weekly wf would cost ~4x the backfill compute
+  (NN dominates) to move a closed season's numbers by an amount E15's flat learning
+  curve says is small. The public record should say "retrained monthly" for past seasons.
+- wf_ rows use the full 567-column set (pre-E22) because that is what the existing wf_
+  rows used; production has run the E22 252-column set since 2026-07-16. Past seasons
+  stay on one consistent process; do not mix.
+
+### Caveats / follow-ups
+- Not yet run: the local write, the RDS ship, the cloud verification (Kai). Results
+  section to be extended with the post-rebuild table when done.
+- After the RDS load: the API edge cache is ~5 min (`s-maxage=300`); pages baked at
+  web build time keep old numbers until the next web build.
+- Then: re-run the #11 analysis on the rebuilt record; rework #5 Figure 2 (its source
+  rows are superseded — use E19/E20 audit data framed as the production model's
+  predictions).
+- `load_or_train_*` still retrains inside the nightly if a bundle's feature count no
+  longer matches the features table (pre-existing behavior). That path would now trip
+  the nightly `MODEL_BUNDLE_SYNC` alert, which is the desired signal.

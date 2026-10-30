@@ -43,6 +43,34 @@ approaches. Check items off in order; most are 5-minute verifications.
       inspect `[E20]` shift telemetry in the last retrain, compare
       raw-vs-displayed on recent rows, force a retrain (fresh calibrator).
 
+## P-2 / E26 — common retrain + walk-forward track record (added 2026-10-30)
+Code shipped 2026-10-30 (tuning log §E26). These steps write to the DBs, so Kai
+runs them, in order:
+- [ ] **Verify the weekly retrain on RDS** (pipeline logs only last 14 days, so
+      read the registry): rebuild + push the pipeline image, then
+      `aws ecs run-task --cli-input-json file://tmp/run_check_track_record_task.json`.
+      Section 1 should show rf/xgb/nn trained every Monday since 2026-07-06;
+      section 2 `OK`. Note any missing weeks in §E26.
+- [ ] **Rebuild 2025-26 locally**: dry-run first, expect 1,837 rows (RF 832 /
+      NN 818 superseded, XGB 187 new):
+      `python modeling/walkforward_backfill.py --models rf,nn,xgb --start 2025-10 --end 2026-06 --supersede-non-wf --dry-run`
+      then the same command without `--dry-run` (trains 9 months x 3 models; NN is
+      the slow one).
+- [ ] `python scripts/check_track_record.py --skip-bundles`: 2025-26 should read
+      all `wf` for every model.
+- [ ] **Ship to RDS**: `python scripts/ship_wf_predictions.py --dry-run`, check
+      the per-season counts (2025-26 should read **1,379** wf_ rows for every
+      model; before the rebuild it was rf 547 / nn 561 / xgb 1,192), then
+      without `--dry-run`. The next nightly loads it
+      (or run the loader one-off). Re-run the check task against RDS.
+- [ ] `/accuracy` 2025-26 per model after ~5 min edge cache; rebuild the web
+      site if any page bakes the numbers.
+- [ ] Then: re-run the #11 analysis; rework #5 Figure 2 (articles.md P-2).
+- [ ] Each Monday from now: the weekly retrain log ends with
+      `[retrain] all 3 models retrained and in sync`; the nightly prints
+      `bundle sync: OK (rf, nn, xgb)`. `RETRAIN_FAILED` / `MODEL_BUNDLE_SYNC`
+      arrive by email through the existing ERROR filter.
+
 ## Deferred decisions on record
 - Retrospective `wf_` rows are deliberately unbadged on the site (user decision
   2026-07-03); provenance lives in `model_predictions.model_version`.

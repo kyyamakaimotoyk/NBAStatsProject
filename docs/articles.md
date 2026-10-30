@@ -102,13 +102,13 @@ from numbers must let the reader see those numbers, not just read about them.
 | 2 | Why nobody predicts NBA margins within five points | `post_e11_synthesis.md` + live API numbers | **Published** 2026-10-27 (EN + JA); figures 2026-10-30 |
 | 3 | Last season's impact ratings don't help predict this season | `p3_impact_metrics_report.md`, tuning log E25, assessment §5 | **Published** 2026-10-27 (EN + JA); figures 2026-10-30 |
 | 4 | Playoff games are harder to predict, and it's not the model's fault | `e15_cross_context_report.md` (Q2) | **Published** 2026-10-27 (EN + JA); figures 2026-10-30 |
-| 5 | What a 70% win probability actually means, and the fix that broke our picks | `e13_calibration.json`, `e21_backtest.json`, live API | **Published** 2026-10-30 (EN + JA) |
+| 5 | What a 70% win probability actually means, and the fix that broke our picks | `e13_calibration.json`, `e21_backtest.json`, live API | **Published** 2026-10-30 (EN + JA); Fig 2 + wording to rework in P-2 |
 | 6 | Early-season picks are weaker, and so is the betting market's | live API by month + `e15_learning_curve.json` | **Published** 2026-10-30 (EN + JA) |
 | 7 | Even the betting market can't call the playoffs | tuning log E16/E17, `playoff_improvement_plan.md` | Ready |
 | 8 | Minutes explain only a sixth of a player's scoring miss | `p2_player_validation.json` | **Published** 2026-10-30 (EN + JA) |
 | 9 | The simple baseline that wasn't: testing our player projections | `p2_player_validation.json`, `p6_stl_marcel.json` | **Published** 2026-10-30 (EN + JA) |
 | 10 | Why we predict steals and blocks as chances, not numbers | `p2_player_validation.json` (Poisson tables), `p5_tail_calibration.json` | **Published** 2026-10-30 (EN + JA) |
-| 11 | Is the random forest really the worst model? | assessment §2.3, tuning log E1/E21 | **Blocked** 2026-10-30 (track-record rows inconsistent, see #11) |
+| 11 | Is the random forest really the worst model? | assessment §2.3, tuning log E1/E21 | **Blocked** 2026-10-30 on P-2 (track-record rows inconsistent, see #11) |
 | 12 | Leakage: how a model can cheat without anyone noticing | tuning log E7, E18 | Hold (availability design) |
 | 13 | Fewer features, better model | tuning log E22, assessment §2.1 | Ready (with care; wording fixed) |
 | 14 | 99.9% training accuracy: what overfitting looks like | tuning log E1 | Needs re-run (no stored output) |
@@ -413,12 +413,9 @@ are Dec 2025 / Jan 2026 versions logged a day or more after game day.
   same rows, which were mostly May retrospective predictions, not pre-game live
   ones. The calibration finding stands; the "live" label doesn't.
 
-**Needs Kai:** whether to replace the retrospective RF/NN 2025-26 rows with
-walk-forward ones (`walkforward_backfill.py` would need an override for its
-skip rule) so /accuracy is like-for-like; that changes #5's Figure 2 source
-rows too. #5's wording ("from January 2026 the forest picked...") should say
-these were predictions made after the fact by the production model of the
-time. Then re-run #11.
+**Decided (Kai, 2026-10-30): all walk-forward.** The rebuild, the retraining-
+schedule fixes, the #5 rework and the #11 re-run are tracked as **P-2 (HIGH)**
+in "Product ideas surfaced by articles"; #11 stays blocked until P-2 is done.
 The assessment's "XGB/NN ~0.2-0.3 better on MAE" came from one 230-game window
 (E2 W5); every like-for-like comparison shows RF equal or better.
 Backtest (e21) RF .657/.709
@@ -488,8 +485,61 @@ as the figure. No resource names.
 
 ## Product ideas surfaced by articles
 
-Not articles: changes to the site that writing an article made look worth
-studying. Each needs its own look before any work starts.
+Not articles: changes to the site or the model pipeline that writing an
+article made look worth doing. Each needs its own look before any work starts.
+
+### P-2. One retraining schedule for all three models + a like-for-like track record (**HIGH priority**, own session)
+*Added 2026-10-30, from #11. Kai: tackle in a separate session.*
+
+**Why.** In 2025-26 the three models were never on a common schedule: RF/NN ran
+a preseason-trained production model (trained through 2025-10-22) with a stale
+calibration layer, XGB never ran in-season (E19 Finding 3). The public
+`/accuracy` record for 2025-26 therefore compares XGB walk-forward rows against
+RF/NN rows that are mostly retrospective predictions from that preseason model
+(details and numbers under #11). On like-for-like games RF is the best model;
+on the mixed record it looks like the worst.
+
+**What exists now.** Since 2026-07-04 a weekly cloud retrain
+(`infra/schedule.tf` `weekly_retrain`, Mondays 13:00 ET:
+features -> `train` -> `player_train` -> `validate`) retrains RF, XGB and NN
+together in one `train` stage (`orchestration/pipeline.py` `TrainStage`).
+Local `model_registry` shows all three last trained 2026-07-16; cloud runs
+write to RDS and were **not verified** from here.
+
+**Gaps found in the code (to fix):**
+1. `TrainStage` trains the three sequentially in one `python -c` process: an
+   exception in RF training means XGB and NN aren't retrained that week.
+2. XGB / NN are skipped with only a print line if their library isn't
+   importable (`XGBOOST_AVAILABLE and ...`); the stage's own comment records
+   this already caused XGB to drift behind once (E8).
+3. Nothing checks that the three production bundles in S3 share a training
+   date / `feature_set_version` before the nightly predicts with them.
+4. Historical walk-forward rows retrain **monthly**; production retrains
+   **weekly**. Decide whether to align the backfill cadence or document it.
+
+**Track-record decision (Kai, 2026-10-30): all walk-forward for 2025-26.**
+- Rebuild RF and NN 2025-26 rows with `modeling/walkforward_backfill.py`. It
+  currently skips any (game, model) pair that already has a row, so it needs an
+  explicit override flag; new wf rows logged later win the API's
+  latest-timestamp dedup, and the old rows stay in the table for audit.
+- Writes to local MySQL and RDS: Kai runs these.
+- Covers the 686 retrospective rows per model, the ~50 live rows and the mixed
+  Dec 2025 versions, so the whole season is one process for all three models.
+
+**Session checklist:**
+- [ ] Verify the weekly retrain ran every Monday since 2026-07-06 for all three
+      (RDS `model_registry` training_date per model_type; CloudWatch logs).
+- [ ] Isolate per-model training in `TrainStage`; fail the stage (non-zero
+      exit, alert) if any requested model didn't retrain.
+- [ ] Nightly guard: refuse or alert when the loaded rf/xgb/nn bundles differ
+      in training date or feature_set_version.
+- [ ] Override flag for `walkforward_backfill.py`; dry-run listing what would
+      be superseded; Kai runs the RF/NN 2025-26 backfill locally and on RDS.
+- [ ] Re-check `/accuracy` 2025-26 per model; re-run the #11 analysis.
+- [ ] Rework #5 Figure 2 (its source rows get superseded; use E19/E20 audit
+      data, framed as the production model's predictions) and its wording.
+- [ ] Note in the tuning log that E19's "RF live acc 0.583" and E21's "live"
+      pairs were mostly May 2026 retrospective rows, not pre-game predictions.
 
 ### P-1. Show 80% / 90% ranges on the player pages (study, **low priority**)
 *Added 2026-10-30, from #8.* The player model already produces split-conformal

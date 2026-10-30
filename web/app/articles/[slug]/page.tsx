@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { ARTICLES, getArticle } from "@/lib/articles";
 import ArticleShell from "./ArticleShell";
+import { EarlySeasonEn, EarlySeasonJa } from "@/components/articles/EarlySeason";
 import { SignalOrNoiseEn, SignalOrNoiseJa } from "@/components/articles/SignalOrNoise";
 import { MarginFloorEn, MarginFloorJa } from "@/components/articles/MarginFloor";
 import { ImpactRatingsEn, ImpactRatingsJa } from "@/components/articles/ImpactRatings";
@@ -15,6 +16,7 @@ type Body = () => React.ReactNode;
 // Article bodies by slug (metadata lives in lib/articles.ts). `ja` is optional:
 // without it, Japanese readers get the English body plus a notice.
 const BODIES: Record<string, { en: Body; ja?: Body }> = {
+  "early-season": { en: EarlySeasonEn, ja: EarlySeasonJa },
   "signal-or-noise": { en: SignalOrNoiseEn, ja: SignalOrNoiseJa },
   "margin-floor": { en: MarginFloorEn, ja: MarginFloorJa },
   "impact-ratings": { en: ImpactRatingsEn, ja: ImpactRatingsJa },

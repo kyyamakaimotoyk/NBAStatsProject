@@ -27,7 +27,14 @@ general basketball audience.
    builder does this for API-backed articles). Never copy stale figures from
    an old report when a current one exists. Then re-read the text against the
    generated JSON: every number in the prose must match a figure.
-6. Update the status in the table below.
+6. Build and check for glued words: `cd web && npx next build`, then
+   `grep -ohE '.{30}</(strong|em|a)>[A-Za-z(].{20}' out/articles/*/index.html`
+   must print nothing. Turbopack in Next 16.2.9 drops the leading space of a
+   JSX text run that follows a tag or `{expression}`, spans lines, and
+   contains an HTML entity (`&apos;`, `&quot;`). Write `{" "}` explicitly
+   there (e.g. `</strong>{" "}from those`). Expression cases like
+   `{n} games` don't show up in that grep, so read the new page once.
+7. Update the status in the table below.
 
 ## Disclosure line (applies to every article)
 
@@ -96,22 +103,52 @@ from numbers must let the reader see those numbers, not just read about them.
 | 3 | Last season's impact ratings don't help predict this season | `p3_impact_metrics_report.md`, tuning log E25, assessment §5 | **Published** 2026-10-27 (EN + JA); figures 2026-10-30 |
 | 4 | Playoff games are harder to predict, and it's not the model's fault | `e15_cross_context_report.md` (Q2) | **Published** 2026-10-27 (EN + JA); figures 2026-10-30 |
 | 5 | What does "70% confident" actually mean? | `e13_calibration_report.md`, tuning log E19–E21 | Ready |
-| 6 | More data didn't help: how much history a model needs | `e15_cross_context_report.md` (Q1), tuning log E2/E3 | Ready (timely: early season) |
+| 6 | Early-season picks are weaker, and so is the betting market's | live API by month + `e15_learning_curve.json` | **Published** 2026-10-30 (EN + JA) |
 | 7 | Even the betting market can't call the playoffs | tuning log E16/E17, `playoff_improvement_plan.md` | Ready |
-| 8 | Most of a player's scoring swing is luck | `p1_`/`p2_player_validation_report.md`, assessment §3.1 | Ready |
+| 8 | Minutes explain only a sixth of a player's scoring miss (was: ...is luck) | `p1_`/`p2_player_validation_report.md`, assessment §3.1 | Ready (retitled) |
 | 9 | Beating a dumb-but-strong baseline (Marcel) | `p1_player_validation_report.md` | Ready |
 | 10 | Why steals and blocks are counted, not measured | P1/P2 reports (Poisson), tuning log P5 | Ready |
 | 11 | Is the random forest really the worst model? | assessment §2.3, tuning log E1/E21 | Ready |
 | 12 | Leakage: how a model can cheat without anyone noticing | tuning log E7, E18 | Hold (availability design) |
-| 13 | Fewer features, better model | tuning log E22, assessment §2.1 | Ready (with care) |
-| 14 | 99.9% training accuracy: what overfitting looks like | tuning log E1 | Ready |
-| 15 | The bug that made our neural net look broken | tuning log E8, E6 | Ready |
+| 13 | Fewer features, better model | tuning log E22, assessment §2.1 | Ready (with care; wording fixed) |
+| 14 | 99.9% training accuracy: what overfitting looks like | tuning log E1 | Needs re-run (no stored output) |
+| 15 | The bug that made our neural net look broken | tuning log E8, E6 | Needs re-run (pre-fix run not stored) |
 | 16 | Why the models sometimes disagree with themselves | memory/`project_head_disagreement`, `PredictionsTable.tsx` "split" badge | Blocked (root cause open) |
 | 17 | What helped player minutes (and what hurt turnovers) | tuning log P4 | Hold (reveals adopted features) |
 | 18 | How a static website grades itself every night | `aws_deployment_plan.md`, ops labs | Ready (no security details) |
 | 19 | Most of our traffic isn't human | `traffic_lab.md` | Idea (check numbers) |
 | 20 | Monthly check-in: how the models are doing this season | live API | Recurring (first: late Nov 2026) |
 | 21 | Japanese versions of #1–#4 | — | **Done** 2026-10-27 |
+
+## Backlog review (2026-10-30)
+
+Every Ready item's claims were checked against `outputs/` and the live API
+(`/api/performance/results?days=1100`, 4,208 graded games) before writing,
+the same way the figures pass caught errors in #1/#2. Writing order agreed with
+Kai: **#6 → #5 → #20 → #9, #10, #8 → #7 (April).**
+
+- **#5 holds.** RF's 0.7-0.8 raw bin won 87% (`e13`); backtest confirms
+  calibration is accuracy-neutral (`e21`). New: live 2026-27 RF still picks
+  home 82% (124 games), but the market favors home in 71% this season and RF
+  probabilities sit in 0.40-0.71; that's a timid, home-leaning model, not the
+  old 97% collapse. Say "leans home", not "fixed".
+- **#6 premise was wrong.** E15 Q1 varied *training history* against a fixed
+  March test month; it never tested early-season reliability, so "trustworthy
+  after 2-3 months" isn't supported. Reframed (see #6).
+- **#7 holds** (`e16` matches the notes).
+- **#8 overclaims.** Given actual minutes, ~84% of PTS error remains, but that
+  remainder includes the model's own rate error, not just luck. Retitled.
+- **#9, #10 hold**; per-stat and Poisson tables are in `p1`/`p2_player_validation.json`.
+  Those files also hold feature importances: the builder must not export them.
+- **#11 holds** on the backtest (RF .657/.709 vs XGB .643/.689, 16 windows); live
+  record adds that XGB beat RF in 2025-26, the stale-calibrator season.
+- **#13 wording**: "significantly better ranking on every model family" is true
+  on the held-out month only. Pooled over 21 months the AUC gains are not
+  significant (RF p=.056, XGB p=.20); RF margin error is (p=.002).
+- **#14, #15 need re-runs**: #14 exists only as tuning-log numbers; for #15 the
+  stored walk-forward (`e2_walk_forward_results.json`) is post-fix, and the 43%
+  run wasn't saved (re-run on `nba_ml_features.csv.backup_e8_buggy`). The E8
+  bug involved availability columns: describe it generically.
 
 ## Published
 
@@ -168,6 +205,16 @@ accuracy, AUC, 90%-range coverage (`e15_regime.json`); (2) distribution of the
 Elo favorite's pre-game win probability, last three regular-season weeks vs
 playoffs (frozen snapshot): favorites above 80% fall from 25% of games to 9%.
 
+### 6. Early-season picks are weaker, and so is the betting market's
+`/articles/early-season/`. Three figures: (1) winner accuracy by month, models
+vs market on the same 3,248 lined regular-season games (Oct 56.8/64.0 -> Apr
+69.8/75.9); (2) average closing spread by month, 5.8 -> 9.1, share 8+ 26% -> 51%;
+(3) E15 learning curve with binomial 95% ranges for the 226-game test month.
+Offers the trade deadline as an untested explanation for February's ~9pp gap.
+Current-season numbers (70 games: models 56.7, market 67.1) are computed by the
+builder; **re-run `build_article_figures.py early-season` if the page is
+refreshed**, and revisit in the November check-in (#20).
+
 ## Ready to write
 
 ### 5. What does "70% confident" actually mean?
@@ -190,14 +237,21 @@ raw vs isotonic (`e13_calibration.json`); home-pick share raw vs stale
 calibrator, the ~97% (E19 audit / `e20_calibration.json` flips + consistency);
 accuracy raw vs calibrated across the 16 backtest windows (`e21_backtest.json`).
 
-### 6. More data didn't help
-Learning curve (E15 Q1): with the test month fixed, training on ~1 season vs ~4
-seasons (4.5× the games) made no difference for RF (76.5% both); half a season
-already reached ~74.5%. Older seasons have different rosters and league trends,
-so extra old data is roughly neutral. Practical answer: the models are
-trustworthy after roughly 2–3 months of a new season. **Publish in Nov/Dec**
-while readers are asking how reliable early-season picks are. Could pair with
-#16 once that's resolved.
+### 6. (published 2026-10-30, see above) Review notes
+Original framing ("More data didn't help", "trustworthy after 2-3 months") was
+wrong: E15 Q1 never tested early-season reliability. Reframed around the live
+record (regular season, games with a closing line, 2023-24 to 2025-26):
+- Accuracy by month, models vs market: both lowest in October (models ~57%,
+  market 64%) and highest in April (~70% / 76%). The models trail the market
+  every month; October's gap (~7pp) is among the widest but on only 111 games.
+- Average closing spread grows every month, 5.8 (Oct) -> 9.1 (Apr); share of
+  games with a spread of 8+ goes 26% -> 51%. Games get more lopsided, so
+  everyone's accuracy rises.
+- Learning curve (E15 Q1) as the "would more old data fix it?" answer: no.
+  Half a season vs all four-plus seasons on a fixed March month: flat within
+  the ±5pp noise of a 226-game test.
+- This October: models 56.7% vs market 67.1% on 70 lined games.
+Caveat: 2025-26 has no lines for Oct/Nov, so October is two seasons.
 
 **Figures:** learning curve, accuracy (with seed ranges) vs number of training
 games on a fixed test month (`e15_learning_curve.json`, 5 sizes x 5 seeds).
@@ -215,10 +269,11 @@ Good to publish **in April** before the playoffs start.
 (`e16_playoff_ceiling.json`); model-minus-market differences with 95% CIs
 (all crossing zero); series-context arm deltas with CIs (`e17_series_eval.json`).
 
-### 8. Most of a player's scoring swing is luck
+### 8. Minutes explain only a sixth of a player's scoring miss (retitled 2026-10-30)
 From P1/P2 + assessment §3.1: even given the *actual* minutes a player played,
-points error only falls ~16% (4.94 → 4.18 MAE). About 85% of the miss is
-single-game shooting and opportunity variance. Calibration is unbiased across
+points error only falls ~16% (4.97 → 4.17 MAE in the 2023-24 fold). The other
+~84% is per-minute scoring: single-game shooting and opportunity variance
+**plus the model's own error on scoring rates**. Don't call it all luck. Calibration is unbiased across
 the range (stars aren't shaved, role players aren't inflated). The honest 90%
 band for points is roughly ±10.5. Fantasy angle: why floors and ceilings matter
 more than the point projection. Link to `/players/explore` line-clearing tool.
@@ -254,6 +309,10 @@ calibration); with vs without the flexible tail correction
 (`p5_tail_calibration.json`), worse with it.
 
 ### 11. Is the random forest really the worst model?
+*(2026-10-30: backtest numbers verified. Live record: RF led 2023-24 and
+2024-25, XGB led 2025-26, the season RF's stale calibrator skewed its picks.
+Include that.)*
+
 A single noisy month once suggested RF was much worse; across multi-season,
 multi-seed tests it actually leads on winner accuracy and ranking (e.g. 3-season
 × 16-window backtest: RF acc .657 / AUC .709 vs XGB .643 / .689), while XGB/NN
@@ -268,7 +327,9 @@ spread; current live per-model numbers from the API.
 ### 13. Fewer features, better model (with care)
 E22: removing more than half the inputs, chosen by out-of-sample permutation
 importance at the group level, made the models significantly better at ranking
-games on every model family and slightly better on margins; pruning further
+games on every model family **on the held-out month** (pooled over 21 months the
+ranking gains are directional only, p=.056/.20) and better on margins for RF
+(pooled p=.002); pruning further
 went too far (margins got worse). Ties to #6: past a point, signal is the
 constraint, not inputs. **Say "more than half"; never publish counts or which
 groups survived** (the ranking reveals the production feature set).

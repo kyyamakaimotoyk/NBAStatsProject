@@ -95,12 +95,22 @@ def signal_or_noise():
     })
 
 
+_RESULTS = None
+
+
+def api_results():
+    """Every graded prediction on the public track record (one row per game x model)."""
+    global _RESULTS
+    if _RESULTS is None:
+        with urllib.request.urlopen(f"{API}/api/performance/results?days=1100", timeout=60) as f:
+            _RESULTS = pd.DataFrame(json.load(f)["results"])
+    return _RESULTS.copy()
+
+
 # --- margin-floor ----------------------------------------------------------
 
 def margin_floor():
-    with urllib.request.urlopen(f"{API}/api/performance/results?days=1100", timeout=60) as f:
-        rows = json.load(f)["results"]
-    df = pd.DataFrame(rows)
+    df = api_results()
     df = df[df["actual_margin"].notna()]
     games = df.drop_duplicates("game_id")
     m = games["actual_margin"].astype(float)
@@ -237,11 +247,77 @@ def playoff_predictability():
     })
 
 
+# --- early-season ----------------------------------------------------------
+
+MONTHS = [(10, "Oct"), (11, "Nov"), (12, "Dec"), (1, "Jan"), (2, "Feb"), (3, "Mar"), (4, "Apr")]
+
+
+def early_season():
+    df = api_results()
+    # Regular season only (GAME_ID type digit 2), graded, with a non-pick'em
+    # closing line so models and market are scored on the same games.
+    df = df[(df["game_id"].str[2] == "2") & df["is_correct"].notna()
+            & df["market_margin"].notna() & (df["market_margin"] != 0)].copy()
+    df["season"] = df["game_id"].str[3:5]
+    df["month"] = pd.to_datetime(df["game_date"]).dt.month
+    home_won = df["actual_winner"] == df["home_team"]
+    df["market_correct"] = (df["market_margin"] > 0) == home_won
+    df["spread"] = df["market_margin"].abs()
+    current = df["season"].max()
+    past, cur = df[df["season"] != current], df[df["season"] == current]
+    past_games = past.drop_duplicates("game_id")
+
+    months = []
+    for m, label in MONTHS:
+        rows, games = past[past["month"] == m], past_games[past_games["month"] == m]
+        if games.empty:
+            continue
+        by_model = rows.groupby("model_type")["is_correct"].mean()
+        months.append({
+            "m": label, "games": len(games),
+            "models": r(rows["is_correct"].mean() * 100, 1),
+            "market": r(games["market_correct"].mean() * 100, 1),
+            **{k: r(by_model.get(k, np.nan) * 100, 1) for k in ("rf", "nn", "xgb")},
+            "spread": r(games["spread"].mean(), 1),
+            "spread8": r((games["spread"] >= 8).mean() * 100, 1),
+        })
+    seasons = sorted(past["season"].unique())
+    cur_games = cur.drop_duplicates("game_id")
+
+    # Learning curve (E15 Q1): fixed March test month, growing training history.
+    # The CI is the binomial interval for one test month, the dominant noise source.
+    lc = load("e15_learning_curve.json")
+    n_test = lc["n_test"]
+    curve = []
+    for i, pt in enumerate(lc["points"]):
+        for m in ("RF", "XGB"):
+            p = pt["models"][m]["acc"]["mean"]
+            half = 1.96 * np.sqrt(p * (1 - p) / n_test)
+            curve.append({"step": i, "n_train": pt["n_train"], "model": m.lower(),
+                          "acc": r(p * 100, 1), "lo": r((p - half) * 100, 1), "hi": r((p + half) * 100, 1)})
+    write("early-season", {
+        "source": "Public track record, regular season, games with a closing line.",
+        "seasons": [f"20{s}-{int(s) + 1}" for s in seasons],
+        "from": past["game_date"].min(),
+        "to": past["game_date"].max(),
+        "n_games": len(past_games),
+        "months": months,
+        "current": {"season": f"20{current}-{int(current) + 1}", "games": len(cur_games),
+                    "from": cur["game_date"].min(), "to": cur["game_date"].max(),
+                    "models": r(cur["is_correct"].mean() * 100, 1),
+                    "market": r(cur_games["market_correct"].mean() * 100, 1),
+                    "spread": r(cur_games["spread"].mean(), 1)},
+        "curve_n_test": n_test,
+        "curve": curve,
+    })
+
+
 BUILDERS = {
     "signal-or-noise": signal_or_noise,
     "margin-floor": margin_floor,
     "impact-ratings": impact_ratings,
     "playoff-predictability": playoff_predictability,
+    "early-season": early_season,
 }
 
 if __name__ == "__main__":

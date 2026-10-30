@@ -23,6 +23,20 @@ export type Article = {
 
 export const ARTICLES: Article[] = [
   {
+    slug: "early-season",
+    date: "2026-10-30",
+    readMinutes: 5,
+    title: {
+      en: "Early-season picks are weaker, and so is the betting market's",
+      ja: "シーズン序盤の予測が当たりにくいのは、賭け市場も同じ",
+    },
+    summary: {
+      en: "October is the hardest month of the season for our models and for the betting market. Three seasons of results show why, and why feeding the models more old data wouldn't fix it.",
+      ja: "10月は、当サイトのモデルにとっても賭け市場にとっても、1年で最も予測が難しい月です。3シーズン分の結果からその理由と、古いデータを増やしても解決しない理由を見ていきます。",
+    },
+    hasJapanese: true,
+  },
+  {
     slug: "signal-or-noise",
     date: "2026-10-27",
     readMinutes: 6,

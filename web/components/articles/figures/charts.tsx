@@ -151,6 +151,7 @@ export function Bars({
   labelWidth = 110,
   colorKey,
   categoryTicks,
+  valueTicks,
   legend = true,
 }: {
   data: Record<string, string | number>[];
@@ -169,10 +170,12 @@ export function Bars({
   colorKey?: string; // single series only: per-row color from data[colorKey]
   categoryTicks?: (string | number)[]; // label only these categories (dense histograms)
   legend?: boolean; // false when the figure draws one shared legend (small multiples)
+  valueTicks?: number[];
 }) {
   const valueAxis = {
     type: "number" as const,
     domain: domain ?? [0, "auto"],
+    ticks: valueTicks,
     tick: AXIS,
     tickFormatter: (v: number) => tickFmt(v, unit),
   };
@@ -260,6 +263,9 @@ export function Lines({
   yLabel,
   refX,
   xTicks,
+  xLabels,
+  yDomain = [0, 100],
+  yTicks,
   height = 280,
 }: {
   data: Record<string, number>[];
@@ -272,6 +278,9 @@ export function Lines({
   yLabel?: string;
   refX?: number;
   xTicks?: number[];
+  xLabels?: string[]; // categorical x: data uses x = 0..n-1, these name the ticks
+  yDomain?: [number, number];
+  yTicks?: number[];
   height?: number;
 }) {
   return (
@@ -282,13 +291,14 @@ export function Lines({
           dataKey={xKey}
           type="number"
           domain={["dataMin", "dataMax"]}
-          ticks={xTicks}
+          ticks={xTicks ?? (xLabels ? xLabels.map((_, i) => i) : undefined)}
           tick={AXIS}
-          tickFormatter={(v) => `${v}${xUnit}`}
+          tickFormatter={(v) => (xLabels ? xLabels[v] : `${v}${xUnit}`)}
           label={{ ...xAxisLabel(xLabel), fill: "#9aa6c0", fontSize: 12 }}
         />
         <YAxis
-          domain={[0, 100]}
+          domain={yDomain}
+          ticks={yTicks}
           width={yLabel ? 60 : 44}
           tick={AXIS}
           tickFormatter={(v) => `${v}${unit}`}
@@ -300,7 +310,7 @@ export function Lines({
         />
         <Tooltip
           {...TOOLTIP}
-          labelFormatter={(x) => `${x}${xUnit}`}
+          labelFormatter={(x) => (xLabels ? xLabels[Number(x)] : `${x}${xUnit}`)}
           formatter={(v, name) => [fmt(v, decimals, unit), name]}
         />
         {series.length > 1 && <Legend {...LEGEND} />}

@@ -1,0 +1,183 @@
+{
+ "generated": "2026-10-30",
+ "source": "Public track record, regular season, games with a closing line.",
+ "seasons": [
+  "2023-24",
+  "2024-25",
+  "2025-26"
+ ],
+ "from": "2023-10-26",
+ "to": "2026-04-12",
+ "n_games": 3248,
+ "months": [
+  {
+   "m": "Oct",
+   "games": 111,
+   "models": 56.8,
+   "market": 64.0,
+   "rf": 56.8,
+   "nn": 56.8,
+   "xgb": 56.8,
+   "spread": 5.8,
+   "spread8": 26.1
+  },
+  {
+   "m": "Nov",
+   "games": 439,
+   "models": 63.8,
+   "market": 67.4,
+   "rf": 67.0,
+   "nn": 61.5,
+   "xgb": 62.9,
+   "spread": 6.1,
+   "spread8": 29.4
+  },
+  {
+   "m": "Dec",
+   "games": 470,
+   "models": 66.5,
+   "market": 68.1,
+   "rf": 67.7,
+   "nn": 65.3,
+   "xgb": 66.4,
+   "spread": 6.3,
+   "spread8": 30.0
+  },
+  {
+   "m": "Jan",
+   "games": 689,
+   "models": 62.5,
+   "market": 67.8,
+   "rf": 62.2,
+   "nn": 62.7,
+   "xgb": 62.7,
+   "spread": 6.5,
+   "spread8": 32.5
+  },
+  {
+   "m": "Feb",
+   "games": 516,
+   "models": 61.4,
+   "market": 70.0,
+   "rf": 59.3,
+   "nn": 62.0,
+   "xgb": 63.0,
+   "spread": 6.9,
+   "spread8": 36.2
+  },
+  {
+   "m": "Mar",
+   "games": 707,
+   "models": 67.6,
+   "market": 71.1,
+   "rf": 65.1,
+   "nn": 68.0,
+   "xgb": 69.6,
+   "spread": 7.6,
+   "spread8": 42.3
+  },
+  {
+   "m": "Apr",
+   "games": 316,
+   "models": 69.8,
+   "market": 75.9,
+   "rf": 66.5,
+   "nn": 71.5,
+   "xgb": 71.3,
+   "spread": 9.1,
+   "spread8": 51.3
+  }
+ ],
+ "current": {
+  "season": "2026-27",
+  "games": 70,
+  "from": "2026-10-20",
+  "to": "2026-10-29",
+  "models": 56.7,
+  "market": 67.1,
+  "spread": 5.7
+ },
+ "curve_n_test": 226,
+ "curve": [
+  {
+   "step": 0,
+   "n_train": 819,
+   "model": "rf",
+   "acc": 74.5,
+   "lo": 68.8,
+   "hi": 80.2
+  },
+  {
+   "step": 0,
+   "n_train": 819,
+   "model": "xgb",
+   "acc": 72.4,
+   "lo": 66.6,
+   "hi": 78.2
+  },
+  {
+   "step": 1,
+   "n_train": 1018,
+   "model": "rf",
+   "acc": 76.5,
+   "lo": 71.0,
+   "hi": 82.1
+  },
+  {
+   "step": 1,
+   "n_train": 1018,
+   "model": "xgb",
+   "acc": 75.3,
+   "lo": 69.7,
+   "hi": 80.9
+  },
+  {
+   "step": 2,
+   "n_train": 2064,
+   "model": "rf",
+   "acc": 74.5,
+   "lo": 68.8,
+   "hi": 80.2
+  },
+  {
+   "step": 2,
+   "n_train": 2064,
+   "model": "xgb",
+   "acc": 73.7,
+   "lo": 68.0,
+   "hi": 79.5
+  },
+  {
+   "step": 3,
+   "n_train": 3071,
+   "model": "rf",
+   "acc": 74.4,
+   "lo": 68.7,
+   "hi": 80.1
+  },
+  {
+   "step": 3,
+   "n_train": 3071,
+   "model": "xgb",
+   "acc": 75.1,
+   "lo": 69.5,
+   "hi": 80.8
+  },
+  {
+   "step": 4,
+   "n_train": 4548,
+   "model": "rf",
+   "acc": 76.5,
+   "lo": 70.9,
+   "hi": 82.0
+  },
+  {
+   "step": 4,
+   "n_train": 4548,
+   "model": "xgb",
+   "acc": 77.7,
+   "lo": 72.3,
+   "hi": 83.1
+  }
+ ]
+}

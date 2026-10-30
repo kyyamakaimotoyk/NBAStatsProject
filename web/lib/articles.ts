@@ -23,6 +23,20 @@ export type Article = {
 
 export const ARTICLES: Article[] = [
   {
+    slug: "win-probability",
+    date: "2026-10-30",
+    readMinutes: 6,
+    title: {
+      en: "What a 70% win probability actually means, and the fix that broke our picks",
+      ja: "「勝率70%」の本当の意味と、予測を壊してしまった修正",
+    },
+    summary: {
+      en: "A win probability is a promise about frequencies. We added a layer to make ours more honest, and for two months it made one model pick the home team in every game. What we learned, and what we do now.",
+      ja: "勝率は、頻度についての約束です。その数字をより正直にするための層を加えたところ、2か月にわたって1つのモデルがすべての試合でホームチームを予測するようになりました。そこから学んだことと、現在の運用を紹介します。",
+    },
+    hasJapanese: true,
+  },
+  {
     slug: "early-season",
     date: "2026-10-30",
     readMinutes: 5,

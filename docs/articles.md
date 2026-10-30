@@ -102,7 +102,7 @@ from numbers must let the reader see those numbers, not just read about them.
 | 2 | Why nobody predicts NBA margins within five points | `post_e11_synthesis.md` + live API numbers | **Published** 2026-10-27 (EN + JA); figures 2026-10-30 |
 | 3 | Last season's impact ratings don't help predict this season | `p3_impact_metrics_report.md`, tuning log E25, assessment §5 | **Published** 2026-10-27 (EN + JA); figures 2026-10-30 |
 | 4 | Playoff games are harder to predict, and it's not the model's fault | `e15_cross_context_report.md` (Q2) | **Published** 2026-10-27 (EN + JA); figures 2026-10-30 |
-| 5 | What does "70% confident" actually mean? | `e13_calibration_report.md`, tuning log E19–E21 | Ready |
+| 5 | What a 70% win probability actually means, and the fix that broke our picks | `e13_calibration.json`, `e21_backtest.json`, live API | **Published** 2026-10-30 (EN + JA) |
 | 6 | Early-season picks are weaker, and so is the betting market's | live API by month + `e15_learning_curve.json` | **Published** 2026-10-30 (EN + JA) |
 | 7 | Even the betting market can't call the playoffs | tuning log E16/E17, `playoff_improvement_plan.md` | Ready |
 | 8 | Minutes explain only a sixth of a player's scoring miss (was: ...is luck) | `p1_`/`p2_player_validation_report.md`, assessment §3.1 | Ready (retitled) |
@@ -129,9 +129,11 @@ Kai: **#6 → #5 → #20 → #9, #10, #8 → #7 (April).**
 
 - **#5 holds.** RF's 0.7-0.8 raw bin won 87% (`e13`); backtest confirms
   calibration is accuracy-neutral (`e21`). New: live 2026-27 RF still picks
-  home 82% (124 games), but the market favors home in 71% this season and RF
-  probabilities sit in 0.40-0.71; that's a timid, home-leaning model, not the
-  old 97% collapse. Say "leans home", not "fixed".
+  home 84% of 70 regular-season games, while the market favors home in 74%;
+  home-leaning, not the old collapse (Feb-Mar 2026: 100% home picks). Say
+  "leans home", not "fixed". (An earlier draft of this note said 82%/124
+  games: that count included 54 preseason games, which the public track
+  record also grades. Filter on GAME_ID type digit 2 for regular season.)
 - **#6 premise was wrong.** E15 Q1 varied *training history* against a fixed
   March test month; it never tested early-season reliability, so "trustworthy
   after 2-3 months" isn't supported. Reframed (see #6).
@@ -214,6 +216,19 @@ Offers the trade deadline as an untested explanation for February's ~9pp gap.
 Current-season numbers (70 games: models 56.7, market 67.1) are computed by the
 builder; **re-run `build_article_figures.py early-season` if the page is
 refreshed**, and revisit in the November check-in (#20).
+
+### 5. What a 70% win probability actually means
+`/articles/win-probability/`. Three figures: (1) RF reliability on the E13 test
+month (75% -> won 87%); (2) 2025-26 home-pick share by month, RF vs XGB vs
+market-favored-home: RF 92-100% Jan-Apr, Feb accuracy 47.0% = home win rate;
+(3) 16-window backtest, change in accuracy and calibration error from
+recalibration (accuracy -0.5 avg; RF ECE no better on average; XGB better in
+15/16, never worse; home-pick share moved up to 18/27 pts in single windows).
+Says plainly that Fig 1's timid month was the exception. Policy claims checked
+against `modeling/predict_games.py`: picks from raw probability (E21), RF
+displays raw, XGB displays calibrated, the pick-shift check is an alert (not a
+rejection) at an extreme threshold, which the article doesn't publish.
+Current-season home-pick numbers come from the builder: re-run before refreshing.
 
 ## Ready to write
 

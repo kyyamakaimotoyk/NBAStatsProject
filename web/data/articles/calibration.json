@@ -1,0 +1,202 @@
+{
+ "generated": "2026-10-30",
+ "source": "E13 test month; public track record; 16-window calibration backtest.",
+ "e13": {
+  "n_test": 230,
+  "ece_raw": 0.131,
+  "ece_iso": 0.074,
+  "brier_raw": 0.176,
+  "brier_iso": 0.166
+ },
+ "reliability": [
+  {
+   "pred": 26.4,
+   "obs": 4.5,
+   "n": 22
+  },
+  {
+   "pred": 34.4,
+   "obs": 9.5,
+   "n": 21
+  },
+  {
+   "pred": 45.7,
+   "obs": 43.2,
+   "n": 44
+  },
+  {
+   "pred": 55.3,
+   "obs": 70.0,
+   "n": 40
+  },
+  {
+   "pred": 64.7,
+   "obs": 78.7,
+   "n": 47
+  },
+  {
+   "pred": 74.9,
+   "obs": 87.0,
+   "n": 46
+  },
+  {
+   "pred": 80.8,
+   "obs": 90.0,
+   "n": 10
+  }
+ ],
+ "live_season": "2025-26",
+ "live_months": [
+  {
+   "m": "Oct",
+   "games": 80,
+   "rf": 77.5,
+   "nn": 73.8,
+   "xgb": 63.7,
+   "rf_acc": 63.7,
+   "market_home": null,
+   "home_won": 58.8
+  },
+  {
+   "m": "Nov",
+   "games": 208,
+   "rf": 65.9,
+   "nn": 59.6,
+   "xgb": 57.7,
+   "rf_acc": 71.6,
+   "market_home": null,
+   "home_won": 55.8
+  },
+  {
+   "m": "Dec",
+   "games": 197,
+   "rf": 62.1,
+   "nn": 46.7,
+   "xgb": 50.8,
+   "rf_acc": 61.5,
+   "market_home": 48.6,
+   "home_won": 53.3
+  },
+  {
+   "m": "Jan",
+   "games": 233,
+   "rf": 92.2,
+   "nn": 66.2,
+   "xgb": 54.1,
+   "rf_acc": 56.7,
+   "market_home": 59.2,
+   "home_won": 55.8
+  },
+  {
+   "m": "Feb",
+   "games": 166,
+   "rf": 100.0,
+   "nn": 71.1,
+   "xgb": 54.2,
+   "rf_acc": 47.0,
+   "market_home": 57.2,
+   "home_won": 47.0
+  },
+  {
+   "m": "Mar",
+   "games": 239,
+   "rf": 100.0,
+   "nn": 72.0,
+   "xgb": 59.0,
+   "rf_acc": 60.3,
+   "market_home": 61.1,
+   "home_won": 60.3
+  },
+  {
+   "m": "Apr",
+   "games": 96,
+   "rf": 93.8,
+   "nn": 55.2,
+   "xgb": 69.0,
+   "rf_acc": 65.6,
+   "market_home": 60.4,
+   "home_won": 59.4
+  }
+ ],
+ "seasons": [
+  {
+   "season": "2023-24",
+   "games": 1216,
+   "rf": 69.6,
+   "nn": 62.3,
+   "xgb": 61.0,
+   "rf_acc": 65.7,
+   "nn_acc": 64.6,
+   "xgb_acc": 63.4,
+   "market_home": 63.4,
+   "home_won": 54.4
+  },
+  {
+   "season": "2024-25",
+   "games": 1224,
+   "rf": 68.0,
+   "nn": 60.6,
+   "xgb": 60.5,
+   "rf_acc": 66.7,
+   "nn_acc": 64.3,
+   "xgb_acc": 65.8,
+   "market_home": 60.0,
+   "home_won": 54.5
+  },
+  {
+   "season": "2025-26",
+   "games": 1219,
+   "rf": 84.6,
+   "nn": 63.4,
+   "xgb": 56.9,
+   "rf_acc": 60.6,
+   "nn_acc": 64.0,
+   "xgb_acc": 66.2,
+   "market_home": 58.5,
+   "home_won": 55.5
+  },
+  {
+   "season": "2026-27",
+   "games": 70,
+   "rf": 84.3,
+   "nn": 78.6,
+   "xgb": 62.9,
+   "rf_acc": 54.3,
+   "nn_acc": 54.3,
+   "xgb_acc": 61.4,
+   "market_home": 74.3,
+   "home_won": 50.0
+  }
+ ],
+ "backtest": [
+  {
+   "model": "rf",
+   "windows": 16,
+   "acc_mean": -0.47,
+   "acc_lo": -5.16,
+   "acc_hi": 2.68,
+   "ece_mean": 0.38,
+   "ece_lo": -4.18,
+   "ece_hi": 6.24,
+   "home_mean": -6.07,
+   "home_lo": -17.54,
+   "home_hi": 3.61
+  },
+  {
+   "model": "xgb",
+   "windows": 16,
+   "acc_mean": -0.5,
+   "acc_lo": -4.23,
+   "acc_hi": 2.84,
+   "ece_mean": -3.8,
+   "ece_lo": -11.01,
+   "ece_hi": 0.0,
+   "home_mean": 0.78,
+   "home_lo": -26.96,
+   "home_hi": 17.42
+  }
+ ],
+ "backtest_xgb_improved": 15,
+ "backtest_from": "2024-03",
+ "backtest_to": "2026-04"
+}

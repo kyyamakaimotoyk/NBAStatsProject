@@ -312,12 +312,94 @@ def early_season():
     })
 
 
+# --- calibration -----------------------------------------------------------
+
+def calibration():
+    # (1) Reliability on the E13 test month: predicted vs observed home-win rate.
+    e13 = load("e13_calibration.json")
+    rf = e13["models"]["RF"]
+    reliability = [{"pred": r(b["mean_pred"] * 100, 1), "obs": r(b["obs_rate"] * 100, 1), "n": b["n"]}
+                   for b in rf["raw"]["bins"]]
+
+    # (2) Live 2025-26: who did each model pick, month by month (public API).
+    df = api_results()
+    df = df[(df["game_id"].str[2] == "2") & df["is_correct"].notna()].copy()
+    df["season"] = df["game_id"].str[3:5]
+    df["month"] = pd.to_datetime(df["game_date"]).dt.month
+    df["home_pick"] = df["predicted_winner"] == df["home_team"]
+    df["home_won"] = df["actual_winner"] == df["home_team"]
+
+    def season_month(season):
+        s = df[df["season"] == season]
+        out = []
+        for m, label in MONTHS:
+            rows = s[s["month"] == m]
+            if rows.empty:
+                continue
+            games = rows.drop_duplicates("game_id")
+            lined = games[games["market_margin"].notna() & (games["market_margin"] != 0)]
+            share = rows.groupby("model_type")["home_pick"].mean()
+            acc = rows.groupby("model_type")["is_correct"].mean()
+            out.append({
+                "m": label, "games": len(games),
+                **{k: r(share.get(k, np.nan) * 100, 1) for k in ("rf", "nn", "xgb")},
+                "rf_acc": r(acc.get("rf", np.nan) * 100, 1),
+                "market_home": r((lined["market_margin"] > 0).mean() * 100, 1) if len(lined) else None,
+                "home_won": r(games["home_won"].mean() * 100, 1),
+            })
+        return out
+
+    def season_summary(season):
+        s = df[df["season"] == season]
+        games = s.drop_duplicates("game_id")
+        lined = games[games["market_margin"].notna() & (games["market_margin"] != 0)]
+        share = s.groupby("model_type")["home_pick"].mean()
+        acc = s.groupby("model_type")["is_correct"].mean()
+        return {"season": f"20{season}-{int(season) + 1}", "games": len(games),
+                **{k: r(share.get(k, np.nan) * 100, 1) for k in ("rf", "nn", "xgb")},
+                **{f"{k}_acc": r(acc.get(k, np.nan) * 100, 1) for k in ("rf", "nn", "xgb")},
+                "market_home": r((lined["market_margin"] > 0).mean() * 100, 1),
+                "home_won": r(games["home_won"].mean() * 100, 1)}
+
+    seasons = sorted(df["season"].unique())
+    # (3) 16-window backtest: what recalibration changes, per window.
+    e21 = load("e21_backtest.json")
+    backtest = []
+    for m in ("RF", "XGB"):
+        d_acc, d_ece, d_home = [], [], []
+        for w in e21["windows"]:
+            runs = w["models"][m]
+            mean = lambda k, arm: np.mean([run[arm][k] for run in runs])
+            d_acc.append((mean("acc", "iso_eval") - mean("acc", "raw")) * 100)
+            d_ece.append((mean("ece", "iso_eval") - mean("ece", "raw")) * 100)
+            d_home.append((mean("home_pick_share", "iso_eval") - mean("home_pick_share", "raw")) * 100)
+        backtest.append({"model": m.lower(), "windows": len(d_acc),
+                         **{f"{k}_{s}": r(f(v), 2) for k, v in (("acc", d_acc), ("ece", d_ece), ("home", d_home))
+                            for s, f in (("mean", np.mean), ("lo", min), ("hi", max))}})
+    write("calibration", {
+        "source": "E13 test month; public track record; 16-window calibration backtest.",
+        "e13": {"n_test": e13["n_test"], "ece_raw": r(rf["raw"]["ece"], 3), "ece_iso": r(rf["isotonic"]["ece"], 3),
+                "brier_raw": r(rf["raw"]["brier"], 3), "brier_iso": r(rf["isotonic"]["brier"], 3)},
+        "reliability": reliability,
+        "live_season": f"20{seasons[-2]}-{int(seasons[-2]) + 1}",
+        "live_months": season_month(seasons[-2]),
+        "seasons": [season_summary(s) for s in seasons],
+        "backtest": backtest,
+        "backtest_xgb_improved": int(sum(
+            np.mean([run["iso_eval"]["ece"] for run in w["models"]["XGB"]])
+            < np.mean([run["raw"]["ece"] for run in w["models"]["XGB"]]) for w in e21["windows"])),
+        "backtest_from": e21["windows"][0]["window"][:7],
+        "backtest_to": e21["windows"][-1]["window"][:7],
+    })
+
+
 BUILDERS = {
     "signal-or-noise": signal_or_noise,
     "margin-floor": margin_floor,
     "impact-ratings": impact_ratings,
     "playoff-predictability": playoff_predictability,
     "early-season": early_season,
+    "calibration": calibration,
 }
 
 if __name__ == "__main__":

@@ -2060,3 +2060,44 @@ Local `check_track_record.py` (pre-rebuild, paired regular-season games):
 - `load_or_train_*` still retrains inside the nightly if a bundle's feature count no
   longer matches the features table (pre-existing behavior). That path would now trip
   the nightly `MODEL_BUNDLE_SYNC` alert, which is the desired signal.
+
+### Addendum 2026-11-02 — the weekly retrain never reached production
+First cloud run of `scripts/check_track_record.py` (RDS, one-off task):
+- **Registry:** rf/xgb/nn trained together every week 2026-07-19 → 11-01, no family
+  skipped. Latest data_end 2026-10-25.
+- **S3 bundles:** all three `*_current` = **version 20260703**, data through
+  2026-06-13, **567 features** (pre-E22). The sync check passed only because all
+  three were equally stale.
+
+**Cause:** the pipeline task role (`infra/ecs.tf` `ecs_task_s3`) had only
+`s3:GetObject`/`ListBucket` on the models bucket ("a predictor never writes models").
+The same role has run the weekly retrain since 2026-07-04. Every retrain trained,
+wrote registry rows, failed the push with AccessDenied, which `save_model_bundle`
+printed as `Warning:` (no alarm), and the container discarded the bundles. The
+`player_xgb` bundle has the same problem: player projections have run on the
+last hand-synced bundle (data through 2026-06-13) all season.
+
+**What production actually ran:** CloudWatch (14 days) shows every scheduled run
+(08:30 / 15:00 / 21:45 UTC) logging `Feature count changed: 567 -> 252; retraining
+RF/NN/XGB`. `load_or_train_*` retrains when a stored bundle's feature count doesn't
+match `core/features.py` (E22 since 2026-07-16). So 2026-27 team predictions came
+from models trained in-process on the current weekly features table: in-season and
+E22-pruned, but recomputed three times a day, never stored, with ~6 registry rows
+per run. **Correction to the 2026-10-30 entry above:** the team models' 2026-27
+rows are not from a preseason bundle. The player model's are.
+
+**Fix (code 2026-11-02; apply = Kai):**
+- `infra/ecs.tf`: `s3:PutObject` on `models/*` in the models bucket (versioned,
+  so overwrites are recoverable).
+- `save_model_bundle`: push failure prints `ERROR: ARTIFACT_PUSH_FAILED`.
+- `retrain_models.py`: after training, the artifact store's `*_current` must match
+  the bundle just saved (`bundle_sync.check_remote_matches_local`).
+- Nightly: `ERROR: NIGHTLY_RETRAINED` when a run had to retrain in-process;
+  `ERROR: MODEL_BUNDLE_STALE` when a bundle's data_through_date is >14 days behind
+  the latest graded game (`bundle_sync.check_staleness`). Expected to fire in
+  opening week, until the first in-season retrain lands.
+- `check_track_record.py` section 2 adds freshness for rf/xgb/nn/player_xgb.
+
+Lesson: checks that compare models with each other miss the failure where they
+all share the same stale source. Every pipeline output needs one check against
+an outside reference (here: the latest graded game).

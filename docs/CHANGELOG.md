@@ -9,6 +9,13 @@ public site, or a decision on record. Format: `area — what changed → where i
 documented (commit)`. Areas: **model**, **eval**, **data**, **ops**, **infra**,
 **web**, **llm**, **docs**.
 
+## 2026-11
+
+**2026-11-02**
+- ops — Found: no cloud retrain since 2026-07-04 reached S3 (task role lacked `s3:PutObject`; push failure was a Warning). Every scheduled run retrained team models in-process on the 567 → 252 feature mismatch; player projections ran on a June-data bundle all season → TL §E26 "Addendum 2026-11-02"
+- infra — `s3:PutObject` on the models bucket for the pipeline task role (`infra/ecs.tf`); terraform apply pending (Kai)
+- ops — New alarms: `ARTIFACT_PUSH_FAILED`, `NIGHTLY_RETRAINED`, `MODEL_BUNDLE_STALE`; retrain verifies the S3 copy → README "Model Bundles & Rollback", `preseason_checklist.md` P-2
+
 ## 2026-10
 
 **2026-10-30**

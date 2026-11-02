@@ -824,6 +824,8 @@ Legacy fixed-name files (`models/rf_classifier.joblib` etc.) are also still writ
 
 **The three models retrain as one unit (E26).** The weekly `train` stage runs `modeling/retrain_models.py`: each model trains in isolation, a missing library is a failure, and afterwards `modeling/bundle_sync.py` checks the rf/xgb/nn current bundles share `data_through_date`, `feature_set_version` and the feature list. The nightly repeats the check after loading and prints `bundle sync: OK` or `ERROR: MODEL_BUNDLE_SYNC` (emailed by the ERROR alarm; it still predicts). Why: in 2025-26 RF/NN ran a preseason bundle all season and XGB never ran, and nothing noticed. Check by hand with `python modeling/bundle_sync.py`.
 
+**And it must reach S3 (2026-11-02).** Comparing the three bundles with each other misses the case where all of them are stale, which is what happened: the task role couldn't write to the models bucket, so no cloud retrain from July to November was stored, and every nightly quietly retrained in-process. Now a failed push is `ERROR: ARTIFACT_PUSH_FAILED`, the retrain confirms S3 holds what it just trained, and the nightly alerts on `NIGHTLY_RETRAINED` (it had to retrain because the stored bundle didn't match the features) and `MODEL_BUNDLE_STALE` (a bundle's data is more than 14 days behind the latest graded game; expected in opening week until the first retrain lands).
+
 ---
 
 ## Adding a New Model Type

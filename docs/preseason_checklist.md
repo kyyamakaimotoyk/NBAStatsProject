@@ -46,11 +46,28 @@ approaches. Check items off in order; most are 5-minute verifications.
 ## P-2 / E26 — common retrain + walk-forward track record (added 2026-10-30)
 Code shipped 2026-10-30 (tuning log §E26). These steps write to the DBs, so Kai
 runs them, in order:
-- [ ] **Verify the weekly retrain on RDS** (pipeline logs only last 14 days, so
-      read the registry): rebuild + push the pipeline image, then
-      `aws ecs run-task --cli-input-json file://tmp/run_check_track_record_task.json`.
-      Section 1 should show rf/xgb/nn trained every Monday since 2026-07-06;
-      section 2 `OK`. Note any missing weeks in §E26.
+- [x] **Verify the weekly retrain on RDS** (2026-11-02): trained every week, but
+      no bundle ever reached S3 (missing `s3:PutObject`), see §E26 Addendum.
+- [ ] **Fix the push, in this order** (apply BEFORE pushing the code, or the new
+      `NIGHTLY_RETRAINED` alarm emails three times a day until a bundle lands):
+      1. `cd infra && terraform plan` → expect one in-place update to
+         `aws_iam_role_policy.ecs_task_s3` (a `s3:PutObject` statement), then
+         `terraform apply`.
+      2. `git push` (CI rebuilds the pipeline image).
+      3. Store fresh bundles now instead of waiting for Monday:
+         `aws ecs run-task --cli-input-json file://tmp/run_weekly_retrain_task.json`
+         (~15-20 min). Its log should end with `[retrain] artifact store: OK`.
+      4. Re-run `aws ecs run-task --cli-input-json file://tmp/run_check_track_record_task.json`:
+         section 2 should show 252 features, `freshness: OK` for rf/xgb/nn and
+         player_xgb.
+      5. The next nightly prints `bundle sync: OK`, `bundle freshness: OK`, and
+         no `Feature count changed` / `NIGHTLY_RETRAINED`.
+      Reading logs in Git Bash: prefix `MSYS_NO_PATHCONV=1` (otherwise
+      `/ecs/...` becomes a Windows path).
+- [ ] Optional cleanup: RDS `model_registry` has ~6 rows per scheduled run since
+      2026-07-17 from in-process retrains whose bundles were never stored
+      (`file_path` points nowhere). Harmless; delete only if the Model Evolution
+      tab gets noisy.
 - [ ] **Rebuild 2025-26 locally**: dry-run first, expect 1,837 rows (RF 832 /
       NN 818 superseded, XGB 187 new):
       `python modeling/walkforward_backfill.py --models rf,nn,xgb --start 2025-10 --end 2026-06 --supersede-non-wf --dry-run`

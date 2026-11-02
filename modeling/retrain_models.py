@@ -10,7 +10,9 @@ Backs the pipeline's ``train`` stage (weekly cloud retrain). Replaces an inline
 
 Now each requested model trains in its own try block, a missing library counts
 as a failure, and after training the three ``*_current`` bundles must agree on
-data_through_date / feature_set_version / feature list (modeling/bundle_sync).
+data_through_date / feature_set_version / feature list (modeling/bundle_sync),
+and the artifact store (S3) must hold those same bundles (2026-11-02: a missing
+s3:PutObject grant silently discarded every cloud retrain July-November).
 Any failure prints ``ERROR: RETRAIN_FAILED ...`` (the CloudWatch ERROR filter
 emails on it) and exits non-zero, which fails the pipeline stage.
 
@@ -37,7 +39,7 @@ if os.getcwd() != _PROJECT_ROOT:
 
 import argparse
 
-from modeling.bundle_sync import MODEL_KEYS, check_bundle_sync
+from modeling.bundle_sync import MODEL_KEYS, check_bundle_sync, check_remote_matches_local
 
 
 def _trainers():
@@ -81,7 +83,19 @@ def retrain(models) -> int:
     if not in_sync:
         print('ERROR: RETRAIN_FAILED reason=bundles out of sync after training', flush=True)
 
-    if failed or not in_sync:
+    # The local copies above are always fresh; what the nightly loads is the
+    # artifact store's copy. A failed push left S3 on July bundles for four
+    # months (E26), so confirm the store holds what was just trained.
+    trained = [k for k in models if k not in failed]
+    stored, lines = check_remote_matches_local(trained)
+    print('[retrain] artifact store:', 'OK' if stored else 'MISMATCH')
+    for line in lines:
+        print(line)
+    if not stored:
+        print('ERROR: RETRAIN_FAILED reason=artifact store does not hold the new bundles',
+              flush=True)
+
+    if failed or not in_sync or not stored:
         return 1
     print(f'[retrain] all {len(models)} models retrained and in sync')
     return 0

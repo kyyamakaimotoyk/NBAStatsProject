@@ -102,8 +102,15 @@ resource "aws_iam_role" "ecs_task" {
 
 # The container's boto3 (artifact_store.S3Store) needs to LIST the bucket and GET
 # objects to pull model bundles. ListBucket is granted on the bucket ARN itself;
-# GetObject on the objects inside it (the "/*"). Read-only — a predictor never
-# writes models.
+# GetObject on the objects inside it (the "/*").
+#
+# PutObject (added 2026-11-02, tuning log §E26): this one task role also runs the
+# weekly retrain (schedule.tf weekly_retrain), which must push fresh bundles.
+# Without it every retrain since 2026-07-04 trained, logged registry rows, failed
+# the push with AccessDenied (printed only as a Warning) and threw the bundles
+# away; S3 kept the 2026-07-03 bundles, so every nightly retrained in-process on
+# the 567 -> 252 feature-count mismatch. Objects only: no Delete, and the bucket
+# is versioned (storage.tf), so an overwrite of *_current is recoverable.
 data "aws_iam_policy_document" "ecs_task_s3" {
   statement {
     actions = ["s3:GetObject", "s3:ListBucket"]
@@ -111,6 +118,10 @@ data "aws_iam_policy_document" "ecs_task_s3" {
       aws_s3_bucket.models.arn,
       "${aws_s3_bucket.models.arn}/*",
     ]
+  }
+  statement {
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.models.arn}/models/*"]
   }
 }
 resource "aws_iam_role_policy" "ecs_task_s3" {

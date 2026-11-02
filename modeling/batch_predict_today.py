@@ -383,6 +383,7 @@ def predict_for_date(engine, game_date: str, model_bundles: dict,
 
 def load_model_bundles(engine, model_keys: Iterable[str]) -> dict:
     """Load each requested model from its current bundle. No retrain — fail loudly."""
+    started = datetime.now()
     bundles = {}
     for key in model_keys:
         if key == 'rf':
@@ -404,31 +405,46 @@ def load_model_bundles(engine, model_keys: Iterable[str]) -> dict:
             print(f"WARN: unknown model key {key!r}")
     if not bundles:
         raise RuntimeError("No models loaded — check models/bundles/*_current.joblib")
-    _check_bundles_in_sync(bundles)
+    _check_bundles_in_sync(engine, bundles, started)
     return bundles
 
 
-def _check_bundles_in_sync(bundles: dict) -> None:
-    """P-2: alert when the loaded models don't come from one training run.
+def _check_bundles_in_sync(engine, bundles: dict, started: datetime) -> None:
+    """P-2: alert when the loaded models are not what the weekly retrain produced.
 
-    In 2025-26 RF/NN ran a preseason bundle all season while XGB never ran, and
-    the public record compared them as equals. Alert-only (ERROR line -> the
-    CloudWatch filter emails): a stale model's picks still beat no picks.
+    Three checks, all alert-only (ERROR line -> the CloudWatch filter emails): a
+    stale model's picks still beat no picks.
+      * in-run retrain: load_or_train_* retrains when a bundle's feature count no
+        longer matches the features table. Oct-Nov 2026 every run did this (S3 held
+        pre-E22 bundles) and nobody knew.
+      * sync: the models come from different training runs (2025-26: RF/NN ran a
+        preseason bundle all season while XGB never ran).
+      * staleness: all in sync but trained long before the latest graded game.
     """
-    if len(bundles) < 2:
-        return
     try:
-        from modeling.bundle_sync import check_bundle_sync
-        in_sync, lines = check_bundle_sync(tuple(bundles))
+        from modeling.bundle_sync import bundle_summary, check_bundle_sync, check_staleness
+        for key in bundles:
+            created = (bundle_summary(key) or {}).get('created_at')
+            if created and datetime.fromisoformat(created) >= started:
+                print(f"ERROR: NIGHTLY_RETRAINED model={key} - the stored bundle did not "
+                      f"match the features table, so this run retrained it in-process")
+        if len(bundles) >= 2:
+            in_sync, lines = check_bundle_sync(tuple(bundles))
+            if in_sync:
+                print(f"bundle sync: OK ({', '.join(bundles)})")
+            else:
+                print("ERROR: MODEL_BUNDLE_SYNC loaded models come from different training runs")
+                for line in lines:
+                    print(line)
+        fresh, lines = check_staleness(engine, tuple(bundles))
+        if fresh:
+            print("bundle freshness: OK")
+        else:
+            print("ERROR: MODEL_BUNDLE_STALE models trained well before the latest graded game")
+            for line in lines:
+                print(line)
     except Exception as exc:
-        print(f"WARN: bundle sync check failed - {exc}")
-        return
-    if in_sync:
-        print(f"bundle sync: OK ({', '.join(bundles)})")
-        return
-    print("ERROR: MODEL_BUNDLE_SYNC loaded models come from different training runs")
-    for line in lines:
-        print(line)
+        print(f"WARN: bundle checks failed - {exc}")
 
 
 # ---------------------------------------------------------------------------

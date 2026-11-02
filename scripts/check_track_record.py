@@ -70,11 +70,17 @@ def retrain_cadence(engine, since: str) -> None:
         print(f"    {r['family']:4s} trained {r['training_date']}  data_end {r['data_end']}")
 
 
-def bundle_sync() -> None:
-    print("\n== 2. Current bundle sync ==")
-    from modeling.bundle_sync import check_bundle_sync
+def bundle_sync(engine) -> None:
+    # In a fresh cloud container these bundles are pulled from S3, i.e. exactly
+    # what the nightly loads. Locally they are the local files.
+    print("\n== 2. Current bundle sync + freshness ==")
+    from modeling.bundle_sync import check_bundle_sync, check_staleness
     in_sync, lines = check_bundle_sync()
-    print('  ' + ('OK' if in_sync else 'MISMATCH'))
+    print('  sync: ' + ('OK' if in_sync else 'MISMATCH'))
+    for line in lines:
+        print(line)
+    fresh, lines = check_staleness(engine, ('rf', 'xgb', 'nn', 'player_xgb'))
+    print('  freshness: ' + ('OK' if fresh else 'STALE'))
     for line in lines:
         print(line)
 
@@ -127,7 +133,7 @@ def main() -> int:
     try:
         retrain_cadence(engine, args.since)
         if not args.skip_bundles:
-            bundle_sync()
+            bundle_sync(engine)
         provenance(engine)
     finally:
         engine.dispose()

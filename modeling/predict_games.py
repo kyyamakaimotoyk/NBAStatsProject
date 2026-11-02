@@ -434,7 +434,10 @@ def save_model_bundle(model_type_key: str, bundle: dict, version: str = None) ->
             store.push(current_path)
             print(f"  Pushed {model_type_key} bundle to {store.name} store.")
     except Exception as e:
-        print(f"  Warning: artifact-store push failed for {model_type_key}: {e}")
+        # ERROR, not Warning (E26, 2026-11-02): a silent push failure (IAM had no
+        # s3:PutObject) discarded every cloud retrain from July to November. The
+        # CloudWatch ERROR filter emails on this line.
+        print(f"ERROR: ARTIFACT_PUSH_FAILED model={model_type_key} - {e}")
 
     return versioned_path
 

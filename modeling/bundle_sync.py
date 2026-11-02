@@ -45,17 +45,103 @@ def bundle_summary(key: str) -> dict | None:
     b = load_model_bundle(key)
     if b is None:
         return None
+    return _summarize(key, b)
+
+
+def _summarize(key: str, b: dict) -> dict:
     meta = b.get('metadata', {})
     hp = b.get('hyperparameters_classifier') or {}
     feats = list(b.get('feature_names') or [])
     return {
         'key': key,
         'version': meta.get('version'),
+        'created_at': meta.get('created_at'),
         'data_through_date': _as_iso(b.get('data_through_date') or meta.get('data_through_date')),
         'feature_set_version': hp.get('feature_set_version'),
         'feature_count': len(feats),
         'feature_names': feats,
     }
+
+
+def remote_bundle_summary(key: str) -> dict | None:
+    """Summary of ``<key>_current`` as it sits in the artifact store (S3), read into
+    a temp file so the local copy is untouched. None if the store is disabled or
+    the object is missing.
+
+    Needed because a local check alone passes when the push failed: the freshly
+    saved local bundle looks fine while S3 still holds the old one (E26).
+    """
+    import tempfile
+    import joblib
+    from core.artifact_store import get_store, S3Store, LocalMirrorStore
+
+    store = get_store()
+    if not store.enabled:
+        return None
+    rel = f'models/bundles/{key}_current.joblib'
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, f'{key}_current.joblib')
+        try:
+            if isinstance(store, S3Store):
+                store._s3.download_file(store.bucket, store._s3_key(rel), dest)
+            elif isinstance(store, LocalMirrorStore):
+                import shutil
+                shutil.copy2(store._mirror_path(rel), dest)
+            else:
+                return None
+        except Exception:
+            return None
+        return _summarize(key, joblib.load(dest))
+
+
+def check_remote_matches_local(keys=MODEL_KEYS) -> tuple[bool, list[str]]:
+    """After a retrain: is the artifact store's current bundle the one just saved?"""
+    from core.artifact_store import get_store
+    if not get_store().enabled:
+        return True, ['  artifact store disabled (local dev): remote check skipped']
+    ok, lines = True, []
+    for k in keys:
+        local, remote = bundle_summary(k), remote_bundle_summary(k)
+        if local is None or remote is None or local['created_at'] != remote['created_at']:
+            ok = False
+            lines.append(f"  MISMATCH: {k} local created_at={local and local['created_at']} "
+                         f"remote={remote and remote['created_at']}")
+        else:
+            lines.append(f"  {k:10s} store copy matches ({remote['created_at']})")
+    return ok, lines
+
+
+def check_staleness(engine, keys=MODEL_KEYS, max_gap_days: int = 14) -> tuple[bool, list[str]]:
+    """Are the bundles trained on recent games? Compares each bundle's
+    data_through_date with the latest graded game in game_list.
+
+    The sync check alone passes when all three are equally stale. Naturally quiet
+    in the offseason: the latest game and the bundles' data stop at the Finals.
+    """
+    from datetime import date
+    import sqlalchemy as sa
+    with engine.connect() as conn:
+        latest = conn.execute(sa.text(
+            'SELECT MAX(GAME_DATE) FROM game_list WHERE WL IS NOT NULL')).scalar()
+    if latest is None:
+        return True, ['  no graded games: staleness check skipped']
+    latest = date.fromisoformat(_as_iso(latest))
+    ok, lines = True, []
+    for k in keys:
+        s = bundle_summary(k)
+        through = s and s['data_through_date']
+        if not through:
+            ok = False
+            lines.append(f'  STALE: {k} has no data_through_date')
+            continue
+        gap = (latest - date.fromisoformat(through)).days
+        if gap > max_gap_days:
+            ok = False
+            lines.append(f'  STALE: {k} trained through {through}, latest graded game '
+                         f'{latest} ({gap} days)')
+        else:
+            lines.append(f'  {k:10s} trained through {through} ({gap} days behind {latest})')
+    return ok, lines
 
 
 def check_bundle_sync(keys=MODEL_KEYS) -> tuple[bool, list[str]]:

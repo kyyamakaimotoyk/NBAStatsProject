@@ -2101,3 +2101,21 @@ rows are not from a preseason bundle. The player model's are.
 Lesson: checks that compare models with each other miss the failure where they
 all share the same stale source. Every pipeline output needs one check against
 an outside reference (here: the latest graded game).
+
+**Follow-up 2026-11-02 (manual retrain run, task 6a971320).** Team models: trained,
+in sync, data through 2026-10-27, `artifact store: OK` for rf/xgb/nn. Two more defects
+surfaced:
+- **Player model trained only through 2026-06-13** even after a successful push:
+  `train_and_save` used the frozen research constant `ALL_SEASONS` (2021-22 warm-up,
+  train 2022-23..2025-26), so the weekly player retrain could never see 2026-27 (the
+  same hardcoded-season class as the 2026-10-21 ingest window). Now
+  `player_dataset.production_seasons()`: warm-up 2021-22 through the current
+  season-year, rolling over Aug 1. `ALL_SEASONS` stays frozen for experiments. The
+  nightly staleness check now includes `player_xgb`.
+- **`validate` stage crashed every week** (`FileNotFoundError: nba_ml_features.csv`;
+  the container has no CSV) and, had it run, would have scored the just-refit models
+  on their own training games. Now: window end from the DB features snapshot, window
+  start clamped to after `data_through_date` (`--allow-in-sample` overrides), and
+  "nothing to validate" exits 0.
+- Noted, not changed: the `features` stage took 4h24m of the 4h47m run
+  (full-history rebuild).

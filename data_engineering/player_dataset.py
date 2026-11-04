@@ -44,7 +44,23 @@ from data_engineering.player_impact import parse_minutes  # noqa: E402
 
 WARMUP_SEASON = '22021'
 TRAIN_SEASONS = ['22022', '22023', '22024', '22025']
-ALL_SEASONS = [WARMUP_SEASON] + TRAIN_SEASONS
+ALL_SEASONS = [WARMUP_SEASON] + TRAIN_SEASONS  # frozen P1/P2 research protocol
+
+
+def production_seasons(today=None) -> list:
+    """Seasons for the weekly production retrain: the P2 warm-up season through
+    the CURRENT season-year (rolls over Aug 1, as main_refactored's
+    current_season_window does).
+
+    ALL_SEASONS above stays frozen for the experiments; production used it too
+    until 2026-11-02, so the player model never saw a 2026-27 game (tuning log
+    §E26 addendum).
+    """
+    from datetime import date
+    today = today or date.today()
+    current = today.year if today.month >= 8 else today.year - 1
+    first = int(WARMUP_SEASON[1:])
+    return [f'2{y}' for y in range(first, current + 1)]
 
 # GAME_ID type digit (gid[2]): 1 preseason, 2 regular, 3 all-star, 4 playoffs,
 # 5 play-in, 6 NBA Cup final. We model/predict these:

@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.db import get_engine  # noqa: E402
 from data_engineering.player_dataset import (  # noqa: E402
-    TARGETS, build, build_inference_features)
+    TARGETS, build, build_inference_features, production_seasons)
 from data_engineering.player_impact import parse_minutes  # noqa: E402
 from modeling.player_projection_models import TwoStageXGB  # noqa: E402
 
@@ -144,6 +144,8 @@ def train_and_save(engine=None, seasons=None) -> str:
     from modeling.predict_games import save_model_bundle
     engine = engine or get_engine()
     t0 = time.time()
+    seasons = seasons or production_seasons()
+    print(f"[player_train] seasons: {seasons[0]} (warm-up) .. {seasons[-1]}")
     ds = build(engine, seasons=seasons).sort_values('GAME_DATE')
 
     n_hold = max(int(len(ds) * 0.1), 500)

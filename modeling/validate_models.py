@@ -257,16 +257,38 @@ def parse_args():
                    help='Skip writing validation rows to model_registry.')
     p.add_argument('--models-dir', default='models',
                    help='Directory containing saved model artifacts.')
+    p.add_argument('--allow-in-sample', action='store_true',
+                   help="Validate on games inside the models' training window "
+                        "(measures fit, not held-out performance).")
     return p.parse_args()
+
+
+def _features_max_date(csv_path):
+    """Latest GAME_DATE in the current features snapshot (DB), else the CSV."""
+    try:
+        from sqlalchemy import text
+        from core.features_io import get_current_version
+        engine = get_engine()
+        version = get_current_version(engine)
+        if version is not None:
+            with engine.connect() as conn:
+                d = conn.execute(text(
+                    'SELECT MAX(GAME_DATE) FROM features WHERE feature_set_version = :v'),
+                    {'v': version}).scalar()
+            if d is not None:
+                return pd.to_datetime(d).date()
+    except Exception as exc:
+        print(f"WARN: features max date from DB failed ({exc}); trying {csv_path}")
+    df = pd.read_csv(csv_path, usecols=['GAME_DATE'])
+    return pd.to_datetime(df['GAME_DATE']).max().date()
 
 
 def main():
     args = parse_args()
 
-    # Resolve date window
-    df_full = pd.read_csv(args.features, usecols=['GAME_DATE'])
-    df_full['GAME_DATE'] = pd.to_datetime(df_full['GAME_DATE'])
-    csv_max_date = df_full['GAME_DATE'].max().date()
+    # Resolve date window. DB first (2026-11-02): the cloud container has no
+    # nba_ml_features.csv, so reading it here crashed the weekly validate stage.
+    csv_max_date = _features_max_date(args.features)
 
     if args.end_date:
         end_date = pd.to_datetime(args.end_date).date()
@@ -277,6 +299,21 @@ def main():
         start_date = pd.to_datetime(args.start_date).date()
     else:
         start_date = end_date - timedelta(days=args.days)
+
+    # Held-out means after the saved models' training data. The production
+    # bundles are refit on every row through data_through_date, so a window
+    # before it measures fit, not validation. Right after a weekly retrain this
+    # leaves nothing to validate, which is the honest answer.
+    from modeling.predict_games import _model_data_through_date
+    through = _model_data_through_date()
+    if through is not None and start_date <= through and not args.allow_in_sample:
+        print(f"Models trained through {through}: window start moved from {start_date} "
+              f"to {through + timedelta(days=1)} (--allow-in-sample to override).")
+        start_date = through + timedelta(days=1)
+    if start_date > end_date:
+        print(f"\nNo games after the models' training cutoff ({through}) yet. "
+              f"Nothing to validate.")
+        return
 
     print(f"\n{'='*70}")
     print(f"HELD-OUT MODEL VALIDATION")

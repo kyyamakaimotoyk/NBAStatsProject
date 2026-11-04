@@ -436,7 +436,9 @@ def _check_bundles_in_sync(engine, bundles: dict, started: datetime) -> None:
                 print("ERROR: MODEL_BUNDLE_SYNC loaded models come from different training runs")
                 for line in lines:
                     print(line)
-        fresh, lines = check_staleness(engine, tuple(bundles))
+        # player_xgb too: its training seasons were hardcoded through 2025-26, so
+        # it ran on June data all of 2026-27 until 2026-11-02 (§E26 addendum).
+        fresh, lines = check_staleness(engine, tuple(bundles) + ('player_xgb',))
         if fresh:
             print("bundle freshness: OK")
         else:

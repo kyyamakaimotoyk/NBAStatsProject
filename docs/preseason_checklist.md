@@ -48,7 +48,9 @@ Code shipped 2026-10-30 (tuning log §E26). These steps write to the DBs, so Kai
 runs them, in order:
 - [x] **Verify the weekly retrain on RDS** (2026-11-02): trained every week, but
       no bundle ever reached S3 (missing `s3:PutObject`), see §E26 Addendum.
-- [ ] **Fix the push, in this order** (apply BEFORE pushing the code, or the new
+- [x] **Fix the push, in this order** (done 2026-11-04/05: apply, push, retrain,
+      player-only retrain after CI; check task shows all four bundles through
+      2026-10-27, sync + freshness OK) (apply BEFORE pushing the code, or the new
       `NIGHTLY_RETRAINED` alarm emails three times a day until a bundle lands):
       1. `cd infra && terraform plan` → expect one in-place update to
          `aws_iam_role_policy.ecs_task_s3` (a `s3:PutObject` statement), then
@@ -68,16 +70,18 @@ runs them, in order:
       2026-07-17 from in-process retrains whose bundles were never stored
       (`file_path` points nowhere). Harmless; delete only if the Model Evolution
       tab gets noisy.
-- [ ] **Rebuild 2025-26 locally**: dry-run first, expect 1,837 rows (RF 832 /
+- [x] **Rebuild 2025-26 locally** (2026-11-05: 1,837 rows, 0 errors): dry-run first, expect 1,837 rows (RF 832 /
       NN 818 superseded, XGB 187 new):
       `python modeling/walkforward_backfill.py --models rf,nn,xgb --start 2025-10 --end 2026-06 --supersede-non-wf --dry-run`
       then the same command without `--dry-run` (trains 9 months x 3 models; NN is
       the slow one).
-- [ ] `python scripts/check_track_record.py --skip-bundles`: 2025-26 should read
-      all `wf` for every model.
-- [ ] **Ship to RDS**: `python scripts/ship_wf_predictions.py --dry-run`, check
+- [x] `python scripts/check_track_record.py --skip-bundles`: 2025-26 should read
+      all `wf` for every model. (1,215 per model; 4 games with no features-snapshot
+      row keep old RF/NN rows and fall out of the paired set.)
+- [x] **Ship to RDS** (2026-11-05: 12,494 rows loaded via one-off
+      `tmp/run_s3_loader_task.json`; RDS check matches local exactly): `python scripts/ship_wf_predictions.py --dry-run`, check
       the per-season counts (2025-26 should read **1,379** wf_ rows for every
-      model; before the rebuild it was rf 547 / nn 561 / xgb 1,192), then
+      model, all game types; the check script's 1,215 is regular season only; before the rebuild it was rf 547 / nn 561 / xgb 1,192), then
       without `--dry-run`. The next nightly loads it
       (or run the loader one-off). Re-run the check task against RDS.
 - [ ] `/accuracy` 2025-26 per model after ~5 min edge cache; rebuild the web

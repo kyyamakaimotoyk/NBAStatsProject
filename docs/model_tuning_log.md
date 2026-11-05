@@ -2119,3 +2119,43 @@ surfaced:
   "nothing to validate" exits 0.
 - Noted, not changed: the `features` stage took 4h24m of the 4h47m run
   (full-history rebuild).
+
+**Verified 2026-11-05 (check task 8602c776).** After a player-only retrain on the
+fixed image (task c8750084, 2026-11-04 09:09-09:15 UTC), all four bundles are
+current: rf/xgb/nn version 20261102 with 252 features, in sync, and `player_xgb`
+trained through 2026-10-27. Freshness: OK for all four (0 days behind the latest
+graded game). The first player-only run (08:28 UTC) still came out at 2026-06-13
+because it started before CI had pushed the new image. Cloud side of E26 closed.
+RDS provenance is unchanged so far: 2025-26 served rows are still mixed (wf / other:
+RF 474 / 741, NN 488 / 727, XGB 1,119 / 87). The local backfill and RDS ship are the
+remaining steps.
+
+**Local backfill 2026-11-05.** `walkforward_backfill.py --supersede-non-wf` logged
+1,837 rows (RF 832, NN 818, XGB 187), matching the dry run. Grading: 2,496 updated,
+3 not found, 0 errors. Local 2025-26 regular-season served rows are now
+walk-forward for 1,215 games per model. Four games still have only old RF/NN rows:
+0022500578 and 0022500602 (January) and 0022501229 and 0022501230 (2025-12-13).
+None of them are in the 20260703 features snapshot, so walk-forward can't predict
+them, and XGB has no row for them. They fall out of the paired comparison.
+
+First like-for-like 2025-26 record (local DB, 1,215 paired regular-season games,
+all walk-forward):
+
+| season | games | acc RF | acc XGB | acc NN | MAE RF | MAE XGB | MAE NN |
+|---|---|---|---|---|---|---|---|
+| 2023-24 | 1,230 | 0.654 | 0.631 | 0.644 | 11.11 | 11.32 | 11.18 |
+| 2024-25 | 1,224 | 0.667 | 0.658 | 0.643 | 11.05 | 11.44 | 11.27 |
+| 2025-26 | 1,215 | **0.676** | 0.665 | 0.663 | **11.35** | 11.49 | 11.38 |
+
+The mixed record had RF at 0.609 / 12.08 and XGB looking best (0.662 / 11.67).
+Like-for-like, RF leads on both accuracy and MAE in all three seasons, which matches
+the assessment Addendum. These are single-run point estimates (E12): the gaps are
+about 1pp, so nobody "wins" until a paired test says so.
+
+**Shipped to RDS 2026-11-05.** `ship_wf_predictions.py` uploaded 12,494 `wf_` rows
+(2025-26: 1,379 per model, all game types). A one-off loader task loaded them
+(`version_window`, 0 failed). The RDS check task matches local exactly: 2025-26 is
+1,215 walk-forward rows per model, XGB's 87 cloud-logged rows are superseded, and
+section 3b is the table above. 2026-27 stays production rows (107 per model so far),
+which is by design. Open: the cadence decision (monthly walk-forward vs weekly
+production; recommendation: document, don't align), #11 re-run, #5 Figure 2 rework.

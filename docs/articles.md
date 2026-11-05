@@ -108,7 +108,7 @@ from numbers must let the reader see those numbers, not just read about them.
 | 8 | Minutes explain only a sixth of a player's scoring miss | `p2_player_validation.json` | **Published** 2026-10-30 (EN + JA) |
 | 9 | The simple baseline that wasn't: testing our player projections | `p2_player_validation.json`, `p6_stl_marcel.json` | **Published** 2026-10-30 (EN + JA) |
 | 10 | Why we predict steals and blocks as chances, not numbers | `p2_player_validation.json` (Poisson tables), `p5_tail_calibration.json` | **Published** 2026-10-30 (EN + JA) |
-| 11 | Is the random forest really the worst model? | assessment §2.3, tuning log E1/E21 | **Blocked** 2026-10-30 on P-2 (track-record rows inconsistent, see #11) |
+| 11 | Is the random forest really the worst model? | assessment §2.3, tuning log E1/E21 | **Unblocked** 2026-11-05 (P-2 done: 2025-26 all walk-forward on RDS); analysis to re-run |
 | 12 | Leakage: how a model can cheat without anyone noticing | tuning log E7, E18 | Hold (availability design) |
 | 13 | Fewer features, better model | tuning log E22, assessment §2.1 | Ready (with care; wording fixed) |
 | 14 | 99.9% training accuracy: what overfitting looks like | tuning log E1 | Needs re-run (no stored output) |
@@ -528,7 +528,8 @@ write to RDS and were **not verified** from here.
 
 **Session checklist** (code done 2026-10-30, tuning log §E26; Kai's run order is in
 `preseason_checklist.md` "P-2 / E26"):
-- [ ] Verify the weekly retrain ran every Monday since 2026-07-06 for all three.
+- [x] Verify the weekly retrain ran every Monday since 2026-07-06 for all three
+      (it did, but no bundle reached S3 until 2026-11-04: tuning log §E26 Addendum).
       Tool built: `scripts/check_track_record.py` (reads RDS `model_registry`;
       CloudWatch keeps pipeline logs only 14 days). Kai runs it as a one-off task.
 - [x] Isolate per-model training in `TrainStage`; fail the stage (non-zero
@@ -538,8 +539,12 @@ write to RDS and were **not verified** from here.
 - [x] Override flag `--supersede-non-wf`; dry run lists 1,837 rows (RF 832 and
       NN 818 superseded, XGB 187 Apr-Jun gaps filled). `scripts/ship_wf_predictions.py`
       for RDS.
-- [ ] Kai runs the 2025-26 backfill locally, then ships it to RDS.
-- [ ] Re-check `/accuracy` 2025-26 per model; re-run the #11 analysis.
+- [x] Kai runs the 2025-26 backfill locally, then ships it to RDS (2026-11-05).
+      Like-for-like 2025-26 (1,215 paired games): RF 0.676 / MAE 11.35, XGB
+      0.665 / 11.49, NN 0.663 / 11.38. RF leads in all three seasons. **#11 is
+      unblocked.**
+- [ ] Re-check `/accuracy` 2025-26 per model (RDS verified 2026-11-05; site after
+      edge cache); re-run the #11 analysis.
 - [ ] Rework #5 Figure 2 (its source rows get superseded; use E19/E20 audit
       data, framed as the production model's predictions) and its wording.
 - [x] Tuning-log notes: E19/E20/E21 "live" rows were logged after the games

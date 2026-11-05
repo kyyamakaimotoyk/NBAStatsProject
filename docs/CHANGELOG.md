@@ -12,6 +12,7 @@ documented (commit)`. Areas: **model**, **eval**, **data**, **ops**, **infra**,
 ## 2026-11
 
 **2026-11-05**
+- eval — #11 re-run on the all-walk-forward record: pooled over 3 seasons (3,669 paired games) RF beats XGB and NN on accuracy (+1.4 / +1.6 pts) and MAE (-0.25 / -0.11), CIs clear of zero; RF probabilities are the narrowest and underconfident → `articles.md` #11
 - eval — Local 2025-26 walk-forward rebuild done (1,837 rows). Like-for-like 2025-26: RF 0.676 / MAE 11.35, XGB 0.665 / 11.49, NN 0.663 / 11.38 (1,215 paired games); RF leads in all three seasons. Shipped to RDS the same day (12,494 wf_ rows; RDS check matches local); #11 unblocked → TL §E26 "Local backfill 2026-11-05", "Shipped to RDS 2026-11-05"
 - ops — Verified: all four bundles (rf/xgb/nn/player_xgb) current through 2026-10-27, sync + freshness OK; player model now sees 2026-27. → TL §E26 "Verified 2026-11-05"
 

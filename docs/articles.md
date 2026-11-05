@@ -108,7 +108,7 @@ from numbers must let the reader see those numbers, not just read about them.
 | 8 | Minutes explain only a sixth of a player's scoring miss | `p2_player_validation.json` | **Published** 2026-10-30 (EN + JA) |
 | 9 | The simple baseline that wasn't: testing our player projections | `p2_player_validation.json`, `p6_stl_marcel.json` | **Published** 2026-10-30 (EN + JA) |
 | 10 | Why we predict steals and blocks as chances, not numbers | `p2_player_validation.json` (Poisson tables), `p5_tail_calibration.json` | **Published** 2026-10-30 (EN + JA) |
-| 11 | Is the random forest really the worst model? | assessment §2.3, tuning log E1/E21 | **Unblocked** 2026-11-05 (P-2 done: 2025-26 all walk-forward on RDS); analysis to re-run |
+| 11 | Is the random forest really the worst model? | assessment §2.3, tuning log E1/E21 | **Ready to write** 2026-11-05: re-run done on the all-walk-forward record, RF best of three (pooled CIs clear of zero) |
 | 12 | Leakage: how a model can cheat without anyone noticing | tuning log E7, E18 | Hold (availability design) |
 | 13 | Fewer features, better model | tuning log E22, assessment §2.1 | Ready (with care; wording fixed) |
 | 14 | 99.9% training accuracy: what overfitting looks like | tuning log E1 | Needs re-run (no stored output) |
@@ -365,7 +365,60 @@ calibration); with vs without the flexible tail correction
 (`p5_tail_calibration.json`), worse with it.
 
 ### 11. Is the random forest really the worst model?
-**Blocked 2026-10-30, do not write on current track-record numbers.** Public
+**Re-run 2026-11-05 on the all-walk-forward record (ready to write).** Paired
+regular-season games, every row walk-forward (monthly retrain, out-of-sample),
+read-only on the local DB, which matches RDS exactly (`check_track_record.py`).
+95% CIs are a game-level bootstrap of the paired difference (4,000 resamples);
+negative MAE / Brier and positive accuracy favour RF.
+
+| Season | Games | Acc RF / XGB / NN | MAE RF / XGB / NN | AUC RF / XGB / NN |
+|---|---|---|---|---|
+| 2023-24 | 1,230 | .654 / .631 / .644 | 11.11 / 11.32 / 11.19 | .714 / .676 / .704 |
+| 2024-25 | 1,224 | .667 / .658 / .643 | 11.05 / 11.44 / 11.27 | .727 / .707 / .706 |
+| 2025-26 | 1,215 | .676 / .665 / .663 | 11.35 / 11.49 / 11.38 | .739 / .723 / .715 |
+| Pooled | 3,669 | .666 / .651 / .650 | 11.17 / 11.42 / 11.28 | .726 / .700 / .708 |
+
+| Season | RF - XGB MAE | RF - XGB acc | RF - NN MAE | RF - NN acc |
+|---|---|---|---|---|
+| 2023-24 | -0.21 (-0.41, +0.00) | +.023 (+.000, +.046) | -0.07 (-0.26, +0.10) | +.010 (-.012, +.032) |
+| 2024-25 | -0.40 (-0.62, -0.18) | +.010 (-.016, +.035) | -0.23 (-0.42, -0.03) | +.025 (-.001, +.050) |
+| 2025-26 | -0.13 (-0.36, +0.09) | +.011 (-.015, +.035) | -0.03 (-0.22, +0.16) | +.013 (-.010, +.036) |
+| Pooled | **-0.25 (-0.37, -0.13)** | **+.014 (+.001, +.029)** | **-0.11 (-0.21, -0.00)** | **+.016 (+.002, +.029)** |
+
+Brier, pooled: RF .213, NN .216, XGB .218 (RF - XGB -.0047, CI -.0077 to -.0015;
+RF - NN -.0032, CI -.0069 to +.0004). 7 of the 3,669 games are RF's 2024-25
+non-walk-forward rows; dropping them changes nothing at this precision.
+
+What the article can say:
+- **No, RF is not the worst; it is the best of the three on every measure.**
+  Every season-level point estimate favours RF. No single season is significant
+  on its own (except RF vs XGB on 2024-25 margins), but pooled over three
+  seasons RF beats both models on accuracy and margin error, and beats XGB on
+  Brier, with CIs clear of zero. Gaps are small: about 1.5 points of accuracy,
+  a quarter-point of margin vs XGB.
+- **Why it looked worst:** the old 2025-26 record (.609 / 12.08) mixed RF/NN
+  retrospective rows from a preseason model with XGB walk-forward rows (below).
+  Like-for-like, the Feb-Mar 2026 "collapse" is gone: Feb RF 12.43 vs XGB 12.00,
+  Mar 11.13 vs 11.24, ordinary month-to-month noise.
+- **Month by month nobody dominates:** of 21 months with 50+ games, lowest MAE
+  goes RF 9, NN 7, XGB 5; RF is consistently strongest early-season (Oct-Nov
+  lowest MAE in all three seasons). Point estimate for any one month is noise.
+- **RF's real trade-off is timid probabilities, not worse picks:** its
+  probabilities are the narrowest (SD .134 vs XGB .170, NN .199) and
+  underconfident: games it rates 0.3-0.4 the home team wins 23%; games it rates
+  0.7+ the home team wins 84%. NN is the opposite (wide, slightly overconfident
+  at the extremes: rated 0-0.3, home wins 28%). Only 19% of RF's probabilities
+  are past 70/30, vs 38% for NN. So "RF says 62%" undersells it; the site
+  shows all three for this reason. Ties to #5.
+- RF picks the home team 68% of the time (home teams won 54-56%) vs 59% XGB /
+  61% NN, and is still the most accurate, so it is not the E19 home-collapse
+  failure: the walk-forward rows carry no stale calibrator.
+
+Disclosure check: none of the above names features, counts or hyperparameters.
+
+*Superseded record below (2026-10-30), kept as the "why it looked worst" source.*
+
+**Was blocked 2026-10-30.** Public
 track record, paired on the same regular-season games:
 
 | Season | Acc RF / NN / XGB | Margin MAE RF / NN / XGB | RF - XGB MAE (95% CI) |
@@ -423,14 +476,20 @@ vs XGB .643/.689 still holds.
 
 A single noisy month once suggested RF was much worse; across multi-season,
 multi-seed tests it actually leads on winner accuracy and ranking (e.g. 3-season
-× 16-window backtest: RF acc .657 / AUC .709 vs XGB .643 / .689), while XGB/NN
-are ~0.2–0.3 points better on margins. RF's real trade-off: heavy regularization
-makes its probabilities timid. Point: the three models have different strengths,
-which is why the site shows all three. Re-check against current live numbers.
+× 16-window backtest: RF acc .657 / AUC .709 vs XGB .643 / .689), and, on the
+all-walk-forward record (2026-11-05 re-run above), on margins too (pooled RF - XGB
+-0.25 MAE). *(Earlier pitch said "XGB/NN are ~0.2–0.3 points better on margins":
+withdrawn, single-window artifact.)* RF's real trade-off: heavy regularization
+makes its probabilities timid. Point: the three models are close, RF slightly
+ahead, and they disagree usefully, which is why the site shows all three.
 
 **Figures:** accuracy / AUC / MAE by model across the 16 backtest windows, as
 ranges (`e21_backtest.json`); the single "bad month" highlighted inside that
-spread; current live per-model numbers from the API.
+spread; current live per-model numbers from the API. Added 2026-11-05: (1) the
+three-season paired table as a dot plot with bootstrap CIs (RF - XGB, RF - NN);
+(2) the old-vs-rebuilt 2025-26 RF bar (.609 -> .676) as the "why it looked worst"
+figure; (3) reliability curve per model (binned predicted vs actual home-win
+rate, straight lines + points) for the timid-probabilities point.
 
 ### 13. Fewer features, better model (with care)
 E22: removing more than half the inputs, chosen by out-of-sample permutation
@@ -544,7 +603,8 @@ write to RDS and were **not verified** from here.
       0.665 / 11.49, NN 0.663 / 11.38. RF leads in all three seasons. **#11 is
       unblocked.**
 - [ ] Re-check `/accuracy` 2025-26 per model (RDS verified 2026-11-05; site after
-      edge cache); re-run the #11 analysis.
+      edge cache).
+- [x] Re-run the #11 analysis (2026-11-05, see #11).
 - [ ] Rework #5 Figure 2 (its source rows get superseded; use E19/E20 audit
       data, framed as the production model's predictions) and its wording.
 - [x] Tuning-log notes: E19/E20/E21 "live" rows were logged after the games

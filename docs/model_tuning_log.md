@@ -34,9 +34,9 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **E17** | **Playoff series-context features (Track A)** | E16 showed a non-significant ~3-4pp gap to Vegas on playoffs. Series state (game-in-series, score, elimination, HCA, in-series h2h) is the playoff structure Vegas prices and our model is blind to — the one principled shot at the gap. | `data_engineering/series_context.py` builds 8 features from prior games in each series (no leakage) → `playoff_series_context` table → joined at build. `experiments/e17_series_eval.py`: train on ALL games incl prior playoffs before each test season's playoffs (series features need playoffs in train to be learnable), paired with-vs-without on 316 playoff games (2023-26), 5 seeds + McNemar/paired-t/bootstrap-AUC. | **No significant gain.** RF ΔAUC −0.014 (CI cross 0), McNemar p=0.33; XGB ΔAUC +0.007, McNemar p=0.89 (26/26 net), MAE flat-to-worse. Vegas still 0.647 on same games — gap didn't close. Confirms E16: playoffs near-irreducible. | **DROPPED from production 2026-05-19** (`ENABLE_SERIES_DEFAULT=False`); build code/table retained for re-eval as playoff data grows. |
 | **E16** | **Playoff ceiling check (model vs Vegas)** | E15 showed model playoff AUC ~0.64. Is that near the irreducible ceiling, or missing signal? Compare to Vegas closing line on the same games. | `experiments/e16_playoff_ceiling.py`: per-season temporal train (as E15), predict on playoff games, restrict to the 337/403 with a Vegas line, head-to-head model vs Vegas (favorite=home if spread<0; AUC score=−home_spread; margin=−home_spread). Bootstrap model−Vegas deltas. | **Vegas itself only gets AUC 0.648 / acc 0.647 / MAE 11.78 on playoffs** → ceiling is ~0.65, not 0.79; playoffs are irreducibly hard. Model (RF 0.614/0.620/12.01, XGB 0.607/0.611/12.15) trails Vegas by ~3-4pp AUC but **every delta CI crosses zero** — within noise of the market. | **Diagnostic 2026-05-19** — revised playoff plan: cap investment; Track A (series features) optional one-shot at the residual gap; Tracks B-E shelved. docs/playoff_improvement_plan.md. |
 | **E15** | **Cross-context generalization** — Phase 1 | (a) How much data is needed (learning curve)? (b) Can a regular-season model be trusted in the playoffs? Uses E13/E14 coverage+ECE as the cross-context lens. | `experiments/e15_cross_context.py` two modes. **Learning curve**: fix test=W5, vary train-start (0.5-4 seasons), 5 seeds. **Regime**: per-season temporal train on regular games before each season's playoffs, pool ~400 playoff test games; compare regular(control)/playin/playoffs on acc/AUC/MAE/ECE/coverage + KS feature-shift. Write-up: docs/e15_cross_context_report.md. | **Learning curve flat past ~1 season** (1k→4.5k games buys ~0 acc/MAE) → don't chase more history. **Playoffs**: winner-prediction degrades hard (RF acc 0.713→0.635, AUC 0.790→**0.637**; XGB similar) — playoffs are a harder, ELO-compressed, slower-pace subset (KS DIFF_ELO p=0.029). **But intervals/calibration transfer**: playoff cov90≈0.88-0.90, ECE stays low. Coverage-as-diagnostic worked: spread is similar (bands hold) but winner is less predictable (AUC craters). Play-in n=30 too small to trust. | **Diagnostic, no model change 2026-05-19** — recommendations: set playoff expectations ~63% not ~71%; trust intervals in playoffs; future playoff-specific features. |
-| **E19** | **Season-end audit + lineage-tracked retrain** | User-surfaced (2026-07-03): RF picks home ~97% of the time; a 64.6-pt margin showed on the public site; XGB has no season predictions. Full current-state audit before further development. | Read-only audit of `model_predictions` (2025-26 season, local + RDS via API), registry, feature snapshots. Then: feature rebuild through the Finals (first `--db-description`-tagged snapshot), retrain all 3 models (first registry rows carrying `feature_set_version` lineage), validate. See §E19 below. | **Audit**: (1) RF live acc 0.583 vs test 0.742 — the E13 isotonic layer maps ~97% of games above 0.5 (reliability bin 0.7 → only 40% real home wins) and FLIPS correct raw picks (2026-06-13: raw 0.449→cal 0.604); when RF does pick away it's 79.4% correct. (2) The 64.6-pt margin exists only on RDS — cloud NN fed degenerate rolling stats (no June boxscores on RDS pre-handoff); local NN on same game: −3.1, correct. (3) XGB: zero season rows — backfills used `--model both` (pre-dates xgb) + `backfill_actuals` hardcoded rf/nn (fixed 2026-07-02). (4) Prod models trained through 2026-03-05 only, on a 1043-game Nov→Apr snapshot. **Retrain**: new snapshot `20260703T022649Z` (1,234 games through the Finals) + first lineage-carrying registry rows (`*_20260703`). New playoff-heavy holdout (Mar 24–Jun 13): RF 0.729/0.785 AUC — expected E15 regime shift, not regression. NOT promoted to prod — E20 (calibration) retrains again first. Validate-stage gap found: it ignores `data_through_date` (in-sample windows accepted). | **Baseline established 2026-07-03** |
+| **E19** | **Season-end audit + lineage-tracked retrain** | User-surfaced (2026-07-03): RF picks home ~97% of the time; a 64.6-pt margin showed on the public site; XGB has no season predictions. Full current-state audit before further development. | Read-only audit of `model_predictions` (2025-26 season, local + RDS via API), registry, feature snapshots. Then: feature rebuild through the Finals (first `--db-description`-tagged snapshot), retrain all 3 models (first registry rows carrying `feature_set_version` lineage), validate. See §E19 below. | **Audit**: (1) RF live acc 0.583 vs test 0.742 — the E13 isotonic layer maps ~97% of games above 0.5 (reliability bin 0.7 → only 40% real home wins) and FLIPS correct raw picks (2026-06-13: raw 0.449→cal 0.604); when RF does pick away it's 79.4% correct. (2) The 64.6-pt margin exists only on RDS — cloud NN fed degenerate rolling stats (no June boxscores on RDS pre-handoff); local NN on same game: −3.1, correct. (3) XGB: zero season rows — backfills used `--model both` (pre-dates xgb) + `backfill_actuals` hardcoded rf/nn (fixed 2026-07-02). (4) Prod models trained through 2026-03-05 only, on a 1043-game Nov→Apr snapshot. **Retrain**: new snapshot `20260703T022649Z` (1,234 games through the Finals) + first lineage-carrying registry rows (`*_20260703`). New playoff-heavy holdout (Mar 24–Jun 13): RF 0.729/0.785 AUC — expected E15 regime shift, not regression. NOT promoted to prod — E20 (calibration) retrains again first. Validate-stage gap found: it ignores `data_through_date` (in-sample windows accepted). | **Baseline established 2026-07-03** *(Note 2026-11-13, E28: every "live" RF/NN row in this audit came through the nightly live feature builder, which never produced the ELO, last-10 win % or several roster-availability columns, so they were filled with training medians. Part of the live-vs-test gap blamed on the calibrator here is that serving bug.)* |
 | **E20** | **Calibration protocol A/B + pick-policy decision + degeneracy guard** | E19 found the E13 calibrator collapsing RF into 97% home picks live and flipping correct raw picks. Hypothesis: K-fold OOF isotonic (more calibration data, production-config fit) fixes it. | `experiments/e20_calibration.py`: raw vs eval-slice isotonic (faithful production mirror incl. the fit-on-eval/apply-to-full subtlety) vs 5-fold OOF isotonic; W5 test window; RF/XGB 10 seeds, NN 5; ECE/Brier/AUC/acc/home-pick-share + disagreement-game win rates. | **Hypothesis partly REJECTED**: OOF best for RF display-ECE (10/10 seeds beat raw) but not significantly better than eval-slice (5/10) and WORSE than raw for XGB (0/10) → not shipped. Live pathology did NOT reproduce with a fresh calibrator (home share ~0.60, not 0.97) → root cause = STALE calibrator + no guard, not the protocol. Pick policy: fresh-cal picks ≈ raw (RF −1pp, XGB +0.6pp, NN +0.9pp). **Shipped**: keep eval-slice isotonic; pick stays calibrated-derived BUT bundles now carry a train-time **degeneracy guard** (eval-slice home-pick shift > 10pp → `calibrator_trusted=False` → picks auto-fall back to RAW + "ERROR: CALIBRATOR_DEGENERATE" line that the pipeline alarm emails on). | **Implemented 2026-07-03** |
-| **E21** | **Multi-season calibration backtest + empirical guard threshold + online-recalibration pilot** | E20 shipped on one test window and a round-number ±10pp guard; its residuals deferred both to E21. Three legs: (1) does eval-slice isotonic actually beat raw / Platt across seasons? (2) what guard threshold does the healthy-fit pick-shift distribution justify? (3) does weekly online recalibration on live logged pairs beat the shipped map? | `experiments/e21_calibration_backtest.py`: 16 monthly walk-forward windows across 2023-24 → 2025-26 (fresh 4,167-game multi-season CSV, prod config, `--no-db-write`), RF+XGB × 3 seeds, raw vs iso_eval vs platt_eval; every fit logs its eval-slice pick-shift (48 healthy fits/model). `experiments/e21_online_pilot.py`: weekly chronological replay of the 186 live (raw prob, outcome) pairs/model from E18 logging; raw vs shipped-stale vs online iso vs online Platt. | **Leg 1**: calibration is accuracy-neutral for both models (Wilcoxon p>0.14 everywhere; mean −0.4 to −0.9pp). ECE: RF raw is already calibrated — iso does NOT improve it (p=0.78); XGB raw is genuinely miscalibrated (~0.12) and both calibrators fix it decisively (−0.038 iso / −0.034 Platt, p≤0.001). **Leg 2**: the ±10pp guard is not discriminative — **40% of healthy fits exceed it**, 25% exceed even the known-degenerate +14.2pp; healthy p99 ≈ 23pp (RF) / 27pp (XGB). **Leg 3 (pilot, n=129)**: raw RF beat everything live (0.667 vs shipped 0.620); online isotonic actively harmful (0.597 acc, 0.225 ECE); Platt the least-bad online option. | **Measured 2026-07-03** — recommendations pending: drop RF calibrator, keep XGB's, guard → per-model p99 tripwire + live home-share monitor; see §E21. |
+| **E21** | **Multi-season calibration backtest + empirical guard threshold + online-recalibration pilot** | E20 shipped on one test window and a round-number ±10pp guard; its residuals deferred both to E21. Three legs: (1) does eval-slice isotonic actually beat raw / Platt across seasons? (2) what guard threshold does the healthy-fit pick-shift distribution justify? (3) does weekly online recalibration on live logged pairs beat the shipped map? | `experiments/e21_calibration_backtest.py`: 16 monthly walk-forward windows across 2023-24 → 2025-26 (fresh 4,167-game multi-season CSV, prod config, `--no-db-write`), RF+XGB × 3 seeds, raw vs iso_eval vs platt_eval; every fit logs its eval-slice pick-shift (48 healthy fits/model). `experiments/e21_online_pilot.py`: weekly chronological replay of the 186 live (raw prob, outcome) pairs/model from E18 logging; raw vs shipped-stale vs online iso vs online Platt. | **Leg 1**: calibration is accuracy-neutral for both models (Wilcoxon p>0.14 everywhere; mean −0.4 to −0.9pp). ECE: RF raw is already calibrated — iso does NOT improve it (p=0.78); XGB raw is genuinely miscalibrated (~0.12) and both calibrators fix it decisively (−0.038 iso / −0.034 Platt, p≤0.001). **Leg 2**: the ±10pp guard is not discriminative — **40% of healthy fits exceed it**, 25% exceed even the known-degenerate +14.2pp; healthy p99 ≈ 23pp (RF) / 27pp (XGB). **Leg 3 (pilot, n=129)**: raw RF beat everything live (0.667 vs shipped 0.620); online isotonic actively harmful (0.597 acc, 0.225 ECE); Platt the least-bad online option. | **Measured 2026-07-03** — recommendations pending: drop RF calibrator, keep XGB's, guard → per-model p99 tripwire + live home-share monitor; see §E21. *(Note 2026-11-13, E28: leg 3's 186 "live" pairs were produced by the live feature builder, which was missing ELO and other columns; treat the online-pilot numbers as measured on a degraded input.)* |
 | **E21b** | *(same experiment — decision)* | | | **Shipped**: raw-derived picks for all models (`_derive_pick_probability` returns raw; +0.5pp mean, raw right on 53% of ~1,900 backtest flips / 62% live; permanently immune to calibrator pathology); guard re-set from ±10pp to the healthy **p99 (±25pp)** as a true extreme-degeneracy ERROR tripwire; missing-requested-bundle in the nightly is now ERROR (the silent `WARN: skipping xgb` hid all season). **Also shipped (user-approved)**: RF display calibration dropped — RF ships unwrapped, displayed prob == raw (calibrator stored in bundle for telemetry/revert); XGB keeps its calibrator (halves ECE, p<0.001). **Pending**: live home-share drift monitor (next season's nightly); 20260703 bundle promotion (after the honest xgb Apr–Jun backfill on the old S3 bundle). | **Implemented 2026-07-03** |
 | **E18** | **Calibration audit + logging fix + leakage guard** | User-surfaced bug: Game Predictions tab showed NYK winner for CLE@NYK 2026-05-25 while Model Evaluation tab showed CLE pick logged — same model, same game, different pick. Root cause: dashboard reads E13 isotonic-calibrated classifier; the logging path in `predict_games.py` still derived `predicted_winner` from the **regressor margin sign** (`result['win_prob']` = `np.mean(margin_samples > 0)`), an older signal that pre-dates E13. Two-headed model → two different picks near the boundary. Also surfaced: bundle metadata stored no `data_through_date`, so the backfill loop happily predicted for dates within the training window with no warning. | (1) Logging now uses calibrated classifier: `p_cal = result['win_prob_classifier']`; `predicted_winner = home if p_cal > 0.5 else away`. (2) New `home_win_probability_raw` column added via idempotent migration in `prediction_tracker.ensure_table_exists`; the pre-isotonic prob is logged alongside the calibrated one. NN/NN-embed have no isotonic wrapper → raw == calibrated. (3) Bundle metadata gains `train_start_date / train_end_date / eval_start_date / eval_end_date / data_through_date` (the latest GAME_DATE the production model saw). (4) Backfill loop in `predict_games.py` gates on `data_through_date`: dates ≤ that are skipped with a loud message; `--allow-leakage` overrides. (5) Model Evaluation per-game table now shows **Win% raw** + **Win% cal** side-by-side; for legacy rows raw is NULL. | Data fix only (no model retrain). Game Predictions and Model Evaluation now read the same field. Backfill predictions on training-window dates are refused by default — past metrics on those rows were optimistic by an unmeasured amount. **A/B comparison columns ready**: re-run `predict_games.py --start-date X --end-date Y --no-shap --no-plot` for `X > data_through_date` to populate `home_win_probability_raw` and start the raw-vs-calibrated comparison. | **Implemented 2026-05-26** — see "Calibration audit & leakage guard" section below. |
 | **P1** | **Player counting-stat projections** — dataset + baselines + two-stage XGB + 3-season validation/calibration report | New product surface (public `/players` projection table + Bedrock LLM fantasy advisor, docs/player_projections_plan.md) needs per-player MIN + PTS/REB/AST/STL/BLK/TOV/3PM/3PA/FTM/FTA. User-set ship gate: deep calibration + validation on the last 3 seasons before `/players` goes public. | `experiments/p1_player_dataset.py`: 57,854 top-8-by-rolling-MPG player-games (2023-24 → 2025-26 regular seasons, 2022-23 warm-up), ~150 leakage-safe shift-1 features incl. approved Tier-2 groups A/B/C/G (opportunity/hustle, vacated minutes/usage, Vegas spread/total/implied). `p1_player_models.py`: naive L10, Marcel shrinkage (must-beat), two-stage XGB (minutes model × per-36 rates; `count:poisson` with log-minutes exposure for STL/BLK/TOV/3PA/FTA; 3PM/FTM = attempts × shrunken make-rate). `p1_player_validation.py`: 2 season walk-forward folds, paired t-tests, decile reliability, Poisson frequency calibration, split-conformal coverage, minutes-vs-rate decomposition, slices, fantasy aggregates, feature-target correlation matrix. | **XGB beats Marcel on 10/11 targets in both folds, all p≤2.6e-11** (MIN MAE 4.93→4.63 / 4.87→4.59; PTS 5.23→5.03 / 5.17→4.96; 3PA −0.16; STL flat — R²≈0.08, near-noise). Decile calibration tight; conformal coverage 0.78-0.82 (80%) / 0.89-0.91 (90%); Poisson tails over-forecast elite STL/BLK bins; ~15% of PTS error attributable to the minutes model; fantasy-pts MAE 8.03 vs Marcel 8.41. Full report: docs/p1_player_validation_report.md. | **Baseline established 2026-07-09** — `/players` ship gate pending Kai's review; §P1 below |
@@ -50,6 +50,8 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **E25** | **Team-level prior-season eRAPTOR roster-strength aggregates** | P3's own caveat: impact metrics measure margin/possession, so the TEAM model is the natural consumer (assessment §6.2, expected 0.1–0.3 MAE). Standalone signal looked real: corr(DIFF_WMEAN, margin)=0.28, home wins 65% when positive. | `experiments/e25_eraptor_team.py`: pregame-honest roster (trailing-45d appearances minus official Out/Doubtful via `historical_injury_report`), MPG-weighted (last-10, shift-1) prior-season eRAPTOR via P3's name join → 12 cols (WMEAN/MINSUM/match-frac × HOME/AWAY/DIFF), 98.6% coverage. A/B vs the E22 top250 incumbent via `loop_ab.py`: W5 10 seeds (superiority gate, pre-registered) + 21-window diagnostic. | **W5: nothing FOR the augmented arm** (RF 3w/3l acc; XGB −2.2pp ns; all MAE/AUC ns) → gate failed, verdict locked. Diagnostic windows (labeled, could not change verdict): pooled null (best case RF acc +0.6pp, McNemar p=.074); **early-season Oct–Dec slice refutes the "helps early" hypothesis** (RF −0.35pp, XGB −1.1pp acc). Team-level twin of the P3 null: redundant with cross-season ELO + availability-aware slot impacts. | **REJECT** 2026-07-16 — §E25 below |
 | **P3** | **Prior-season Estimated RAPTOR as player-projection features** | Kai asked whether RAPTOR/LEBRON-class impact metrics improve the models. Sourcing: real RAPTOR dead (data ends 2021-22), LEBRON no export/API, DARKO DPM = only free daily point-in-time series covering 2023-26; Paine Estimated RAPTOR (0.89 corr w/ RAPTOR, thru 2024-25, `outputs/nba_estimated_RAPTOR.csv`) = the backtest source. P2 model had zero RAPM-family signal (only PIE_L10/USG_PCT_L10). | `experiments/p3_impact_metrics.py`: +PREV_ERAPTOR_{OFF,DEF,TOT,WAR82} (previous-season rating, minutes-weighted across stints, normalized-name join, 87.5% match every season, rookies NaN — point-in-time safe by construction). 3 seeds × the 3 P2 walk-forward folds, baseline-vs-augmented paired t-test on per-row \|error\|; keep-gate = ΔMAE<0 AND p<0.05 in all folds for ≥2/3 seeds. | **NULL: 0/11 stats keep, 0 seeds pass the gate anywhere.** Mean ΔMAE: PTS −0.0068, all others ≤ \|0.0013\|. The trees USED the features (gain rank 16-30 of 139 in MIN/PTS models) but zero out-of-sample gain — redundant with L5/L10 form + usage + PREV_*36 priors. Counting stats are the wrong target for a margin-impact metric. | **Rejected for player model 2026-07-10** — open follow-up: eRAPTOR/DARKO in the TEAM model (availability weighting in `player_impact.py` Approach B; roster-strength aggregate = E22 candidate); §P3 below |
 | **E26** | **Common retrain schedule + all-walk-forward 2025-26 track record** (articles.md P-2) | Writing article #11 found the public 2025-26 record compares two processes: XGB = monthly walk-forward `wf_` rows; RF/NN = mostly retrospective rows logged May 22-27 2026 by a preseason-trained bundle (stale E13 calibrator). Like-for-like, RF is the best model; on the mixed record it looks like the worst. The weekly `train` stage also had silent-skip paths. | `modeling/retrain_models.py` (per-model isolation, missing library = failure, post-train bundle-sync check, `ERROR: RETRAIN_FAILED`); `modeling/bundle_sync.py` + nightly `MODEL_BUNDLE_SYNC` alert; `walkforward_backfill.py --supersede-non-wf`; `scripts/ship_wf_predictions.py` (RDS via S3 `version_window`); `scripts/check_track_record.py` (read-only audit). | Dry run: 1,837 rows (RF supersedes 832, NN 818, XGB fills 187 Apr-Jun gaps); feature count matches existing wf_ rows (567). E19/E20/E21 "live" rows re-audited: of the 178 graded Apr-Jun pairs per model, **0 were logged before tip-off**. Only 59 RF / 45 NN served 2025-26 rows were pre-game. | **Code shipped 2026-10-30**; DB rebuild + RDS ship + cloud verification = Kai — §E26 below |
+| **E27** | **Win probability from the margin: p = Φ(margin/σ)** | Early 2026-27 the classifier (pick, win %) and regressor (margin) pointed at different teams on 15–37% of live games. Deriving the probability from the margin makes them agree by construction. Does it cost accuracy or probability quality? | `experiments/e27_margin_prob.py`: frozen snapshot, production 252-col set, 21 monthly windows from 2023-10 (n=4,032), RF/XGB/NN × 3 seeds; arms are transforms of the SAME fitted heads (clf_raw, clf_iso, Φ with σ by probit MLE on the eval slice [primary], Φ with residual-SD σ). `experiments/e27_live_check.py`: σ fit on graded 2025-26 walk-forward rows from the public API, tested on 170 graded 2026-27 live rows per model. Gates pre-registered in `experiments/specs/e27_margin_prob.json`. | **Backtest**: RF passes (log loss −0.0055, p=.014; ECE .036→.015; acc +0.45pp n.s.); XGB fails acc non-inferiority (CI lo −1.6pp; Oct–Nov −2.6pp, significant); NN fails log loss (CI hi +0.009). **Live 2026-27**: fails every gate for every model — margin-sign picks −6.5 to −9.4pp (RF/NN significant), log loss +0.026 to +0.055. The live margins are degenerate (RF margin SD 1.1 vs 6.0 last season) → led to E28. | **REJECTED 2026-11-13** — revisit for RF only after E28's serving fix |
+| **E28** | **Live serving-path audit: why the 2026-27 margins collapsed** | E27's live leg found every production regressor nearly constant this season (RF predicts ≈ home by 2.7 for every game). Last season's walk-forward rows came from the training feature table; every live prediction comes from a separate live feature builder. | `experiments/e28_serving_audit.py`: builds the live feature vector exactly as the nightly job does for real games, lists bundle features it never produces, compares live vs training-table values for the same games, and scores both through the same bundle. Read-only (local MySQL + bundles). | **Root cause confirmed.** The live builder never produces 21 of the 252 model features (32 of 573 pre-prune), incl. **all four ELO columns (#1 and #2 in RF regressor importance), last-10 win %, DIFF slot/availability columns** → NaN → training median. 44.5% of RF regressor importance sits on never-produced columns. Same bundle, same 29 games (2025-26): RF margin SD 8.9 (table) → 4.0 (live); XGB 14.7 → 9.2. Early 2026-27 replay: RF SD 2.2 / mean +2.7, matching the logged 1.1 / +2.7. Rolling L5/L10 match the table exactly. No train/serve parity test exists. | **Investigation open 2026-11-13** — §E28 *(Note 2026-11-13, later: fix BUILT — serving now runs the training pipeline with games as placeholders; parity identical on all 573 columns across 6 dates; early 2026-27 replay RF margin SD 1.3 → 6.1, splits 16% → 7%. Not deployed; §E28 Step 2.)* |
 
 ---
 
@@ -2159,3 +2161,242 @@ about 1pp, so nobody "wins" until a paired test says so.
 section 3b is the table above. 2026-27 stays production rows (107 per model so far),
 which is by design. Open: the cadence decision (monthly walk-forward vs weekly
 production; recommendation: document, don't align), #11 re-run, #5 Figure 2 rework.
+
+---
+
+## 2026-11-13 — Experiment 27: Win probability derived from the margin, p = Φ(margin/σ)
+
+**Why.** Each family logs its pick and win probability from a classifier and its
+margin from a separately trained regressor. Early 2026-27 the two pointed at different
+teams on 15–37% of live games (XGB worst), and the site needed a "split" badge (since
+replaced by the 2026-11-13 table redesign). If the probability came from the margin,
+p(home) = Φ(margin/σ), the pick would be the margin's sign and the heads could not
+disagree. Question: what does that cost?
+
+**Design (pre-registered, `experiments/specs/e27_margin_prob.json`).** No new
+estimators: every arm is a transform of the same fitted classifier and regressor, so
+comparisons are exactly paired.
+
+| arm | probability | role |
+|---|---|---|
+| clf_raw | classifier `predict_proba` | production pick (all), display (RF, NN) |
+| clf_iso | eval-slice isotonic on clf_raw | production display (XGB) |
+| **phi_mle** | Φ(m/s), s by 1-parameter probit MLE on the eval slice | **primary** |
+| phi_resid | Φ(m/s), s = regressor residual SD on the eval slice | secondary |
+
+The eval slice mirrors production calibration (refit on the first 80% of training
+rows, predict the last 20%). Gate per family: pooled accuracy delta CI lower bound
+> −1.0pp, pooled log-loss delta CI upper bound < +0.005, and nothing significant
+against the arm (McNemar, paired bootstrap on log loss and Brier, bootstrap AUC).
+
+**Backtest** (`experiments/e27_margin_prob.py`, frozen snapshot `20260703T072718Z`,
+production 252-col set, 21 monthly windows 2023-10 → 2026-06, pooled n = 4,032, 3
+seeds, 12 min; `outputs/e27_margin_prob.json`). Deltas are phi_mle minus the family's
+production probability; accuracy is margin sign minus classifier pick.
+
+| family | acc Δ [95% CI] | log loss Δ [95% CI] | ECE prod → phi | split rate | gate |
+|---|---|---|---|---|---|
+| RF | +0.45pp [−0.45, +1.27] | **−0.0055** [−0.0102, −0.0011] p=.014 | 0.036 → 0.015 | 7.8% | **pass** |
+| XGB | −0.42pp [−1.61, +0.77] | −0.0067 [−0.0169, +0.0023] | 0.029 → 0.025 | 15.2% | fail (acc CI) |
+| NN | +0.40pp [−0.42, +1.31] | +0.0035 [−0.0013, +0.0087] | 0.022 → 0.035 | 8.3% | fail (log loss CI) |
+
+- Oct–Nov windows (n = 1,060): XGB margin-sign picks are significantly worse
+  (−2.6pp, CI [−5.4, −0.1]); its heads split on 18.9% of early-season games vs 13.9%
+  later. RF and NN are flat.
+- σ by family: RF ≈ 10–15 points (close to the true game SD), XGB 15–27 (its margins
+  are over-dispersed relative to outcomes), NN 4–10 (its margins are heavily shrunk).
+  The residual-SD σ is significantly worse than MLE for XGB and NN (log loss
+  p = .002 / < .001), so a production version would need the MLE fit per family.
+
+**Live leg** (`experiments/e27_live_check.py`, added to the spec before any result
+was read). σ fit on graded 2025-26 walk-forward rows from the public API, applied
+to the 170 graded 2026-27 regular-season rows per model as logged before tip-off
+(rows frozen in `outputs/e27_live_rows.json`).
+
+| model | σ | pick acc logged → margin sign | log loss Δ | gate |
+|---|---|---|---|---|
+| RF | 11.5 | 0.600 → 0.506 (McNemar p=.005) | +0.032 (p<.001) | fail |
+| XGB | 14.8 | 0.618 → 0.524 (p=.057) | +0.055 (p=.006) | fail |
+| NN | 11.5 | 0.600 → 0.535 (p=.046) | +0.026 (p=.044) | fail |
+
+The live failure isn't the method. The margins themselves are degenerate this
+season:
+
+| model | margin SD 2025-26 Oct–Nov → 2026-27 | margin-sign acc | MAE (market 11.1) |
+|---|---|---|---|
+| RF | 6.0 → **1.1** | 0.506 (= the home win rate) | 13.6 |
+| XGB | 8.1 → **4.2** | 0.524 | 13.3 |
+| NN | 5.5 → **3.0** | 0.535 | 13.3 |
+
+RF predicts roughly "home by 2.7" for every game. Live split rates: RF 16.5%, XGB
+36.5%, NN 14.7% (2025-26 Oct–Nov walk-forward: 9.4 / 16.7 / 12.5%). This sent the
+investigation to E28.
+
+**Verdict: REJECTED 2026-11-13.** Not adopted for any family. RF is the only
+family that passed the backtest gate, and it fails live because its margin is
+broken. Revisit for RF once E28's serving fix ships and a few weeks of fixed live
+predictions exist. Display-side, the 2026-11-13 table redesign stays.
+
+---
+
+## 2026-11-13 — Experiment 28: Live serving-path audit (why the 2026-27 margins collapsed)
+
+**Trigger.** E27's live leg: every production regressor is near-constant in
+2026-27. The 2025-26 rows it was compared against are walk-forward rows built from
+the **training feature table** (`walkforward_backfill.py` → `load_features`). Every
+live prediction is built by a **separate live feature builder**
+(`batch_predict_today.py` → `predict_games.get_team_rolling_stats` +
+`build_matchup_features`). Any bundle feature the live builder doesn't produce is
+set to NaN in `predict_with_rf/xgb` and filled with the training median by the
+bundle's imputer, with no warning and no count logged.
+
+**Step 1: serving audit** (`experiments/e28_serving_audit.py`, read-only; local
+MySQL + the local `*_current` bundles 20260716, which carry the same 252-column list
+as production 20261102). For real games it builds the vector exactly as the nightly
+job does (injuries omitted, see caveats). It lists features the live path never
+produces, compares live and table values for the same games, and scores both
+vectors through the same bundle.
+
+*Never produced live* (identical on 2025-26 and 2026-27 dates):
+
+| family | missing / in model | notes |
+|---|---|---|
+| ELO | **4 / 4** | `ELO_P_HOME`, `ELO_DIFF` are #1 and #2 in RF regressor importance (0.228 + 0.168). The live path never reads `team_elo_pregame`. |
+| last-10 win % | 3 / 3 | `get_team_rolling_stats` hard-codes 0.5 under a key that gets double-prefixed (`HOME_HOME_WIN_PCT_L10`), so the model's column is NaN |
+| roster slots (DIFF) | 12 / 36 | the live slot function builds HOME_/AWAY_ slots but no DIFF_SLOT_* columns |
+| availability / impact | 2 / 11 | `DIFF_PLAYERS_OUT` (RF regressor #8) missing; live emits `DIFF_AVAILABLE_IMPACT`, the model expects `DIFF_TOTAL_AVAILABLE_IMPACT` |
+| rolling L5/L10, rest, projections, other | 0 / 186 | match the table to 1e-15 on the same games |
+
+In total **21 / 252 features (44.5% of RF regressor importance)** never reach the live
+model. On the full pre-prune set it is 32 / 573, adding `speed_L5/L10` (all-NaN in
+training anyway) and more DIFF slot/impact columns.
+
+*Same games, same bundle, only the feature path differs* (29 games, 2026-01-14/15
+and 2026-03-02/03, all in table `20260703T072718Z`):
+
+| model | margin SD table → live | prob SD table → live | margin corr | pick agreement |
+|---|---|---|---|---|
+| RF | 8.94 → **3.96** | 0.221 → 0.153 | 0.93 | 0.90 |
+| XGB | 14.72 → **9.17** | 0.402 → 0.326 | 0.95 | 1.00 |
+
+Early 2026-27 replay (19 games, 2026-10-22/24/26; no table rows exist for these):
+RF margin SD 2.17, mean +2.69. XGB 5.36, mean +2.57. That matches the logged live
+values (RF 1.14 / +2.74, XGB 4.22 / +2.13). The bug reproduces locally, with no cloud
+involvement. It's worse early in the season because the remaining live inputs
+(10-game rolling averages that still include last season, roster slots) separate
+teams less than ELO does.
+
+**Why it wasn't caught.**
+1. **Two implementations of the features.** Training features come from
+   `feature_engineering.py`, live features from a hand-written subset in
+   `predict_games.py`. ELO entered the training builder in E9 (2026-05-20, commit
+   e5c9fda). The live builder was never extended, and the DIFF slot / availability
+   names diverged in E7/E8.
+2. **Silent fill.** A missing column becomes NaN, then the training median. The
+   prediction still looks normal (a plausible ~60% favourite), only flatter.
+3. **Every offline evaluation used the table.** E12–E26, the walk-forward backfills
+   and the 2025-26 public record never exercised the live builder. E26 found only 59
+   RF / 45 NN 2025-26 rows were truly pre-game, too few to notice.
+4. **The live symptoms were attributed elsewhere.** E19's RF live accuracy 0.583 vs
+   test 0.742 was attributed to the stale calibrator (that was real too), and the
+   2026-10-26 head disagreement to "sparse early-season features".
+5. **No parity test.** `tests/` has one file (prediction tracking). The drift
+   monitor watches mean probability vs home rate, which flat-but-centred
+   predictions pass.
+
+**Caveats on step 1.**
+- The audit passed no injuries, so availability columns differ from the table
+  (`PLAYERS_OUT` ~0.9 training SD). This is the audit's simplification, not
+  established skew.
+- `WIN_STREAK` differs by ~0.5 SD between live and table on the same games. That's a
+  genuine definition mismatch, not yet traced.
+- Local `team_elo_pregame` has no 2026-27 rows. Whether the cloud pipeline computes
+  2026-27 ELO on RDS (which the 2026-11-02 retrain would have trained on) is unverified.
+
+**Open (investigation plan, next steps):**
+1. Trace the WIN_STREAK definition mismatch, and re-run the audit with historical
+   injuries so the availability columns are compared like for like.
+2. Check RDS: `team_elo_pregame` and the `features` table coverage for 2026-27,
+   i.e. what the 2026-11-02 retrain actually trained on.
+3. Fix serving with ONE code path: build tonight's rows with the training builder
+   (or a shared module both call), never a second hand-written subset. Add a
+   train/serve parity test (live vector == table row for past games, every model
+   column non-NaN) and a nightly guard that prints `ERROR: SERVING_FEATURES_MISSING`
+   when any model column is NaN.
+4. After the fix: replay 2026-27 with fixed features (offline, for comparison only)
+   and re-run E27's live leg. Re-assess whether model redevelopment is needed beyond
+   the serving fix (single multi-output head, ELO dependence, early-season regime)
+   once there's a clean live sample.
+5. Decide how the public 2026-27 record treats the degraded predictions (keep as
+   published + note, vs relabel). This is Kai's decision.
+
+**Step 2: single serving path (fix built 2026-11-13, not yet deployed).** Kai's
+call after step 1: build serving through the training pipeline instead of patching
+the live copy.
+
+- `feature_engineering.build_feature_dataset` split into `load_team_game_frame` +
+  `compute_team_game_features` (blocks moved verbatim; training output unchanged).
+  The per-game steps take `only_game_ids` / `extra_availability`.
+- `feature_engineering.build_serving_features(engine, date, scheduled)`: loads
+  game_list rows strictly before the date (400-day window; rolling windows reach
+  into last season exactly as in the table), appends the scheduled games as
+  result-less placeholder team-game rows, runs `compute_team_game_features` (per-game
+  steps only for the placeholders) and `prepare_ml_dataset`.
+- `compute_elo.pregame_elo_for_games`: the same `compute_elo()` pass, in memory,
+  with the scheduled games appended (it records their pre-game state and skips the
+  update; season carryover applies).
+- `modeling/serving_features.py`: the one entry point (`build_game_features`) for
+  the nightly job, `predict_games.py` interactive mode and the dashboard tab.
+  Availability = official report rows for the date (training's source, joined by
+  date + team) ∪ caller injuries (live feed / manual) mapped to player IDs by the
+  existing `parse_injuries_for_game`. Guard `check_features` prints
+  `ERROR: SERVING_FEATURES_MISSING` (alarm-monitored) when a model column is
+  absent, any ELO column is NaN, or >10% of a model's columns are NaN.
+- The old builder (`get_team_rolling_stats`, `build_matchup_features`,
+  `get_player_slot_features_for_prediction`) is deleted. Reading the training code
+  for the fix found three more mismatches it had: WIN_STREAK stopped counting at the
+  first loss (losing streaks never below −1), REST_DAYS was uncapped (opening night
+  ≈ 120+ days vs a training cap of 10), ROAD_TRIP_LENGTH was always 0.
+
+*Verification.*
+
+| check | result |
+|---|---|
+| parity vs table `20260703T072718Z`, all 573 select_features columns (`scripts/check_serving_parity.py --all-features`) | **identical on every game**: 2025-10-21, 2025-10-22 (opening week), 2025-11-05, 2026-01-15, 2026-03-02, 2026-05-05 (playoffs) |
+| ELO vs a fresh full `compute_elo` pass | identical (0.0 difference). The stored local `team_elo_pregame` (computed 2026-05-19) is up to 26 points off today's game_list because ELO is path-dependent, so parity compares ELO with a fresh pass |
+| placeholder invariant, synthetic data, no DB (`scripts/check_serving_invariants.py`) | 22 columns identical as placeholder vs played on 17 cut dates; a deliberately leaky streak is caught on 17/17 |
+| nightly job dry run 2026-10-24 (`--no-log`) | 8 games, 24 predictions, 0 errors, no guard errors |
+| interactive `predict_games.py` with SHAP | runs; slot → player labels intact |
+
+*Early 2026-27 replay* (`experiments/e28_fixed_replay.py`, 56 regular-season games
+2026-10-20..27, local 20260716 bundles vs the logged production rows for the same
+games; small sample, different bundles, so accuracy is indicative only):
+
+| | RF logged → fixed | XGB logged → fixed |
+|---|---|---|
+| margin SD | 1.27 → **6.08** | 4.42 → **9.01** |
+| pick vs margin split | 16.1% → **7.1%** | 28.6% → **17.9%** |
+| margin-sign accuracy | 0.518 → 0.607 | 0.464 → 0.589 |
+| pick accuracy | 0.571 → 0.571 | 0.571 → 0.589 |
+
+RF's spread matches last season's early-season walk-forward (6.0), and the split
+rates match the E27 backtest (7.8% / 18.9% Oct–Nov). The collapse was the serving
+bug, not the models.
+
+*Tests and CI.* `tests/test_serving_parity.py` (unittest: invariant + DB parity,
+the latter skipped without a database). `.github/workflows/pipeline.yml` runs the
+invariant inside the built image and refuses to push `:latest` if it fails.
+
+*Found along the way (not fixed by this change):*
+- **Home ingest has failed every run since 2026-10-28** (stats.nba.com timeouts /
+  resets in `logs/home_ingest.log`; last complete drop `2026-10-28T074152Z`). Cloud
+  box scores stop at 2026-10-27, so even fixed serving uses stale rolling stats and
+  ELO until it recovers. `DATA_FRESHNESS_ALERT` should have been emailing.
+- `historical_injury_report` has no 2026-27 rows (the scraper isn't scheduled), so
+  2026-27 training rows show everyone available and serving uses the live feed.
+- `playoff_series_context` exists only for played games; series columns aren't in
+  the production set today, but scheduled playoff games would get zeros.
+
+Deploy steps and checks: `docs/preseason_checklist.md` "E28 — single serving path".
+Model redevelopment is deferred until ~3 weeks of fixed live predictions exist;
+the replay suggests the models are healthy when fed the right inputs.

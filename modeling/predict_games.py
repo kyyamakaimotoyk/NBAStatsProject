@@ -1051,312 +1051,16 @@ def get_scheduled_games(game_date: str) -> pd.DataFrame:
 # GET TEAM FEATURES
 # ============================================================================
 
-def get_team_rolling_stats(engine, team_id: int, as_of_date: str = None) -> dict:
-    """Get the most recent rolling statistics for a team."""
-    if as_of_date is None:
-        as_of_date = datetime.now().strftime('%Y-%m-%d')
-
-    query = f"""
-        SELECT
-            gl.TEAM_ID, gl.TEAM_ABBREVIATION, gl.GAME_DATE, gl.GAME_ID,
-            gl.PTS, gl.FGM, gl.FGA, gl.FG_PCT, gl.FG3M, gl.FG3A, gl.FG3_PCT,
-            gl.FTM, gl.FTA, gl.FT_PCT, gl.OREB, gl.DREB, gl.REB,
-            gl.AST, gl.STL, gl.BLK, gl.TOV, gl.PF, gl.PLUS_MINUS, gl.WL,
-            adv.offensiveRating, adv.defensiveRating, adv.netRating,
-            adv.pace, adv.possessions,
-            adv.effectiveFieldGoalPercentage as EFG_PCT,
-            adv.trueShootingPercentage as TS_PCT,
-            adv.assistPercentage, adv.assistToTurnover,
-            adv.offensiveReboundPercentage as ADV_OREB_PCT,
-            adv.defensiveReboundPercentage as ADV_DREB_PCT,
-            adv.turnoverRatio, adv.PIE,
-            ff.freeThrowAttemptRate as FT_RATE,
-            ff.teamTurnoverPercentage as TOV_PCT,
-            ff.offensiveReboundPercentage as OREB_PCT,
-            ff.oppEffectiveFieldGoalPercentage as OPP_EFG_PCT,
-            ff.oppFreeThrowAttemptRate as OPP_FT_RATE,
-            ff.oppTeamTurnoverPercentage as OPP_TOV_PCT,
-            ff.oppOffensiveReboundPercentage as OPP_OREB_PCT,
-            hst.contestedShots, hst.contestedShots2pt, hst.contestedShots3pt,
-            hst.deflections, hst.chargesDrawn, hst.screenAssists,
-            hst.looseBallsRecoveredTotal as looseBallsRecovered, hst.boxOuts,
-            trk.speed, trk.distance, trk.reboundChancesTotal,
-            trk.touches, trk.passes, trk.secondaryAssists,
-            trk.contestedFieldGoalsMade, trk.contestedFieldGoalsAttempted,
-            trk.uncontestedFieldGoalsMade, trk.uncontestedFieldGoalsAttempted,
-            trk.defendedAtRimFieldGoalsMade, trk.defendedAtRimFieldGoalsAttempted,
-            msc.pointsOffTurnovers, msc.pointsSecondChance,
-            msc.pointsFastBreak, msc.pointsPaint,
-            msc.oppPointsOffTurnovers, msc.oppPointsSecondChance,
-            msc.oppPointsFastBreak, msc.oppPointsPaint, msc.foulsDrawn,
-            scr.percentageFieldGoalsAttempted2pt as pctFGA_2pt,
-            scr.percentageFieldGoalsAttempted3pt as pctFGA_3pt,
-            scr.percentagePoints2pt as pctPTS_2pt,
-            scr.percentagePoints3pt as pctPTS_3pt,
-            scr.percentagePointsPaint as pctPTS_paint,
-            scr.percentagePointsFastBreak as pctPTS_fastBreak,
-            scr.percentageAssistedFGM as pctAssisted,
-            scr.percentageUnassistedFGM as pctUnassisted
-        FROM game_list gl
-        LEFT JOIN boxscoreadvancedv3_team adv ON gl.GAME_ID = adv.gameId AND gl.TEAM_ID = adv.teamId
-        LEFT JOIN boxscorefourfactorsv3_team ff ON gl.GAME_ID = ff.gameId AND gl.TEAM_ID = ff.teamId
-        LEFT JOIN boxscorehustlev2_team hst ON gl.GAME_ID = hst.gameId AND gl.TEAM_ID = hst.teamId
-        LEFT JOIN boxscoreplayertrackv3_team trk ON gl.GAME_ID = trk.gameId AND gl.TEAM_ID = trk.teamId
-        LEFT JOIN boxscoremiscv3_team msc ON gl.GAME_ID = msc.gameId AND gl.TEAM_ID = msc.teamId
-        LEFT JOIN boxscorescoringv3_team scr ON gl.GAME_ID = scr.gameId AND gl.TEAM_ID = scr.teamId
-        WHERE gl.TEAM_ID = {team_id}
-            AND gl.GAME_DATE < '{as_of_date}'
-            AND gl.WL IS NOT NULL
-        ORDER BY gl.GAME_DATE DESC
-        LIMIT 15
-    """
-
-    with engine.connect() as conn:
-        df = pd.read_sql(text(query), conn)
-
-    if len(df) == 0:
-        return None
-
-    rolling_stats = [
-        'PTS', 'FGM', 'FGA', 'FG_PCT', 'FG3M', 'FG3A', 'FG3_PCT',
-        'FTM', 'FTA', 'FT_PCT', 'OREB', 'DREB', 'REB', 'AST', 'STL',
-        'BLK', 'TOV', 'PF', 'PLUS_MINUS',
-        'offensiveRating', 'defensiveRating', 'netRating', 'pace',
-        'possessions', 'EFG_PCT', 'TS_PCT', 'assistPercentage',
-        'assistToTurnover', 'ADV_OREB_PCT', 'ADV_DREB_PCT', 'turnoverRatio', 'PIE',
-        'FT_RATE', 'TOV_PCT', 'OREB_PCT', 'OPP_EFG_PCT', 'OPP_FT_RATE',
-        'OPP_TOV_PCT', 'OPP_OREB_PCT',
-        'contestedShots', 'contestedShots2pt', 'contestedShots3pt',
-        'deflections', 'chargesDrawn', 'screenAssists', 'looseBallsRecovered', 'boxOuts',
-        'speed', 'distance', 'reboundChancesTotal', 'touches', 'passes',
-        'secondaryAssists', 'contestedFieldGoalsMade', 'contestedFieldGoalsAttempted',
-        'uncontestedFieldGoalsMade', 'uncontestedFieldGoalsAttempted',
-        'defendedAtRimFieldGoalsMade', 'defendedAtRimFieldGoalsAttempted',
-        'pointsOffTurnovers', 'pointsSecondChance', 'pointsFastBreak',
-        'pointsPaint', 'oppPointsOffTurnovers', 'oppPointsSecondChance',
-        'oppPointsFastBreak', 'oppPointsPaint', 'foulsDrawn',
-        'pctFGA_2pt', 'pctFGA_3pt', 'pctPTS_2pt', 'pctPTS_3pt',
-        'pctPTS_paint', 'pctPTS_fastBreak', 'pctAssisted', 'pctUnassisted'
-    ]
-
-    features = {'TEAM_ID': team_id, 'TEAM_ABBREVIATION': df['TEAM_ABBREVIATION'].iloc[0]}
-
-    for stat in rolling_stats:
-        if stat in df.columns:
-            features[f'{stat}_L5'] = df[stat].head(5).mean()
-            features[f'{stat}_L10'] = df[stat].head(10).mean()
-
-    # Win streak
-    streak = 0
-    for wl in df['WL'].head(10):
-        if wl == 'W':
-            streak = streak + 1 if streak >= 0 else 1
-        else:
-            streak = streak - 1 if streak <= 0 else -1
-            break
-    features['WIN_STREAK'] = streak
-
-    # Rest days
-    if len(df) >= 2:
-        last_game = pd.to_datetime(df['GAME_DATE'].iloc[0])
-        today = pd.to_datetime(as_of_date)
-        features['REST_DAYS'] = (today - last_game).days
-    else:
-        features['REST_DAYS'] = 3
-
-    # =========================================================================
-    # FATIGUE FEATURES
-    # =========================================================================
-    rest_days = features['REST_DAYS']
-
-    # IS_BACK_TO_BACK: Playing with 0 or 1 day rest
-    features['IS_BACK_TO_BACK'] = 1 if rest_days <= 1 else 0
-
-    # Games in last 7 and 14 days
-    game_dates = pd.to_datetime(df['GAME_DATE']).values
-    today = pd.to_datetime(as_of_date)
-
-    games_last_7 = sum(game_dates > (today - pd.Timedelta(days=7)))
-    games_last_14 = sum(game_dates > (today - pd.Timedelta(days=14)))
-
-    features['GAMES_LAST_7_DAYS'] = games_last_7
-    features['GAMES_LAST_14_DAYS'] = games_last_14
-
-    # IS_3_IN_4_NIGHTS: 2+ games in last 3 days means this is 3rd in 4 nights
-    games_last_3 = sum(game_dates > (today - pd.Timedelta(days=3)))
-    features['IS_3_IN_4_NIGHTS'] = 1 if games_last_3 >= 2 else 0
-
-    # AVG_REST_LAST_5: Average rest between last 5 games
-    if len(df) >= 5:
-        game_dates_sorted = pd.to_datetime(df['GAME_DATE'].head(6))
-        rest_between = game_dates_sorted.diff().dt.days.dropna().abs()
-        features['AVG_REST_LAST_5'] = rest_between.head(5).mean()
-    else:
-        features['AVG_REST_LAST_5'] = 2.5
-
-    # ROAD_TRIP_LENGTH: Would need matchup info, set to 0 for now
-    # (This gets calculated at matchup level based on IS_HOME)
-    features['ROAD_TRIP_LENGTH'] = 0
-
-    features['HOME_WIN_PCT_L10'] = 0.5
-    features['AWAY_WIN_PCT_L10'] = 0.5
-
-    return features
-
-
-def build_matchup_features(home_features: dict, away_features: dict,
-                           engine=None, home_team_id: int = None,
-                           away_team_id: int = None, game_date: str = None,
-                           home_injuries: list = None, away_injuries: list = None) -> dict:
-    """
-    Build matchup-level features from home and away team features.
-
-    If engine and team IDs are provided, also adds player-level projection features.
-
-    Args:
-        home_features: Dict of home team rolling stats
-        away_features: Dict of away team rolling stats
-        engine: SQLAlchemy database engine (optional)
-        home_team_id: Home team NBA ID (optional)
-        away_team_id: Away team NBA ID (optional)
-        game_date: Game date string YYYY-MM-DD (optional)
-        home_injuries: List of injured home team player names to exclude from projections
-        away_injuries: List of injured away team player names to exclude from projections
-    """
-    if home_injuries is None:
-        home_injuries = []
-    if away_injuries is None:
-        away_injuries = []
-
-    matchup = {}
-
-    for key, value in home_features.items():
-        if key not in ['TEAM_ID', 'TEAM_ABBREVIATION']:
-            matchup[f'HOME_{key}'] = value
-
-    for key, value in away_features.items():
-        if key not in ['TEAM_ID', 'TEAM_ABBREVIATION']:
-            matchup[f'AWAY_{key}'] = value
-
-    for key in home_features.keys():
-        if key not in ['TEAM_ID', 'TEAM_ABBREVIATION']:
-            home_val = home_features.get(key, 0) or 0
-            away_val = away_features.get(key, 0) or 0
-            matchup[f'DIFF_{key}'] = home_val - away_val
-
-    # Add player-level projection features if available
-    # Exclude injured players from roster projections
-    if PLAYER_PROJECTIONS_AVAILABLE and engine is not None and home_team_id and away_team_id and game_date:
-        try:
-            player_features = get_matchup_player_features(
-                engine, home_team_id, away_team_id, game_date,
-                home_excluded=home_injuries,
-                away_excluded=away_injuries
-            )
-            matchup.update(player_features)
-        except Exception as e:
-            print(f"  Warning: Player projections failed: {e}")
-
-    # Add player slot features (integrated roster model)
-    if PLAYER_IMPACT_AVAILABLE and engine is not None and home_team_id and away_team_id and game_date:
-        try:
-            slot_features = get_player_slot_features_for_prediction(
-                engine, home_team_id, away_team_id, game_date,
-                home_injuries, away_injuries
-            )
-            matchup.update(slot_features)
-        except Exception as e:
-            print(f"  Warning: Player slot features failed: {e}")
-
-    return matchup
-
-
-def get_player_slot_features_for_prediction(engine, home_team_id, away_team_id, game_date,
-                                              home_injuries=None, away_injuries=None, n_slots=8):
-    """
-    Get player slot features for a prediction (not a historical game).
-
-    For predictions, we check injuries against the player names to determine availability.
-    Returns features in the same format as calculate_player_slot_features() but for a single game.
-
-    Args:
-        engine: SQLAlchemy engine
-        home_team_id: Home team ID
-        away_team_id: Away team ID
-        game_date: Game date string
-        home_injuries: List of injured home player names (strings)
-        away_injuries: List of injured away player names (strings)
-        n_slots: Number of player slots per team
-
-    Returns:
-        dict with slot features for this matchup
-    """
-    from data_engineering.player_impact import get_top_players_by_impact
-
-    if home_injuries is None:
-        home_injuries = []
-    if away_injuries is None:
-        away_injuries = []
-
-    # Normalize injury names for matching
-    home_injuries_lower = [name.lower().strip() for name in home_injuries]
-    away_injuries_lower = [name.lower().strip() for name in away_injuries]
-
-    features = {}
-    slot_to_player = {'HOME': {}, 'AWAY': {}}  # For SHAP interpretation
-
-    for side, team_id, injuries_lower in [
-        ('HOME', home_team_id, home_injuries_lower),
-        ('AWAY', away_team_id, away_injuries_lower)
-    ]:
-        # Get top players by impact
-        top_players = get_top_players_by_impact(engine, team_id, game_date, top_n=n_slots)
-
-        total_available_impact = 0.0
-        total_missing_impact = 0.0
-        players_out = 0
-
-        for player in top_players:
-            slot = player['slot']
-            player_name = player['player_name']
-            player_id = player['player_id']
-            impact = player['impact']
-
-            # Check if this player is injured
-            player_name_lower = player_name.lower().strip()
-            is_available = player_name_lower not in injuries_lower
-
-            features[f'{side}_SLOT_{slot}_IMPACT'] = impact
-            features[f'{side}_SLOT_{slot}_AVAILABLE'] = 1.0 if is_available else 0.0
-            features[f'{side}_SLOT_{slot}_PLAYER_ID'] = player_id
-
-            # Store for SHAP interpretation
-            slot_to_player[side][slot] = {
-                'player_id': player_id,
-                'player_name': player_name,
-                'impact': impact,
-                'available': is_available
-            }
-
-            # Aggregate stats
-            if is_available:
-                total_available_impact += impact
-            else:
-                total_missing_impact += impact
-                players_out += 1
-
-        features[f'{side}_TOTAL_AVAILABLE_IMPACT'] = total_available_impact
-        features[f'{side}_TOTAL_MISSING_IMPACT'] = total_missing_impact
-        features[f'{side}_PLAYERS_OUT'] = players_out
-
-    # Differential features
-    features['DIFF_AVAILABLE_IMPACT'] = features['HOME_TOTAL_AVAILABLE_IMPACT'] - features['AWAY_TOTAL_AVAILABLE_IMPACT']
-    features['DIFF_MISSING_IMPACT'] = features['HOME_TOTAL_MISSING_IMPACT'] - features['AWAY_TOTAL_MISSING_IMPACT']
-
-    # Store slot-to-player mapping for SHAP interpretation (will be used in post-processing)
-    features['_slot_to_player'] = slot_to_player
-
-    return features
+# E28 (2026-11-13): get_team_rolling_stats, build_matchup_features and
+# get_player_slot_features_for_prediction were REMOVED. They were a second,
+# hand-written copy of the training features that never produced ELO, last-10
+# win %, or the DIFF slot/availability columns, and computed streak/rest/road-trip
+# differently; the models saw training medians for ~45% of their regressor
+# importance on every live prediction from 2026-05-20 to 2026-11-13.
+# Model inputs for unplayed games now come ONLY from
+# modeling.serving_features.build_game_features, which runs the training
+# pipeline (feature_engineering.build_serving_features). Do not reintroduce a
+# second feature builder; extend feature_engineering.compute_team_game_features.
 
 
 # ============================================================================
@@ -4098,28 +3802,15 @@ def main():
         rf_predictions = []
         nn_predictions = []
 
+        # Collect all injuries per game (manual + auto-fetched) BEFORE building features:
+        # E28 builds every game's inputs in one pass through the training pipeline.
+        # In backfill mode, args.auto_injuries was force-disabled above (live injury data
+        # would leak future info into a historical prediction).
+        injuries_by_game = {}
         for _, game in games.iterrows():
-            home_id = game['HOME_TEAM_ID']
-            away_id = game['AWAY_TEAM_ID']
             home_team = game['HOME_TEAM']
             away_team = game['AWAY_TEAM']
-            game_id = game['GAME_ID']
-
-            if not backfill_mode:
-                print(f"\nProcessing: {away_team} @ {home_team}")
-
-            home_features = get_team_rolling_stats(engine, home_id, game_date)
-            away_features = get_team_rolling_stats(engine, away_id, game_date)
-
-            if home_features is None or away_features is None:
-                print(f"  Warning: Missing data for {away_team} @ {home_team}, skipping")
-                continue
-
-            # Collect all injuries for this game (manual + auto-fetched).
-            # In backfill mode, args.auto_injuries was force-disabled above (live injury data
-            # would leak future info into a historical prediction), so this block is a no-op there.
             game_injuries = [{'name': name, 'status': 'out'} for name in args.injuries]
-
             if args.auto_injuries and auto_injury_data:
                 existing_names = [inj['name'].lower() for inj in game_injuries]
                 for team_abbrev in [home_team, away_team]:
@@ -4137,7 +3828,29 @@ def main():
                                         'team_side': team_side
                                     })
                                     existing_names.append(player_name.lower())
+            injuries_by_game[int(game['GAME_ID'])] = game_injuries
 
+        from modeling.serving_features import build_game_features, check_features
+        features_by_game = build_game_features(engine, game_date, games,
+                                               injuries_by_game=injuries_by_game,
+                                               with_slot_names=True)
+
+        for _, game in games.iterrows():
+            home_id = game['HOME_TEAM_ID']
+            away_id = game['AWAY_TEAM_ID']
+            home_team = game['HOME_TEAM']
+            away_team = game['AWAY_TEAM']
+            game_id = game['GAME_ID']
+
+            if not backfill_mode:
+                print(f"\nProcessing: {away_team} @ {home_team}")
+
+            matchup = features_by_game.get(int(game_id))
+            if matchup is None:
+                print(f"  Warning: no feature row for {away_team} @ {home_team}, skipping")
+                continue
+
+            game_injuries = injuries_by_game.get(int(game_id), [])
             injury_info = parse_injuries_for_game(engine, game_injuries, home_id, away_id, game_date)
             home_injury_impact = sum(d['impact'] for d in injury_info['injury_details'] if d['team'] == 'home')
             away_injury_impact = sum(d['impact'] for d in injury_info['injury_details'] if d['team'] == 'away')
@@ -4146,15 +3859,9 @@ def main():
             away_injured_names = [d['name'] for d in injury_info['injury_details'] if d['team'] == 'away']
             all_injury_names = [inj['name'] if isinstance(inj, dict) else inj for inj in game_injuries]
 
-            matchup = build_matchup_features(
-                home_features, away_features,
-                engine=engine,
-                home_team_id=home_id,
-                away_team_id=away_id,
-                game_date=game_date,
-                home_injuries=home_injured_names,
-                away_injuries=away_injured_names
-            )
+            for _key, _bundle in (('rf', rf_models), ('nn', nn_models)):
+                if _bundle:
+                    check_features(matchup, _bundle[3], _key, f"{away_team}@{home_team} {game_date}")
 
             if injury_info['injury_details'] and not backfill_mode:
                 auto_label = " (auto-fetched)" if args.auto_injuries else ""

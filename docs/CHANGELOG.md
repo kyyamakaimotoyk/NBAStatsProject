@@ -12,6 +12,11 @@ documented (commit)`. Areas: **model**, **eval**, **data**, **ops**, **infra**,
 ## 2026-11
 
 **2026-11-13**
+- model — E28 fix built (not deployed): nightly/interactive/dashboard predictions build inputs with the training pipeline (`feature_engineering.build_serving_features`, games as placeholders; `modeling/serving_features.py`); old live builder deleted. Parity identical on all 573 columns, 6 dates; early 2026-27 replay RF margin SD 1.3 → 6.1. Guard `SERVING_FEATURES_MISSING`; CI serving-invariant gate → TL §E28 Step 2, `preseason_checklist.md` E28
+- data — Found: home ingest failing every run since 2026-10-28 (stats.nba.com timeouts), cloud box scores stop 2026-10-27; `historical_injury_report` has no 2026-27 rows (scraper unscheduled) → TL §E28 Step 2, `preseason_checklist.md` E28
+- eval — E28 serving audit: live predictions never receive 21 of the model's features (all ELO, last-10 win %, DIFF slot/availability), filled with training medians since E9 (2026-05-20). Same games, same bundle: RF margin SD 8.9 (training features) → 4.0 (live). Explains the 2026-27 margin collapse and head disagreement. Fix not yet built → TL §E28
+- eval — E27 win prob from margin, Φ(margin/σ): REJECTED. Backtest: RF passes, XGB/NN fail; live 2026-27 fails every gate because the live margins are degenerate (RF SD 1.1) → TL §E27
+- docs — Dated E28 notes on TL E19/E21 (their "live" rows came through the degraded serving path); articles.md #16 rewritten around the serving bug (blocked until fix + 3 weeks)
 - web — Home slate table redesigned for readability: one team per row (every number restated from the consensus pick's side, signed), columns cut to Matchup / Models' pick / Proj. margin (3-model average) / Market (same scale, raw line underneath); per-model win % + margin moved to an expandable row; margin-based green/red cell coloring removed (✓/✗ is the only result mark); "split" badge replaced by negative margins. EN + JA copy rewritten → `web/components/PredictionsTable.tsx`
 
 **2026-11-05**

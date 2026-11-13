@@ -955,7 +955,7 @@ if ML_FEATURES_AVAILABLE:
 # to modeling.model_types.MODEL_TYPES is picked up here automatically with no edits.
 try:
     from modeling.predict_games import (
-        get_scheduled_games, get_team_rolling_stats, build_matchup_features,
+        get_scheduled_games,
         load_model_by_key, predict_with_loaded_model,
         create_engine as pred_create_engine,
         NBA_API_AVAILABLE, PYTORCH_AVAILABLE, SHAP_AVAILABLE,
@@ -1221,18 +1221,26 @@ def make_predictions(n_clicks, game_date):
         # each carrying the standard fields plus the matchup teams. Lists stay aligned by index.
         predictions_by_key = {s.key: [] for s in active_specs}
 
+        # E28: inputs come from the training feature pipeline (one path for training,
+        # the nightly job and this tab). Out/Doubtful players from the injury rows
+        # above feed the availability features, as in the nightly job.
+        from modeling.serving_features import (
+            build_game_features, injuries_by_game_from_team_lookup)
+        _inj_lookup = {ab: [{'player_name': n, 'status': st} for n, st in rows]
+                       for ab, rows in injuries_by_team.items()}
+        features_by_game = build_game_features(
+            engine, game_date, games,
+            injuries_by_game=injuries_by_game_from_team_lookup(games, _inj_lookup),
+            with_slot_names=True)
+
         for _, game in games.iterrows():
-            home_id = game['HOME_TEAM_ID']
-            away_id = game['AWAY_TEAM_ID']
             home_team = game['HOME_TEAM']
             away_team = game['AWAY_TEAM']
             season_type = game.get('SEASON_TYPE', 'regular')
 
-            home_features = get_team_rolling_stats(engine, home_id, game_date)
-            away_features = get_team_rolling_stats(engine, away_id, game_date)
-            if home_features is None or away_features is None:
+            matchup = features_by_game.get(int(game['GAME_ID']))
+            if matchup is None:
                 continue
-            matchup = build_matchup_features(home_features, away_features)
 
             for spec in active_specs:
                 try:

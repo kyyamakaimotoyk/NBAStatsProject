@@ -55,9 +55,6 @@ from typing import Iterable
 from modeling.predict_games import (
     create_engine,
     get_scheduled_games,
-    get_team_rolling_stats,
-    build_matchup_features,
-    parse_injuries_for_game,
     load_or_train_rf_models,
     load_or_train_pytorch_models,
     load_or_train_xgb_models,
@@ -66,6 +63,11 @@ from modeling.predict_games import (
     predict_with_xgb,
     _fetch_historical_injuries_for_date,
     _model_data_through_date,
+)
+from modeling.serving_features import (
+    build_game_features,
+    check_features,
+    injuries_by_game_from_team_lookup,
 )
 from modeling.prediction_tracker import (
     log_prediction,
@@ -226,27 +228,6 @@ def _build_injury_lookup_for_date(engine, game_date: str, mode: str) -> dict:
     return lookup
 
 
-def _game_injuries_from_lookup(home_team_abbrev: str, away_team_abbrev: str,
-                                lookup: dict) -> list:
-    """Filter the day's lookup down to OUT/DOUBTFUL players on either team."""
-    out = []
-    seen = set()
-    for team_abbrev in (home_team_abbrev, away_team_abbrev):
-        for inj in lookup.get(team_abbrev, ()):
-            if inj.get('status') in ('OUT', 'DOUBTFUL'):
-                name = (inj.get('player_name') or '').strip()
-                if not name or name.lower() in seen:
-                    continue
-                seen.add(name.lower())
-                out.append({
-                    'name': name,
-                    'status': inj['status'].lower(),
-                    'team_abbrev': team_abbrev,
-                    'team_side': 'home' if team_abbrev == home_team_abbrev else 'away',
-                })
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Per-model prediction + log
 # ---------------------------------------------------------------------------
@@ -332,39 +313,32 @@ def predict_for_date(engine, game_date: str, model_bundles: dict,
     print(f"  {game_date}: {len(games)} scheduled games")
     injuries_today = _build_injury_lookup_for_date(engine, game_date, injury_mode)
 
+    # E28: every game's inputs come from the training feature pipeline in one pass
+    # (modeling/serving_features.py), not from a second hand-written builder.
+    try:
+        features_by_game = build_game_features(
+            engine, game_date, games,
+            injuries_by_game=injuries_by_game_from_team_lookup(games, injuries_today))
+    except Exception as exc:
+        print(f"ERROR: SERVING_FEATURES_FAILED {game_date} - {exc}")
+        return {'n_games': len(games), 'n_predictions': 0, 'n_errors': len(games)}
+
     n_predictions = 0
     n_errors = 0
     for _, game in games.iterrows():
-        home_id = game['HOME_TEAM_ID']
-        away_id = game['AWAY_TEAM_ID']
         home_team = game['HOME_TEAM']
         away_team = game['AWAY_TEAM']
         game_id = game['GAME_ID']
 
-        home_features = get_team_rolling_stats(engine, home_id, game_date)
-        away_features = get_team_rolling_stats(engine, away_id, game_date)
-        if home_features is None or away_features is None:
-            print(f"  SKIP {away_team} @ {home_team}: missing rolling stats")
+        matchup = features_by_game.get(int(game_id))
+        if matchup is None:
+            print(f"  SKIP {away_team} @ {home_team}: no feature row")
             n_errors += 1
             continue
 
-        game_injuries = _game_injuries_from_lookup(home_team, away_team, injuries_today)
-        injury_info = parse_injuries_for_game(engine, game_injuries, home_id, away_id, game_date)
-        home_out = [d['name'] for d in injury_info['injury_details'] if d['team'] == 'home']
-        away_out = [d['name'] for d in injury_info['injury_details'] if d['team'] == 'away']
-
-        matchup = build_matchup_features(
-            home_features, away_features,
-            engine=engine,
-            home_team_id=home_id,
-            away_team_id=away_id,
-            game_date=game_date,
-            home_injuries=home_out,
-            away_injuries=away_out,
-        )
-
         for model_key, bundle in model_bundles.items():
             feat_names, feat_count = _features_for_log(bundle, model_key)
+            check_features(matchup, feat_names, model_key, f"{away_team}@{home_team} {game_date}")
             model_version = get_model_version(feat_count)
             ok = _predict_and_log_one(
                 engine, model_key, bundle, matchup,

@@ -76,8 +76,17 @@ jobs:
           import orchestration.pipeline
           import data_engineering.compute_elo
           import data_engineering.espn_score_poller
+          import modeling.serving_features
           print('pipeline image imports OK')
           "
+
+      # E28 train/serve parity gate (no DB): every feature step must give a game
+      # the same values as a placeholder (how nightly predictions are built) as
+      # it gives the played game in training. A failure here means serving would
+      # silently diverge from training again, so the old :latest stays in ECR.
+      - name: Serving invariant
+        run: |
+          docker run --rm "${ECR_REPO}:${GITHUB_SHA}" python scripts/check_serving_invariants.py
 
       # Tag both :latest (what the task definition pulls) and :<commit> (a
       # rollback handle pointing at the exact source that built it).

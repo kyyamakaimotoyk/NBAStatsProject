@@ -203,6 +203,35 @@ def compute_elo(games: pd.DataFrame) -> list:
     return out
 
 
+def pregame_elo_for_games(engine, game_date: str, scheduled: pd.DataFrame) -> pd.DataFrame:
+    """Pre-game ELO for games that are not in game_list yet (serving).
+
+    Runs the SAME compute_elo() pass that fills team_elo_pregame, over every
+    game_list game strictly before ``game_date`` plus the scheduled games appended
+    as result-less rows (compute_elo records their pre-game state and skips the
+    update). Season carryover applies automatically to a team's first game of a
+    new season. For a past date this reproduces the table's values for those games.
+
+    scheduled: columns GAME_ID, HOME_TEAM_ID, AWAY_TEAM_ID.
+    Returns rows in the table's shape: game_id, home_elo, away_elo, elo_diff, elo_p_home.
+    """
+    team_rows = load_games(engine)
+    team_rows = team_rows[team_rows['GAME_DATE'] < pd.Timestamp(game_date)]
+    games = collapse_to_one_row_per_game(team_rows)
+    extra = pd.DataFrame({
+        'GAME_ID': scheduled['GAME_ID'].astype('int64').values,
+        'GAME_DATE': pd.Timestamp(game_date),
+        'home_team_id': scheduled['HOME_TEAM_ID'].astype('int64').values,
+        'away_team_id': scheduled['AWAY_TEAM_ID'].astype('int64').values,
+        'home_pts': float('nan'), 'away_pts': float('nan'), 'home_wl': None,
+    })
+    games = pd.concat([games, extra], ignore_index=True)
+    games = games.sort_values(['GAME_DATE', 'GAME_ID'], kind='stable').reset_index(drop=True)
+    wanted = set(extra['GAME_ID'].tolist())
+    rows = [r for r in compute_elo(games) if r['game_id'] in wanted]
+    return pd.DataFrame(rows, columns=['game_id', 'home_elo', 'away_elo', 'elo_diff', 'elo_p_home'])
+
+
 def write_to_db(engine, rows: list):
     """Bulk INSERT IGNORE — re-runnable: existing rows for the same game_id stay put."""
     if not rows:

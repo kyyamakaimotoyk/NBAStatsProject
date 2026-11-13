@@ -606,7 +606,8 @@ def _process_single_game(args):
         return (game_id, team_id, default_features, str(e))
 
 
-def calculate_player_projection_features(engine, df: pd.DataFrame, n_jobs: int = -1) -> pd.DataFrame:
+def calculate_player_projection_features(engine, df: pd.DataFrame, n_jobs: int = -1,
+                                         only_game_ids=None) -> pd.DataFrame:
     """
     Calculate player-level projection features for historical games.
 
@@ -620,6 +621,8 @@ def calculate_player_projection_features(engine, df: pd.DataFrame, n_jobs: int =
     engine : SQLAlchemy engine
     df : DataFrame with game data
     n_jobs : Number of parallel jobs (-1 = all cores, -2 = all but one)
+    only_game_ids : optional set of GAME_IDs; when given, only those games are
+        computed (serving: the placeholder games). Other rows stay NaN.
     """
     try:
         from data_engineering.player_projections import get_player_projection_features
@@ -655,6 +658,8 @@ def calculate_player_projection_features(engine, df: pd.DataFrame, n_jobs: int =
     # Build task list
     tasks = []
     unique_games = df[['GAME_ID', 'GAME_DATE', 'TEAM_ID']].drop_duplicates()
+    if only_game_ids is not None:
+        unique_games = unique_games[unique_games['GAME_ID'].isin(only_game_ids)]
 
     for _, row in unique_games.iterrows():
         game_id = row['GAME_ID']
@@ -1019,7 +1024,9 @@ def _process_player_slots_for_game_bulk(game_id, game_date, home_team_id, away_t
 
 
 def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n_slots: int = 8,
-                                    availability_source: str = 'pregame') -> pd.DataFrame:
+                                    availability_source: str = 'pregame',
+                                    only_game_ids=None,
+                                    extra_availability=None) -> pd.DataFrame:
     """
     Calculate player slot features for historical games.
 
@@ -1048,6 +1055,12 @@ def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n
               sanity checks and for any code path that needs ground-truth attendance.
             - 'auto': try pregame first; for game_ids not covered by the injury
               report (e.g., pre-2021-22 data), fall back to postgame for that subset.
+        only_game_ids: optional set of GAME_IDs; when given, only those games get slot
+            values (serving: the placeholder games). Other rows keep the defaults.
+        extra_availability: {(game_id, team_id): {player_id: {'available': False, ...}}}
+            merged into the availability lookup. Serving uses it for tonight's injury
+            report, which the game_list join in bulk_fetch_pregame_availability can't
+            reach because tonight's games aren't in game_list yet.
 
     Returns:
         DataFrame with player slot features added
@@ -1097,6 +1110,8 @@ def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n
     away_teams = away_teams.rename(columns={'TEAM_ID': 'AWAY_TEAM_ID'})
 
     games = home_teams.merge(away_teams, on='GAME_ID', how='inner')
+    if only_game_ids is not None:
+        games = games[games['GAME_ID'].isin(only_game_ids)]
 
     if len(games) == 0:
         print("    No games to process")
@@ -1152,6 +1167,9 @@ def calculate_player_slot_features(engine, df: pd.DataFrame, n_jobs: int = -1, n
     else:
         raise ValueError(f"Unknown availability_source: {availability_source!r}. "
                          f"Use 'pregame' | 'postgame' | 'auto'.")
+    if extra_availability:
+        availability_lookup.update(extra_availability)
+        print(f"    + {len(extra_availability)} team-games of injected availability (serving)")
 
     # STEP 3: Process all games using in-memory lookups (no DB queries)
     print("    Step 3/3: Processing games with in-memory lookups...")
@@ -1323,32 +1341,12 @@ def create_matchup_features(df: pd.DataFrame) -> pd.DataFrame:
 # MAIN PIPELINE
 # ============================================================================
 
-def build_feature_dataset(engine,
-                          start_date: str = '2022-01-01',
-                          end_date: str = '2026-12-31',
-                          include_player_features: bool = True,
-                          include_legacy_injury_features: bool = False,
-                          availability_source: str = 'pregame') -> pd.DataFrame:
+def load_team_game_frame(engine) -> pd.DataFrame:
+    """Load every team-game row from game_list with all box-score tables merged.
+
+    Shared by build_feature_dataset (training) and build_serving_features (nightly
+    predictions) so both start from the same frame.
     """
-    Main function to build the complete feature dataset.
-
-    Parameters:
-    -----------
-    engine : SQLAlchemy engine
-    start_date : Filter games after this date
-    end_date : Filter games before this date
-    include_player_features : Whether to include player-level projection features
-    include_legacy_injury_features : Whether to include legacy injury impact features (default False)
-                                     The new player slot features provide better integrated roster modeling.
-
-    Returns:
-    --------
-    DataFrame ready for ML with features and target variables
-    """
-    print("="*60)
-    print("BUILDING FEATURE DATASET")
-    print("="*60)
-
     # Step 1: Load base game data
     print("\n[1/8] Loading game data...")
     game_df = load_game_data(engine)
@@ -1378,20 +1376,26 @@ def build_feature_dataset(engine,
     scoring_df = load_scoring_stats(engine)
     game_df = game_df.merge(scoring_df, on=['GAME_ID', 'TEAM_ID'], how='left')
 
-    # Early filter to avoid processing decades of old data
-    # Add 6-month buffer before start_date for rolling feature context
-    from datetime import datetime, timedelta
-    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-    buffer_date = (start_dt - timedelta(days=180)).strftime('%Y-%m-%d')
+    return game_df
 
-    original_count = len(game_df)
-    game_df = game_df[game_df['GAME_DATE'] >= buffer_date]
-    filtered_count = len(game_df)
 
-    print(f"\n  Early filter applied: {buffer_date} onwards")
-    print(f"  Reduced from {original_count} to {filtered_count} records ({filtered_count/original_count*100:.1f}%)")
+def compute_team_game_features(engine, game_df: pd.DataFrame,
+                               include_player_features: bool = True,
+                               include_legacy_injury_features: bool = False,
+                               availability_source: str = 'pregame',
+                               only_game_ids=None,
+                               extra_availability=None) -> pd.DataFrame:
+    """Every per-team-game feature step, in production order. The ONE implementation
+    used by both training (build_feature_dataset) and serving (build_serving_features).
 
-    # Step 3: Calculate rolling features
+    only_game_ids: if given, the expensive per-game steps (player projections,
+        player slots) run only for these GAME_IDs; other rows keep their defaults.
+        Rolling/streak/rest/fatigue steps always run on every row because they need
+        the history. Serving passes the placeholder games here.
+    extra_availability: {(game_id, team_id): {player_id: {...}}} merged into the
+        pre-game availability lookup (serving: tonight's injury report, which is not
+        reachable through game_list yet).
+    """
     print("\n[8/8] Calculating rolling features...")
 
     # =========================================================================
@@ -1521,7 +1525,7 @@ def build_feature_dataset(engine,
     if include_player_features:
         print("\n[9/11] Calculating player projection features...")
         try:
-            game_df = calculate_player_projection_features(engine, game_df)
+            game_df = calculate_player_projection_features(engine, game_df, only_game_ids=only_game_ids)
             # Verify features were added
             player_cols = [c for c in game_df.columns if 'PROJ_' in c or 'WEIGHTED_AVG' in c or 'ROSTER_DEPTH' in c]
             if player_cols:
@@ -1550,7 +1554,9 @@ def build_feature_dataset(engine,
         # Step 8d: Calculate player slot features (NEW - integrated roster model)
         print("\n[11/11] Calculating player slot features (integrated roster model)...")
         try:
-            game_df = calculate_player_slot_features(engine, game_df, availability_source=availability_source)
+            game_df = calculate_player_slot_features(engine, game_df, availability_source=availability_source,
+                                                     only_game_ids=only_game_ids,
+                                                     extra_availability=extra_availability)
             # Verify features were added
             slot_cols = [c for c in game_df.columns if '_SLOT_' in c]
             derived_cols = [c for c in game_df.columns if 'TOTAL_AVAILABLE_IMPACT' in c or 'TOTAL_MISSING_IMPACT' in c]
@@ -1565,6 +1571,57 @@ def build_feature_dataset(engine,
         print("\n[9/11] Skipping player projection features (--no-player-features flag)")
         print("[10/11] Skipping injury impact features (--no-player-features flag)")
         print("[11/11] Skipping player slot features (--no-player-features flag)")
+
+    return game_df
+
+
+def build_feature_dataset(engine,
+                          start_date: str = '2022-01-01',
+                          end_date: str = '2026-12-31',
+                          include_player_features: bool = True,
+                          include_legacy_injury_features: bool = False,
+                          availability_source: str = 'pregame') -> pd.DataFrame:
+    """
+    Main function to build the complete feature dataset.
+
+    Parameters:
+    -----------
+    engine : SQLAlchemy engine
+    start_date : Filter games after this date
+    end_date : Filter games before this date
+    include_player_features : Whether to include player-level projection features
+    include_legacy_injury_features : Whether to include legacy injury impact features (default False)
+                                     The new player slot features provide better integrated roster modeling.
+
+    Returns:
+    --------
+    DataFrame ready for ML with features and target variables
+    """
+    print("="*60)
+    print("BUILDING FEATURE DATASET")
+    print("="*60)
+
+    game_df = load_team_game_frame(engine)
+
+    # Early filter to avoid processing decades of old data
+    # Add 6-month buffer before start_date for rolling feature context
+    from datetime import datetime, timedelta
+    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+    buffer_date = (start_dt - timedelta(days=180)).strftime('%Y-%m-%d')
+
+    original_count = len(game_df)
+    game_df = game_df[game_df['GAME_DATE'] >= buffer_date]
+    filtered_count = len(game_df)
+
+    print(f"\n  Early filter applied: {buffer_date} onwards")
+    print(f"  Reduced from {original_count} to {filtered_count} records ({filtered_count/original_count*100:.1f}%)")
+
+    game_df = compute_team_game_features(
+        engine, game_df,
+        include_player_features=include_player_features,
+        include_legacy_injury_features=include_legacy_injury_features,
+        availability_source=availability_source,
+    )
 
     # Step 4: Filter date range
     print("\nFiltering date range and finalizing...")
@@ -1583,13 +1640,123 @@ def build_feature_dataset(engine,
     return game_df
 
 
-def _join_elo_features(matchup_df: pd.DataFrame) -> pd.DataFrame:
+# ============================================================================
+# SERVING: feature rows for games that haven't been played yet
+# ============================================================================
+# E28 (2026-11-13): nightly predictions used to rebuild features with a separate
+# hand-written copy in predict_games.py, which never produced ELO, last-10 win %,
+# the DIFF slot/availability columns, and computed streak/rest differently. The
+# models saw training medians for ~45% of their regressor importance. Serving now
+# runs the training pipeline itself: tonight's games are appended as result-less
+# "placeholder" team-game rows and pushed through compute_team_game_features +
+# prepare_ml_dataset. Every step that matters reads only PRIOR rows (shift(1),
+# diffs to earlier dates, streak-before-this-game), so a placeholder gets exactly
+# the pre-game view a training row gets. Do not add a second feature path again:
+# extend compute_team_game_features and both training and serving get it.
+
+SERVING_HISTORY_DAYS = 400   # > one season: opening-week rolling windows reach back
+                             # into last season, exactly as in the training table
+
+
+def build_serving_features(engine, game_date: str, scheduled: pd.DataFrame,
+                           extra_availability: dict = None,
+                           include_player_features: bool = True,
+                           history_days: int = SERVING_HISTORY_DAYS) -> pd.DataFrame:
+    """Model-ready feature rows (one per game) for games on ``game_date``.
+
+    scheduled: one row per game with GAME_ID, HOME_TEAM_ID, AWAY_TEAM_ID, HOME_TEAM,
+        AWAY_TEAM (the shape predict_games.get_scheduled_games returns).
+    extra_availability: tonight's unavailable players, {(game_id, team_id):
+        {player_id: {'available': False}}}; see calculate_player_slot_features.
+
+    Uses only game_list rows strictly before ``game_date``, so a past date
+    reproduces what a pre-game prediction would have seen (and must match the
+    features table for those games: tests/test_serving_parity.py).
+    Returns the prepare_ml_dataset frame restricted to the scheduled games;
+    TARGET_* are NaN.
+    """
+    from data_engineering.compute_elo import pregame_elo_for_games
+
+    target = pd.Timestamp(game_date)
+    sched = scheduled.copy()
+    sched['GAME_ID'] = pd.to_numeric(sched['GAME_ID']).astype('int64')
+    sched['HOME_TEAM_ID'] = sched['HOME_TEAM_ID'].astype('int64')
+    sched['AWAY_TEAM_ID'] = sched['AWAY_TEAM_ID'].astype('int64')
+    sched = sched.drop_duplicates(subset=['GAME_ID'])
+    game_ids = set(sched['GAME_ID'].tolist())
+
+    game_df = load_team_game_frame(engine)
+    game_df = game_df[(game_df['GAME_DATE'] < target)
+                      & (game_df['GAME_DATE'] >= target - pd.Timedelta(days=history_days))]
+
+    placeholders = []
+    for _, g in sched.iterrows():
+        for side in ('home', 'away'):
+            is_home = side == 'home'
+            team_id = g['HOME_TEAM_ID'] if is_home else g['AWAY_TEAM_ID']
+            abbr = g['HOME_TEAM'] if is_home else g['AWAY_TEAM']
+            matchup = (f"{g['HOME_TEAM']} vs. {g['AWAY_TEAM']}" if is_home
+                       else f"{g['AWAY_TEAM']} @ {g['HOME_TEAM']}")
+            placeholders.append({'GAME_ID': g['GAME_ID'], 'GAME_DATE': target,
+                                 'TEAM_ID': team_id, 'TEAM_ABBREVIATION': abbr,
+                                 'MATCHUP': matchup, 'WL': None, 'WIN': 0,
+                                 'IS_HOME': int(is_home)})
+    game_df = pd.concat([game_df, pd.DataFrame(placeholders)], ignore_index=True)
+    print(f"\n[serving] {game_date}: {len(sched)} games as placeholders on "
+          f"{len(game_df) - len(placeholders)} prior team-game rows")
+
+    game_df = compute_team_game_features(
+        engine, game_df,
+        include_player_features=include_player_features,
+        availability_source='pregame',
+        only_game_ids=game_ids,
+        extra_availability=extra_availability,
+    )
+    game_df = game_df[game_df['GAME_ID'].isin(game_ids)]
+
+    elo_df = pregame_elo_for_games(engine, game_date, sched)
+    ml_df, _ = prepare_ml_dataset(game_df, elo_df=elo_df)
+    # Placeholders carry WIN=0 / PLUS_MINUS=NaN; never let that look like a label.
+    ml_df['TARGET_WIN'] = np.nan
+    ml_df['TARGET_MARGIN'] = np.nan
+    return ml_df.reset_index(drop=True)
+
+
+def scheduled_games_from_game_list(engine, game_date: str) -> pd.DataFrame:
+    """The scheduled-games frame for a PAST date, rebuilt from game_list.
+
+    Used by the parity test and replays: lets build_serving_features run on a date
+    whose games are already in the features table, so the two can be compared.
+    """
+    q = text("""SELECT GAME_ID, TEAM_ID, TEAM_ABBREVIATION, MATCHUP
+                FROM game_list WHERE GAME_DATE = :d""")
+    with engine.connect() as conn:
+        df = pd.read_sql(q, conn, params={'d': game_date})
+    home = df[df['MATCHUP'].str.contains('vs.', regex=False)]
+    away = df[df['MATCHUP'].str.contains('@', regex=False)]
+    games = home.merge(away, on='GAME_ID', suffixes=('_H', '_A'))
+    games = games.drop_duplicates(subset=['GAME_ID'])
+    return pd.DataFrame({'GAME_ID': games['GAME_ID'].astype('int64'),
+                         'HOME_TEAM_ID': games['TEAM_ID_H'].astype('int64'),
+                         'AWAY_TEAM_ID': games['TEAM_ID_A'].astype('int64'),
+                         'HOME_TEAM': games['TEAM_ABBREVIATION_H'],
+                         'AWAY_TEAM': games['TEAM_ABBREVIATION_A']}).reset_index(drop=True)
+
+
+def _join_elo_features(matchup_df: pd.DataFrame, elo_df: pd.DataFrame = None) -> pd.DataFrame:
     """E9 (2026-05-19): join pre-game ELO ratings from `team_elo_pregame` onto matchup_df.
 
     Adds columns HOME_ELO, AWAY_ELO, ELO_DIFF, ELO_P_HOME. Silent no-op if the table
     is empty or unreachable — the model can still train without ELO, but feature_count
     will be smaller and the comparison vs the ELO-augmented run will be visible.
+
+    elo_df (serving): pre-computed rows in the table's shape (game_id, home_elo,
+    away_elo, elo_diff, elo_p_home), used INSTEAD of the table. Tonight's games have
+    no table rows; compute_elo.pregame_elo_for_games computes them with the same
+    compute_elo() pass that fills the table.
     """
+    if elo_df is not None:
+        return _merge_elo(matchup_df, elo_df.copy())
     try:
         from core.db import get_engine
         engine = get_engine()
@@ -1607,7 +1774,11 @@ def _join_elo_features(matchup_df: pd.DataFrame) -> pd.DataFrame:
     if len(elo_df) == 0:
         print("  [E9] team_elo_pregame is empty; skipping ELO features")
         return matchup_df
+    return _merge_elo(matchup_df, elo_df)
 
+
+def _merge_elo(matchup_df: pd.DataFrame, elo_df: pd.DataFrame) -> pd.DataFrame:
+    """Rename + left-join ELO rows (table shape) onto matchup_df by GAME_ID."""
     elo_df = elo_df.rename(columns={
         'game_id': 'GAME_ID',
         'home_elo': 'HOME_ELO',
@@ -1745,10 +1916,13 @@ def _join_lineup_features(matchup_df: pd.DataFrame) -> pd.DataFrame:
     return matchup_df
 
 
-def prepare_ml_dataset(df: pd.DataFrame) -> Tuple[pd.DataFrame, list]:
+def prepare_ml_dataset(df: pd.DataFrame, elo_df: pd.DataFrame = None) -> Tuple[pd.DataFrame, list]:
     """
     Prepare the final dataset for ML by selecting features and creating
     differential features between home and away teams.
+
+    elo_df: serving only — pre-game ELO rows for games not in team_elo_pregame
+    (see _join_elo_features). Training leaves it None and reads the table.
 
     Returns:
     --------
@@ -1769,7 +1943,7 @@ def prepare_ml_dataset(df: pd.DataFrame) -> Tuple[pd.DataFrame, list]:
 
     # E9: attach pre-game ELO ratings (KEPT — only feature with a significant
     # walk-forward gain in the E3 ablation: RF AUC +0.013, p=0.012-0.016).
-    matchup_df = _join_elo_features(matchup_df)
+    matchup_df = _join_elo_features(matchup_df, elo_df=elo_df)
     # Track A: attach playoff series-context features (0 for non-playoff games)
     matchup_df = _join_series_features(matchup_df)
     # E11 (LeagueDashLineups 5-man synergy) was REMOVED from the production

@@ -113,7 +113,7 @@ from numbers must let the reader see those numbers, not just read about them.
 | 13 | Fewer features, better model | tuning log E22, assessment §2.1 | Ready (with care; wording fixed) |
 | 14 | 99.9% training accuracy: what overfitting looks like | tuning log E1 | Needs re-run (no stored output) |
 | 15 | The bug that made our neural net look broken | tuning log E8, E6 | Needs re-run (pre-fix run not stored) |
-| 16 | Why the models sometimes disagree with themselves | memory/`project_head_disagreement`, `PredictionsTable.tsx` "split" badge | Blocked (root cause open) |
+| 16 | Our live predictions were missing their best input (was: why the models disagree with themselves) | tuning log E27, E28; `outputs/e27_live.json`, `e28_serving_audit` | Blocked until the serving fix ships + ~3 weeks of fixed predictions (root cause found 2026-11-13) |
 | 17 | What helped player minutes (and what hurt turnovers) | tuning log P4 | Hold (reveals adopted features) |
 | 18 | How a static website grades itself every night | `aws_deployment_plan.md`, ops labs | Ready (no security details) |
 | 19 | Most of our traffic isn't human | `traffic_lab.md` | Idea (check numbers) |
@@ -644,16 +644,39 @@ generic leakage explainer, or with Kai's sign-off.
 out-of-sample dates (E18), which shows the optimism without describing the
 availability features.
 
-### 16. Why the models sometimes disagree with themselves (Blocked)
-Early 2026-27: each model's win-probability head and margin head pointed at
-different teams in 20–57% of games (vs 0–3% last season), worst for XGB. The
-site shows a "split" badge. Publish once the root cause is confirmed (suspected
-sparse early-season rolling features); ideally with the decay curve as games
-accumulate.
+### 16. Our live predictions were missing their best input (Blocked)
+*Rewritten 2026-11-13. Was "Why the models sometimes disagree with themselves";
+the disagreement turned out to be a symptom (tuning log E27, E28).*
 
-**Figures:** share of games where a model's win-probability pick and margin sign
-disagree, per model, by week of the season (computable from the public
-predictions API now); the decay curve is the article's centerpiece.
+Story: early 2026-27, each model's win-probability pick and its margin pointed at
+different teams far more often than last season (XGB on about a third of games).
+Investigating it found that the nightly predictions were being built by a
+separate, older piece of code that never received the team-strength rating
+(Elo) and a few other inputs. The models filled the gaps with "average", and their
+margin predictions went almost flat: one model predicted roughly "home by 3" for
+every game. The offline record looked healthy because every backtest used the
+training data's version of the inputs. The lesson for readers: a model can pass
+every test you give it and still fail in production if production feeds it
+something different. Honest-mistake post: what went wrong, why the checks missed
+it, what changed, and the before/after record.
+
+**Disclosure:** fine to name Elo (a public baseline) and to say "a few other
+inputs". Don't publish the count of missing features, which ones beyond Elo, or
+how the live and training paths are built.
+
+**Figures:**
+1. Spread of each model's predicted margins by week: 2025-26 vs 2026-27 before the
+   fix vs after (the flat line is the headline).
+2. Share of games where pick and margin disagree, by week, before vs after the fix
+   (the old #16 decay-curve idea, now with a cause).
+3. Same games, two inputs: predicted margin from the training-style inputs vs the
+   live inputs (scatter, from the E28 replay).
+4. Accuracy and margin error of the live 2026-27 record before vs after, against the
+   betting market.
+
+**Unblock when:** the serving fix ships and about three weeks of fixed live
+predictions exist. Also needs Kai's call on how the public record presents the
+degraded 2026-27 rows (E28 open item 5).
 
 ### 17. Player fatigue features (Hold)
 P4: recent-workload features improved minutes predictions on every seed;

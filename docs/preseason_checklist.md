@@ -92,6 +92,48 @@ runs them, in order:
       `bundle sync: OK (rf, nn, xgb)`. `RETRAIN_FAILED` / `MODEL_BUNDLE_SYNC`
       arrive by email through the existing ERROR filter.
 
+## E28 — single serving path (added 2026-11-13)
+Code done 2026-11-13 (tuning log §E28 "Step 2"): nightly predictions now build
+their inputs with the training pipeline. Nothing is deployed until the push.
+Kai runs these, in order:
+- [ ] **Home ingest is down since 2026-10-28** (every run in
+      `logs/home_ingest.log` since then ends `Parallel import failed`: stats.nba.com
+      timeouts / connection resets; the last complete S3 drop is
+      `pending/2026-10-28T074152Z`). Until it recovers, the cloud has no box
+      scores after 2026-10-27, so even fixed features use stale rolling stats and
+      ELO. Fix this first or alongside: run `python data_engineering\home_ingest_push.py`
+      by hand and read the first error; check whether `DATA_FRESHNESS_ALERT`
+      emails have been arriving (spam folder). Secondary: the failure path
+      also crashes on a cp932 `UnicodeEncodeError` (an em dash in a print).
+- [ ] Locally, before pushing: `python -m unittest tests.test_serving_parity -v`
+      (2 tests, ~40 s, both must pass).
+- [ ] `git push`. CI rebuilds the pipeline image; the new **Serving invariant**
+      step must pass or the old `:latest` stays in ECR. The next scheduled
+      nightly uses the new image.
+- [ ] Verify the first nightly after the push:
+      `MSYS_NO_PATHCONV=1 aws logs tail /ecs/nba-game-predictor-pipeline --since 2h --format short`
+      Expect `availability for <date>: ...`, `[serving] <date>: N games as
+      placeholders`, `[E9] Joined ELO features: N/N`, `NIGHTLY_RUN_OK`, and **no**
+      `SERVING_FEATURES_MISSING` / `SERVING_FEATURES_FAILED`. Runtime grows by
+      about a minute (it loads the full game history once per date).
+- [ ] After ~1 week: on the home page's model breakdown, margins should spread out
+      (RF no longer "home by ~3" for every game) and "pick vs margin" splits
+      should drop to roughly 7% (RF) / 18% (XGB), the backtest levels.
+- [ ] After ~3 weeks of fixed predictions: re-run the E27 live leg
+      (`python experiments/e27_live_check.py`, filter to post-fix dates) and
+      unblock articles.md #16.
+- [ ] Decide how the public record presents the 2026-27 predictions made before
+      the fix (keep as published + note on /accuracy, or relabel). Kai's call;
+      no code changes until decided.
+- [ ] Before the 2027 playoffs: series-context features are computed only for
+      played games (`playoff_series_context`), so a scheduled playoff game would
+      get zeros. They are not in the production column set today; build series
+      context for scheduled games before any model uses them.
+- [ ] Official injury report: `historical_injury_report` has no 2026-27 rows
+      (the scraper isn't scheduled anywhere). Training rows for 2026-27 therefore
+      show everyone available, and serving falls back to the live feed. Decide
+      whether to schedule `historical_injury_scraper.py` on the home side.
+
 ## Deferred decisions on record
 - Retrospective `wf_` rows are deliberately unbadged on the site (user decision
   2026-07-03); provenance lives in `model_predictions.model_version`.

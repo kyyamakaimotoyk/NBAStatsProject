@@ -396,6 +396,56 @@ h2 {
 .result-mark {
   margin-left: 0.3rem;
 }
+/* Numbers read from the picked team's side; negative = leans the other way */
+.slate-table td.num-cell {
+  font-variant-numeric: tabular-nums;
+}
+.slate-table .against {
+  color: var(--muted);
+}
+/* Expand toggle + the per-model breakdown row under a game */
+.slate-table .toggle-cell {
+  width: 1%;
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
+  text-align: center;
+}
+.row-toggle {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  line-height: 1;
+  padding: 0.25rem 0.4rem;
+}
+.row-toggle:hover,
+.row-toggle:focus-visible {
+  color: var(--text);
+  border-color: var(--muted);
+}
+.slate-table tr.row-open td {
+  border-bottom-color: transparent;
+}
+.slate-table .model-detail-row td {
+  padding-top: 0;
+  background: var(--panel);
+}
+.model-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.5rem;
+  padding: 0.5rem 0.25rem;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.model-detail-name {
+  color: var(--muted);
+}
+.model-detail-sep {
+  color: var(--muted);
+}
 @media (max-width: 640px) {
   .slate-table th,
   .slate-table td {

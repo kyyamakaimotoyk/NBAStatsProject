@@ -109,6 +109,7 @@ const en = {
   predTable: {
     matchup: "Matchup",
     pick: "Models' pick",
+    margin: "Proj. margin",
     market: "Market",
     final: "Final",
     coinFlip: "coin flip",
@@ -116,19 +117,25 @@ const en = {
     agree: (n: number, total: number) => `${n} of ${total} models agree`,
     pickTitle: (team: string, pct: number) =>
       `${team} at ${pct}%: the average of the models' win probabilities`,
-    modelTitle: (winner: string, pct: number) => `${winner} at ${pct}% win probability`,
-    modelMargin: (team: string, n: string) => `${team} by ${n}`,
-    modelWin: (team: string, pct: number) => `${team} ${pct}%`,
-    split: "split",
-    splitTitle: (marginTeam: string, winner: string, pct: number) =>
-      `Split signal: this model's margin favors ${marginTeam}, but its win-probability head gives ${winner} ${pct}%. The pick column and the "models agree" count use the win probability.`,
-    marketTitle: (line: string) =>
-      `Betting-market line: ${line}. The latest pre-game line, which becomes the closing line at tip-off.`,
+    marginHeaderTitle:
+      "Points the picked team is projected to win by, averaged over the three models. Negative means the margin projection leans the other way.",
+    marketHeaderTitle:
+      "The betting line, restated from the picked team's side so it lines up with the projected margin.",
+    marginTitle: (team: string, n: string) => `Average projected margin for ${team}: ${n} points`,
+    marketLine: (line: string) => `line ${line}`,
+    marketTitle: (team: string, n: string, line: string) =>
+      `Market: ${n} points for ${team} (betting line: ${line}). The latest pre-game line, which becomes the closing line at tip-off.`,
     noLine: "No market line captured for this game yet",
     pickRight: "The models' pick won",
     pickWrong: "The models' pick lost",
+    showModels: "Show each model",
+    hideModels: "Hide model breakdown",
+    showAll: "Show each model for every game",
+    hideAll: "Hide all model breakdowns",
+    modelTitle: (model: string, team: string, pct: number, n: string) =>
+      `${model}: ${team} ${pct}% to win, projected margin ${n}`,
     caption:
-      'One row per game. "Models\' pick" is the team favored by the average of the three models\' win probabilities, and how many models agree. Each model column is the margin that model expects (green if that team won, red if not), with its own win probability underneath. Margin and win probability come from two separately trained parts of each model, so they can occasionally favor different teams — flagged "split". "Market" is the betting line ("BOS -6.5" means BOS favored by 6.5), shown as a benchmark, not a pick. Hover a cell for details.',
+      'One row per game, every number from the picked team\'s side. "Models\' pick" is the team favored by the average of the three models\' win probabilities, with how many models agree. "Proj. margin" is how many points the models expect that team to win by, averaged. "Market" is the betting line on the same scale, so +4.0 against +6.5 means the market rates the pick higher than the models do; the line itself sits underneath ("BOS −6.5" means BOS favored by 6.5). Open a row (▸) for each model\'s own win probability and margin for the picked team. A negative margin there means that model\'s margin leans the other way: win probability and margin come from two separately trained parts of each model, so close games can split.',
   },
 
   injury: {
@@ -624,6 +631,7 @@ const ja: Dict = {
   predTable: {
     matchup: "対戦カード",
     pick: "モデルの予測",
+    margin: "予想点差",
     market: "市場",
     final: "最終スコア",
     coinFlip: "五分五分",
@@ -631,19 +639,25 @@ const ja: Dict = {
     agree: (n: number, total: number) => `${total}モデル中${n}モデルが支持`,
     pickTitle: (team: string, pct: number) =>
       `${team}の勝つ確率は${pct}%（各モデルの予測勝率の平均）`,
-    modelTitle: (winner: string, pct: number) => `${winner}の勝つ確率: ${pct}%`,
-    modelMargin: (team: string, n: string) => `${team} ${n}点差`,
-    modelWin: (team: string, pct: number) => `${team} ${pct}%`,
-    split: "判断が分かれる",
-    splitTitle: (marginTeam: string, winner: string, pct: number) =>
-      `このモデル内で判断が分かれています。点差では${marginTeam}が優勢ですが、勝率では${winner}が${pct}%です。「モデルの予測」列と支持モデル数は勝率をもとにしています。`,
-    marketTitle: (line: string) =>
-      `市場の予想点差: ${line}（試合前の最新値。ティップオフ時点の値が最終予想点差になります）`,
+    marginHeaderTitle:
+      "予測したチームが何点差で勝つと見ているか（3モデルの平均）。マイナスなら、点差の予想では相手チームのほうが優勢です。",
+    marketHeaderTitle:
+      "賭け市場のラインを予測したチーム側から見た点差に直したもの。予想点差とそのまま見比べられます。",
+    marginTitle: (team: string, n: string) => `${team}の予想点差（モデル平均）: ${n}点`,
+    marketLine: (line: string) => `ライン ${line}`,
+    marketTitle: (team: string, n: string, line: string) =>
+      `市場の見立て: ${team}から見て${n}点（ライン: ${line}）。試合前の最新値で、ティップオフ時点の値がそのまま最終ラインになります。`,
     noLine: "この試合の市場予想点差はまだ取得していません",
     pickRight: "モデルの予測が的中",
     pickWrong: "モデルの予測が外れ",
+    showModels: "モデル別に見る",
+    hideModels: "モデル別の内訳を閉じる",
+    showAll: "全試合のモデル別内訳を開く",
+    hideAll: "モデル別の内訳をすべて閉じる",
+    modelTitle: (model: string, team: string, pct: number, n: string) =>
+      `${model}: ${team}の勝つ確率${pct}%、予想点差${n}`,
     caption:
-      "1試合を1行にまとめています。「モデルの予測」は、3つのモデルが出した勝率の平均で優勢なチームと、そのチームを支持するモデルの数です。各モデルの列はそのモデルが予想する点差（そのチームが勝てば緑、負ければ赤）と、その下にそのモデル自身の勝率を表示しています。点差と勝率はモデル内の別々の仕組みで算出するため、まれに優勢なチームが食い違うことがあり、その場合は「判断が分かれる」と表示します。「市場」は賭け市場の予想点差（「BOS -6.5」はBOSが6.5点差で優勢という意味）で、当サイトの予測ではなく、比較の基準として掲載しています。各セルにカーソルを合わせると詳細が表示されます。",
+      "1試合を1行にまとめ、数字はすべて予測したチーム側から見たものです。「モデルの予測」は3モデルの勝率を平均して優勢なチームと、それを支持するモデルの数。「予想点差」はそのチームが何点差で勝つとモデルが見ているか（平均）です。「市場」は賭け市場の見立てを同じ物差しに直したもので、+4.0 と +6.5 なら市場のほうがこのチームを高く評価していることになります。その下の小さな表記が元のライン（「BOS −6.5」はBOSが6.5点差で優勢）です。行の▸を押すと、モデルごとの勝率と点差が見られます。そこで点差がマイナスなら、そのモデルの点差予想は相手チーム寄りということ。勝率と点差はモデル内の別々に学習した仕組みから出ているため、接戦ほど食い違いが起きやすくなります。",
   },
 
   injury: {

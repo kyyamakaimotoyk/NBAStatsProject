@@ -1,0 +1,43 @@
+{
+  "experiment_id": "E27",
+  "title": "Win probability derived from the margin regressor: p = Phi(margin / sigma)",
+  "preregistered_at": "2026-11-13",
+  "motivation": "Each model's classifier (win prob, pick) and regressor (margin) are trained separately and point at different teams on 20-57% of early 2026-27 games (project_head_disagreement). Deriving the probability from the margin makes the two agree by construction. Question: does it cost pick accuracy or probability quality?",
+  "data": {
+    "csv": "nba_ml_features_frozen.csv",
+    "feature_set": "production: select_features(keep_only=core/e22_keep_columns_top250.json)",
+    "windows": "calendar months from 2023-10, gated >=50 test / >=800 train (harness.month_windows)",
+    "seeds": [42, 123, 456],
+    "families": ["RF", "XGB", "NN"]
+  },
+  "arms": {
+    "clf_raw": "classifier predict_proba, uncalibrated (production pick for all families; production display for RF/NN)",
+    "clf_iso": "eval-slice isotonic on the classifier (production display for XGB)",
+    "phi_mle": "PRIMARY. Phi(m / s), s fit by 1-parameter probit MLE (no intercept) on the eval slice (last 20% of train, models refit on first 80%)",
+    "phi_resid": "Phi(m / s), s = SD of regressor residuals on the same eval slice"
+  },
+  "pooling": "per game: probabilities and margins averaged over seeds, then pooled across all windows; per-seed direction consistency reported alongside",
+  "gates": {
+    "comparison": "phi_mle vs the family's production probability (RF: clf_raw, NN: clf_raw, XGB: clf_iso) for log loss/Brier/ECE; phi_mle pick (= sign of margin) vs clf_raw pick for accuracy",
+    "adopt_family_if_all": [
+      "pooled accuracy delta: 95% paired-bootstrap CI lower bound > -0.010 (non-inferior within 1.0pp)",
+      "pooled log-loss delta: 95% paired-bootstrap CI upper bound < +0.005",
+      "no test significant AGAINST phi_mle at p<0.05 (McNemar on picks, paired bootstrap on log loss and Brier, bootstrap AUC)"
+    ],
+    "decision": "Recommendation only. Adoption (production code change) is Kai's call; a family failing the gate keeps the classifier.",
+    "secondary_descriptive": [
+      "phi_resid vs phi_mle (does the simpler sigma suffice)",
+      "incumbent split rate (clf_raw pick != margin sign) by window",
+      "early-season (Oct-Nov windows) vs rest: split rate and the accuracy/log-loss deltas"
+    ]
+  },
+  "live_leg": {
+    "added_at": "2026-11-13, before any backtest or live result was read",
+    "source": "public API /api/performance/results (read-only GET), regular-season GAME_IDs only; fetched rows frozen to outputs/e27_live_rows.json",
+    "fit": "sigma per model by the same probit MLE on graded 2025-26 rows (walk-forward, E26)",
+    "test": "graded 2026-27 rows: Phi(logged predicted_margin / sigma) vs the logged home_win_probability (what the site shows: RF/NN raw, XGB calibrated); pick = margin sign vs logged predicted_winner",
+    "gates": "same three checks as the backtest, reported per model; n is ~170 games per model, so the live leg can flag a problem but cannot by itself establish non-inferiority. The backtest decides; the live leg must not show a significant regression.",
+    "descriptive": "split rate by week of 2026-27 vs Oct-Nov 2025 and the rest of 2025-26 (does the early-season spike decay?)"
+  },
+  "known_limitation":"Frozen snapshot ends with the 2025-26 Finals, so it holds no 2026-27 games: early-season behaviour is read from the Oct/Nov windows of 2023-24, 2024-25 and 2025-26."
+}

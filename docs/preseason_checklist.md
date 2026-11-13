@@ -96,15 +96,38 @@ runs them, in order:
 Code done 2026-11-13 (tuning log §E28 "Step 2"): nightly predictions now build
 their inputs with the training pipeline. Nothing is deployed until the push.
 Kai runs these, in order:
-- [ ] **Home ingest is down since 2026-10-28** (every run in
-      `logs/home_ingest.log` since then ends `Parallel import failed`: stats.nba.com
-      timeouts / connection resets; the last complete S3 drop is
-      `pending/2026-10-28T074152Z`). Until it recovers, the cloud has no box
-      scores after 2026-10-27, so even fixed features use stale rolling stats and
-      ELO. Fix this first or alongside: run `python data_engineering\home_ingest_push.py`
-      by hand and read the first error; check whether `DATA_FRESHNESS_ALERT`
-      emails have been arriving (spam folder). Secondary: the failure path
-      also crashes on a cp932 `UnicodeEncodeError` (an em dash in a print).
+- [ ] **Home ingest down since 2026-10-28: fix built 2026-11-13.** Cause: NBA-side
+      change; nba_api 1.11.3 times out on every stats.nba.com call (widely
+      reported, swar/nba_api #728). nba_api **1.12.0** works for every endpoint the
+      ingest uses (tested 2026-11-13 in an isolated folder). Second bug: on a failed
+      fetch the job crashed on a cp932 `UnicodeEncodeError` before exporting, so
+      nothing shipped at all; now fixed (`_console_safe`). Kai runs, in a normal
+      Windows terminal from the project root:
+      1. `.venv\Scripts\pip install nba_api==1.12.0` (requirements.txt already pinned).
+      2. Recovery run with a wide window (local game_list stops 2026-10-27, so the
+         default 14-day window would miss Oct 28-30, and injury rows go back to
+         opening night): `python data_engineering\home_ingest_push.py --window-days 30`
+         Expect: the fetch imports ~200+ games, `injuries:` lines scrape about 30
+         report dates, `export: ... historical_injury_report` appears, and the drop
+         uploads ending `manifest.json (drop complete)`.
+      3. The next cloud nightly loads it (`[s3_ingest]` lines) and prints
+         `freshness: OK`. Or load it now:
+         `aws ecs run-task --cli-input-json file://tmp/run_s3_loader_task.json`
+      4. The weekly retrain then rebuilds features with real 2026-27 box scores and
+         availability (or run the retrain task now, see P-2 above).
+- [ ] **Official injury reports (fix built 2026-11-13).** The scraper was never
+      scheduled, so 2026-27 had no official-report rows: training rows showed
+      everyone available while serving used the ESPN feed. Now the daily home
+      ingest backfills missing report dates (45 days) and re-scrapes the last 2
+      with `--replace`, then ships the table (date_window on game_date). For
+      tonight's games, add the pre-tip task (scrapes today's report, ET date, and
+      ships only that table before the cloud's 5:45 PM ET run):
+      `schtasks /Create /TN "NBA Injuries PreTip" /TR "D:\Kai\PycharmProjects\NBAStatsProject\scripts\home_injuries.bat" /SC DAILY /ST 07:20`
+      07:20 JST = 17:20 EST. **In US daylight time (from 2027-03-14) change it to
+      06:20** (`schtasks /Change /TN "NBA Injuries PreTip" /ST 06:20`), and back to
+      07:20 in November. Check `logs\home_injuries.log`; on the cloud the
+      5:45 PM run should print `availability for <date>: N out/doubtful from the
+      official report`. The PC must be awake at that time, like for the main ingest.
 - [ ] Locally, before pushing: `python -m unittest tests.test_serving_parity -v`
       (2 tests, ~40 s, both must pass).
 - [ ] `git push`. CI rebuilds the pipeline image; the new **Serving invariant**
@@ -129,10 +152,6 @@ Kai runs these, in order:
       played games (`playoff_series_context`), so a scheduled playoff game would
       get zeros. They are not in the production column set today; build series
       context for scheduled games before any model uses them.
-- [ ] Official injury report: `historical_injury_report` has no 2026-27 rows
-      (the scraper isn't scheduled anywhere). Training rows for 2026-27 therefore
-      show everyone available, and serving falls back to the live feed. Decide
-      whether to schedule `historical_injury_scraper.py` on the home side.
 
 ## Deferred decisions on record
 - Retrospective `wf_` rows are deliberately unbadged on the site (user decision

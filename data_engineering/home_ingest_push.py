@@ -87,9 +87,76 @@ GAME_TABLES: dict[str, str] = {
 # Small reference tables shipped whole every run (loader mode: replace).
 FULL_TABLES = ["nba_teams", "nba_players", "team_lineup_snapshots"]
 
+# Official pre-game injury report (E7 training source). Date-keyed, so it ships as a
+# date_window on game_date. id/created_at are dropped so RDS assigns its own ids.
+INJURY_TABLE = "historical_injury_report"
+INJURY_DROP_COLS = ["id", "created_at"]
+INJURY_BACKFILL_DAYS = 45   # any missing report date in this window gets scraped
+INJURY_REFRESH_DAYS = 2     # these most recent dates are re-scraped (statuses change)
+
+
+def et_today() -> date:
+    """The NBA's calendar date (US Eastern). The home PC runs on JST, which is
+    14 h (13 h in US daylight time) ahead: a 07:20 JST run is the previous ET day."""
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
 
 def log(msg: str) -> None:
     print(f"[{datetime.now().isoformat(timespec='seconds')}] {msg}", flush=True)
+
+
+def _console_safe() -> None:
+    """Never let a log line kill the job. Task Scheduler redirects stdout to a file
+    in the cp932 locale, and an em dash in a log message crashed every failed run
+    from 2026-10-28 before the export/upload step (so nothing shipped at all)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
+
+
+def run_injury_scrape(force_today: bool = False) -> bool:
+    """Scrape the NBA's official injury reports into local MySQL.
+
+    Daily mode: backfill any missing date in the last INJURY_BACKFILL_DAYS (dates
+    with games in game_list), then re-scrape the last INJURY_REFRESH_DAYS with
+    --replace. force_today: re-scrape today's slate (not in game_list yet).
+    Non-fatal: a failure is logged and the drop still ships."""
+    script = str(ROOT / "data_engineering" / "historical_injury_scraper.py")
+    today = et_today()
+    if force_today:
+        cmds = [[sys.executable, script, "--force-dates", today.isoformat(), "--replace"]]
+    else:
+        cmds = [
+            [sys.executable, script, "--start-date",
+             (today - timedelta(days=INJURY_BACKFILL_DAYS)).isoformat()],
+            [sys.executable, script, "--start-date",
+             (today - timedelta(days=INJURY_REFRESH_DAYS)).isoformat(), "--replace"],
+        ]
+    ok = True
+    for cmd in cmds:
+        log(f"injuries: {' '.join(cmd[1:])}")
+        proc = subprocess.run(cmd, cwd=ROOT)
+        if proc.returncode != 0:
+            log(f"injuries: FAILED with exit code {proc.returncode} (continuing)")
+            ok = False
+    return ok
+
+
+def export_injury_report(conn, cutoff: str, out_dir: Path) -> dict:
+    """historical_injury_report rows with game_date >= cutoff (loader: date_window)."""
+    if not table_exists(conn, INJURY_TABLE):
+        return {}
+    df = pd.read_sql(sa.text(f"SELECT * FROM `{INJURY_TABLE}` WHERE game_date >= :c"),
+                     conn, params={"c": cutoff})
+    df = df.drop(columns=[c for c in INJURY_DROP_COLS if c in df.columns])
+    if len(df) == 0:
+        return {}
+    df.to_parquet(out_dir / f"{INJURY_TABLE}.parquet", index=False)
+    return {INJURY_TABLE: {"rows": len(df), "mode": "date_window",
+                           "date_col": "game_date", "cutoff": cutoff}}
 
 
 def run_fetch() -> bool:
@@ -174,6 +241,8 @@ def export_tables(window_days: int, out_dir: Path) -> dict:
                 continue
             df.to_parquet(out_dir / f"{tbl}.parquet", index=False)
             tables[tbl] = {"rows": len(df), "mode": "replace"}
+
+        tables.update(export_injury_report(conn, cutoff, out_dir))
     return tables
 
 
@@ -199,9 +268,21 @@ def main() -> int:
     ap.add_argument("--skip-fetch", action="store_true",
                     help="Skip the nba_api ingest; just export + upload current DB state.")
     ap.add_argument("--dry-run", action="store_true", help="Export locally, don't upload.")
+    ap.add_argument("--skip-injuries", action="store_true",
+                    help="Skip the official injury-report scrape.")
+    ap.add_argument("--injuries-only", action="store_true",
+                    help="Pre-tip refresh: scrape TODAY's official injury report and ship "
+                         "only that table (no box-score fetch, no schedule). Scheduled "
+                         "shortly before the cloud's 5:45 PM ET prediction run.")
     args = ap.parse_args()
+    _console_safe()
+
+    if args.injuries_only:
+        return injuries_only(args)
 
     fetch_ok = True if args.skip_fetch else run_fetch()
+    if not args.skip_injuries:
+        run_injury_scrape()
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
     out_dir = Path(tempfile.mkdtemp(prefix=f"nba_ingest_{stamp}_"))
@@ -238,8 +319,31 @@ def main() -> int:
         return 0
 
     upload(out_dir, args.bucket, args.profile, stamp)
-    log("done" + ("" if fetch_ok else " (WITH FETCH FAILURE — see above)"))
+    log("done" + ("" if fetch_ok else " (WITH FETCH FAILURE - see above)"))
     return 0 if fetch_ok else 1
+
+
+def injuries_only(args) -> int:
+    """Scrape today's official report and ship just historical_injury_report rows
+    for today (date_window cutoff = today), so the pre-tip cloud run predicts with
+    the same availability source the models were trained on."""
+    ok = run_injury_scrape(force_today=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+    out_dir = Path(tempfile.mkdtemp(prefix=f"nba_injuries_{stamp}_"))
+    with get_engine().connect() as conn:
+        tables = export_injury_report(conn, et_today().isoformat(), out_dir)
+    if not tables:
+        log("injuries-only: no rows for today (report not published yet?); nothing to ship")
+        return 0 if ok else 1
+    manifest = {"schema_version": 1, "generated_at_utc": stamp, "window_days": 0,
+                "fetch_ok": ok, "schedule_rows": 0, "tables": tables}
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    log(f"injuries-only: {tables[INJURY_TABLE]['rows']} rows for {et_today()} (ET)")
+    if args.dry_run:
+        log(f"dry-run: skipping upload; files left in {out_dir}")
+        return 0
+    upload(out_dir, args.bucket, args.profile, stamp)
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

@@ -37,6 +37,12 @@ Usage
     python data_engineering/historical_injury_scraper.py                  # 2022-01-01 → today
     python data_engineering/historical_injury_scraper.py --start 2024-10-01 --end 2024-10-31
     python data_engineering/historical_injury_scraper.py --limit 5        # test mode (first 5 dates)
+    python data_engineering/historical_injury_scraper.py --start-date 2026-11-11 --replace   # re-scrape recent dates
+    python data_engineering/historical_injury_scraper.py --force-dates 2026-11-13 --replace  # today's slate, pre-tip
+
+The home ingest (home_ingest_push.py) runs it daily after the box-score fetch and
+ships the table to the cloud; `home_ingest_push.py --injuries-only` refreshes
+today's report before the pre-tip prediction run (E28 follow-up, 2026-11-13).
 """
 from __future__ import annotations
 
@@ -331,6 +337,13 @@ def main():
                    help='Re-scrape dates already in the table (default: skip)')
     p.add_argument('--sleep', type=float, default=0.0,
                    help='Seconds to sleep between requests (default 0; bump if NBA throttles)')
+    p.add_argument('--replace', action='store_true',
+                   help='Delete each scraped date\'s rows before inserting (implies '
+                        '--no-skip-existing). INSERT IGNORE alone keeps a player\'s FIRST '
+                        'status; use this when re-scraping a date whose report has changed.')
+    p.add_argument('--force-dates', nargs='+', default=None,
+                   help='Scrape exactly these dates (YYYY-MM-DD) even if they are not in '
+                        'game_list yet, e.g. today\'s slate before tip-off.')
     args = p.parse_args()
 
     if not NBAINJURIES_AVAILABLE:
@@ -352,10 +365,14 @@ def main():
     player_resolver = build_player_resolver(eng)
     print(f'         {len(team_resolver)} teams, {len(player_resolver)} players in lookup')
 
-    already_scraped = set() if args.no_skip_existing else get_already_scraped_dates(eng)
+    skip_existing = not (args.no_skip_existing or args.replace)
+    already_scraped = get_already_scraped_dates(eng) if skip_existing else set()
     print(f'         {len(already_scraped)} game_dates already in table (will skip)')
 
-    all_dates = get_game_dates_to_scrape(eng, start, end)
+    if args.force_dates:
+        all_dates = sorted(pd.to_datetime(args.force_dates).date)
+    else:
+        all_dates = get_game_dates_to_scrape(eng, start, end)
     dates_to_do = [d for d in all_dates if d not in already_scraped]
     if args.limit:
         dates_to_do = dates_to_do[:args.limit]
@@ -380,6 +397,11 @@ def main():
                 failed_dates.append(d)
                 continue
             ts, df = result
+            if args.replace:
+                with eng.connect() as c:
+                    c.execute(text("DELETE FROM historical_injury_report WHERE game_date = :d"),
+                              {'d': d})
+                    c.commit()
             inserted, rt, rp = insert_report_rows(eng, df, d, ts, team_resolver, player_resolver)
             total_inserted += inserted
             total_resolved_team += rt

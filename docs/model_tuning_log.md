@@ -2388,6 +2388,7 @@ the latter skipped without a database). `.github/workflows/pipeline.yml` runs th
 invariant inside the built image and refuses to push `:latest` if it fails.
 
 *Found along the way (not fixed by this change):*
+*(Note 2026-11-13, later: fixes built for the first two items: nba_api 1.12.0 restores stats.nba.com access (NBA-side change, 1.11.3 timed out everywhere) and the cp932 crash that kept failed runs from shipping is fixed; the official injury report is now scraped and shipped daily, plus a pre-tip refresh. Kai runs the recovery steps in `preseason_checklist.md` E28.)*
 - **Home ingest has failed every run since 2026-10-28** (stats.nba.com timeouts /
   resets in `logs/home_ingest.log`; last complete drop `2026-10-28T074152Z`). Cloud
   box scores stop at 2026-10-27, so even fixed serving uses stale rolling stats and

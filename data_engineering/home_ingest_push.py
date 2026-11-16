@@ -159,6 +159,17 @@ def export_injury_report(conn, cutoff: str, out_dir: Path) -> dict:
                            "date_col": "game_date", "cutoff": cutoff}}
 
 
+def run_gravity_snapshot() -> None:
+    """Save today's GravityLeaders season-to-date table (gravity_snapshot.py). The
+    endpoint has no date filter, so a day not saved can never be rebuilt. Local
+    MySQL only; never blocks the drop."""
+    try:
+        from data_engineering.gravity_snapshot import snapshot
+        snapshot(get_engine(), et_today(), log=log)
+    except Exception as e:  # noqa: BLE001
+        log(f"gravity: snapshot FAILED - {type(e).__name__}: {e}")
+
+
 def run_schema_check() -> dict:
     """nba_api schema + data-arrival check (api_schema_check.py). Never blocks the
     drop; the result rides in the manifest and the cloud loader turns each alert
@@ -288,6 +299,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="Export locally, don't upload.")
     ap.add_argument("--skip-injuries", action="store_true",
                     help="Skip the official injury-report scrape.")
+    ap.add_argument("--skip-gravity", action="store_true",
+                    help="Skip the daily GravityLeaders snapshot (gravity_snapshot.py).")
     ap.add_argument("--skip-schema-check", action="store_true",
                     help="Skip the nba_api schema check (data_engineering/api_schema_check.py).")
     ap.add_argument("--injuries-only", action="store_true",
@@ -303,6 +316,8 @@ def main() -> int:
     fetch_ok = True if args.skip_fetch else run_fetch()
     if not args.skip_injuries:
         run_injury_scrape()
+    if not args.skip_gravity:
+        run_gravity_snapshot()
     api_schema = None if args.skip_schema_check else run_schema_check()
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")

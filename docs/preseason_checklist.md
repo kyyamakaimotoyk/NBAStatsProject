@@ -134,6 +134,16 @@ Kai runs these, in order:
       nightly loader log should show `api_schema OK` and no `ERROR: API_DATA_GAP` (those
       fire until the box scores since 2026-10-28 have landed). Runbook: README "When
       nba_api or an endpoint changes".
+- [ ] **Gravity snapshots (added 2026-11-16).** Create the table once (local MySQL):
+      `mysql -u <your_user> -p nba_data < sql/create_gravity_leaders_daily.sql`.
+      Then store the final 2025-26 values once (needed for proposal E31):
+      `python data_engineering/gravity_snapshot.py --date 2026-07-31`.
+      From then on, the nightly home ingest logs `gravity: N rows stored for <date>`.
+      Until the table exists it logs `table ... missing` and carries on.
+- [ ] **Raw archive (added 2026-11-16).** After the next ingest, `data\raw_api\` fills
+      with one folder per endpoint. Include it in PC backups (only copy). Optional: once
+      the catch-up has run, `backfill_from_raw.py --table <t> --insert-missing --dry-run`
+      shows any game whose insert failed after a successful fetch.
 - [ ] Locally, before pushing: `python -m unittest tests.test_serving_parity -v`
       (2 tests, ~40 s, both must pass).
 - [ ] `git push`. CI rebuilds the pipeline image; the new **Serving invariant**

@@ -12,7 +12,7 @@ files are `model_tuning_log.md` (~2,060 lines) and `aws_deployment_plan.md`
 
 | Question | Canonical source |
 |---|---|
-| Why is the model built this way? Was X tried? | [`model_tuning_log.md`](model_tuning_log.md): master table at the top (one row per experiment, E1-E26 team, P1-P7 player), then one `## <date> — Experiment N` section each. `grep -n "^## 20" docs/model_tuning_log.md` lists them. |
+| Why is the model built this way? Was X tried? | [`model_tuning_log.md`](model_tuning_log.md): master table at the top (one row per experiment, E1-E28 team, P1-P7 player, plus proposed-not-run rows E29-E32 / P8-P9 marked "Proposed"), then one `## <date> — Experiment N` section each. `grep -n "^## 20" docs/model_tuning_log.md` lists them. |
 | What changed recently, and where is it written up? | [`CHANGELOG.md`](CHANGELOG.md) |
 | Big-picture model critique and roadmap | [`model_assessment_2026-07.md`](model_assessment_2026-07.md) (+ 2026-10-30 Addendum) |
 | Which features the production models use | `core/features.py` (toggles + E22 keep-list), not any doc |
@@ -30,7 +30,7 @@ inside; **lab** = learning notes, not project state.
 
 | Doc | Lines | Status | What it is |
 |---|---|---|---|
-| [`model_tuning_log.md`](model_tuning_log.md) | 2060 | live, append-only | Canonical experiment log, E1-E26 + P1-P7. Past entries frozen; corrections are dated inline notes. |
+| [`model_tuning_log.md`](model_tuning_log.md) | 2525 | live, append-only | Canonical experiment log, E1-E28 + P1-P7, proposals E29-E32 / P8-P9. Past entries frozen; corrections are dated inline notes. |
 | [`CHANGELOG.md`](CHANGELOG.md) | — | live | Dated change history linking to everything below |
 | [`model_assessment_2026-07.md`](model_assessment_2026-07.md) | 450 | frozen + addendum | July 2026 review: RF-worse premise false, feature saturation, Vegas gap, impact metrics. §2.3 margin claim corrected 2026-10-30. |
 | [`articles.md`](articles.md) | 620 | live | /articles backlog + publication log, disclosure line, figures rule, product ideas P-1/P-2 |

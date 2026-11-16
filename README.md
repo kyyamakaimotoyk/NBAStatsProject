@@ -413,6 +413,7 @@ contract. Then it compares three things:
 | API now vs the accepted baseline (`data_engineering/api_schema_baseline.json`) | columns added or removed, frames or endpoints that disappeared or fail | `API_SCHEMA_CHANGED` |
 | API now vs the MySQL table | new columns we drop at insert (candidates for experiments); stored columns the API stopped sending (NULL from now on) | report only |
 | Fill rate in MySQL, last 14 days vs the 60 before (columns the pipeline reads) | data that stopped arriving although the column still exists; tables with no rows while games were played | `API_DATA_GAP` |
+| Installed nba_api endpoint list vs the baseline, and the endpoints our code imports | an endpoint we import marked deprecated or removed (alert); new endpoints in a release (note, no email) | `API_SCHEMA_CHANGED` / `NOTE:` |
 
 The result goes into the S3 drop's manifest. The cloud loader prints each alert as
 `ERROR: API_...`, which sends email through the existing pipeline-errors alarm.
@@ -431,14 +432,35 @@ in those files. A new consumer file has to be added to `CONSUMERS` in the check.
 **When an alert arrives:**
 1. On the home PC: `python data_engineering/api_schema_check.py --write-doc`, then read the alerts and §1-2 of the report.
 2. `API_SCHEMA_CHANGED`, removed column: if the report marks it as read (bold / "In API now: NO"), the features built from it go NaN for new games. They are then median-filled at serving, the E28 failure mode. Find a replacement column or retrain without it.
-3. `API_SCHEMA_CHANGED`, new column: no data is lost (the importer drops it at insert, `main_refactored._align_to_table`). To keep it, add the column to the MySQL and RDS tables (Kai runs the `ALTER TABLE`s), then backfill if wanted.
+3. `API_SCHEMA_CHANGED`, new column: no data is lost. The table drops it at insert (`main_refactored._align_to_table`), but the raw archive keeps it. To keep it in the table, run `python data_engineering/backfill_from_raw.py --table T --columns C --dry-run`; it prints the `ALTER TABLE` to run on MySQL and RDS. Then run it without `--dry-run` to fill every archived game, and re-ship with `home_ingest_push.py --skip-fetch --window-days N` so RDS gets the values.
 4. `API_DATA_GAP`: first rule out an ingest outage (`logs\home_ingest.log`, `DB INSERT FAILED` lines). Otherwise the NBA stopped publishing that data. Check a few games with `--game-id`.
 5. Once the change is understood and handled: `python data_engineering/api_schema_check.py --accept` (rewrites the baseline; commit it). `API_DATA_GAP` clears by itself when data arrives again.
 
+**Raw response archive.** The importer saves every response as received before
+anything is dropped, as one gzipped JSON file per endpoint per game:
+`data/raw_api/<Endpoint>/<season>/<gameId>.json.gz` (`data_engineering/raw_api_archive.py`;
+git-ignored, local only, override the location with `NBA_RAW_API_DIR`). That covers
+box scores and `LeagueGameFinder` calls, plus the daily gravity table. `backfill_from_raw.py`
+replays it offline. `--columns` fills a newly added column; `--insert-missing` inserts games
+whose fetch worked but whose insert failed. It marks those games as done so the
+importer doesn't fetch them again. The archive starts 2026-11-16, so a new column can only be
+backfilled that far without re-fetching. Back the folder up with the rest of the PC: it
+is the only copy.
+
+**Gravity snapshots.** `GravityLeaders` (nba_api 1.11.4+, data from 2025-26) gives
+season-to-date player "gravity" with no date filter, so history exists only if it's
+saved daily. The home ingest stores one snapshot per day in `gravity_leaders_daily`
+(`data_engineering/gravity_snapshot.py`, `--skip-gravity` to skip; table from
+`sql/create_gravity_leaders_daily.sql`, local MySQL only). A pre-game feature may
+only use `snapshot_date <= game date`. The experiments that would use it are E31, E32
+and P8 in the tuning log's master table.
+
 **Upgrading nba_api:** install the new version in a scratch venv and run the check
 with `--write-doc` against the local DB *before* changing `requirements.txt`. The
-"New in API" / "Gone from API" columns of §1 are the upgrade's diff. Testing that
-calls succeed is not enough: 1.12.0 fetched fine and still failed every insert.
+"New in API" / "Gone from API" columns of §1 are the upgrade's diff, and §0 lists
+endpoints that are new, removed or deprecated. Also read the nba_api changelog for new
+endpoints worth a proposal in the tuning log. Testing that calls succeed is not enough:
+1.12.0 fetched fine and still failed every insert.
 
 **Record of changes**
 
@@ -449,6 +471,8 @@ nba_api 1.11.3 → 1.12.0 (2026-11-16, probe game `0022600042`):
 | New | every V3/V2 box-score frame (19 tables) | `homeTeamId`, `awayTeamId` | no (repeats `game_list`) | Every insert failed (MySQL 1054) until `_align_to_table`; now dropped at insert |
 | Renamed | `boxscoresummaryv2_other_stats` | `LAST_GAME_VISITOR_TEAM_CITY1` → `LAST_GAME_VISITOR_TEAM_ABBREVIATION` | no (V2 summary not fetched for 2025-26+ games) | Old column NULL from now on |
 | Removed | — | none | — | — |
+| New endpoint (1.11.4) | `GravityLeaders` | season-to-date player gravity | gravity snapshot (from 2026-11-15) | proposals E31 / E32 / P8 |
+| Deprecated (1.11.4-1.12.0) | V2 advanced/four-factors/misc/scoring/usage/traditional box scores, `PlayByPlay(V2)`, `ScoreboardV2`, `LeagueLeaders`, `AssistLeaders`, `AssistTracker`, `PlayoffPicture` | — | none of them | none |
 | Never sent (found by the check, predates 1.12.0) | `boxscoreplayertrackv3_team` | `speed` (NULL in all 81,728 stored rows) | team feature code, not in the production set | rolling `speed` features have always been empty |
 
 Production team model at the upgrade: 168 of its 252 features are rolling box-score

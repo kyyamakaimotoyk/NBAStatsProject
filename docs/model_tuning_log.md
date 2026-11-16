@@ -52,6 +52,12 @@ The headline metric on this dataset is **walk-forward W5 accuracy** (RF/XGB/NN t
 | **E26** | **Common retrain schedule + all-walk-forward 2025-26 track record** (articles.md P-2) | Writing article #11 found the public 2025-26 record compares two processes: XGB = monthly walk-forward `wf_` rows; RF/NN = mostly retrospective rows logged May 22-27 2026 by a preseason-trained bundle (stale E13 calibrator). Like-for-like, RF is the best model; on the mixed record it looks like the worst. The weekly `train` stage also had silent-skip paths. | `modeling/retrain_models.py` (per-model isolation, missing library = failure, post-train bundle-sync check, `ERROR: RETRAIN_FAILED`); `modeling/bundle_sync.py` + nightly `MODEL_BUNDLE_SYNC` alert; `walkforward_backfill.py --supersede-non-wf`; `scripts/ship_wf_predictions.py` (RDS via S3 `version_window`); `scripts/check_track_record.py` (read-only audit). | Dry run: 1,837 rows (RF supersedes 832, NN 818, XGB fills 187 Apr-Jun gaps); feature count matches existing wf_ rows (567). E19/E20/E21 "live" rows re-audited: of the 178 graded Apr-Jun pairs per model, **0 were logged before tip-off**. Only 59 RF / 45 NN served 2025-26 rows were pre-game. | **Code shipped 2026-10-30**; DB rebuild + RDS ship + cloud verification = Kai — §E26 below |
 | **E27** | **Win probability from the margin: p = Φ(margin/σ)** | Early 2026-27 the classifier (pick, win %) and regressor (margin) pointed at different teams on 15–37% of live games. Deriving the probability from the margin makes them agree by construction. Does it cost accuracy or probability quality? | `experiments/e27_margin_prob.py`: frozen snapshot, production 252-col set, 21 monthly windows from 2023-10 (n=4,032), RF/XGB/NN × 3 seeds; arms are transforms of the SAME fitted heads (clf_raw, clf_iso, Φ with σ by probit MLE on the eval slice [primary], Φ with residual-SD σ). `experiments/e27_live_check.py`: σ fit on graded 2025-26 walk-forward rows from the public API, tested on 170 graded 2026-27 live rows per model. Gates pre-registered in `experiments/specs/e27_margin_prob.json`. | **Backtest**: RF passes (log loss −0.0055, p=.014; ECE .036→.015; acc +0.45pp n.s.); XGB fails acc non-inferiority (CI lo −1.6pp; Oct–Nov −2.6pp, significant); NN fails log loss (CI hi +0.009). **Live 2026-27**: fails every gate for every model — margin-sign picks −6.5 to −9.4pp (RF/NN significant), log loss +0.026 to +0.055. The live margins are degenerate (RF margin SD 1.1 vs 6.0 last season) → led to E28. | **REJECTED 2026-11-13** — revisit for RF only after E28's serving fix |
 | **E28** | **Live serving-path audit: why the 2026-27 margins collapsed** | E27's live leg found every production regressor nearly constant this season (RF predicts ≈ home by 2.7 for every game). Last season's walk-forward rows came from the training feature table; every live prediction comes from a separate live feature builder. | `experiments/e28_serving_audit.py`: builds the live feature vector exactly as the nightly job does for real games, lists bundle features it never produces, compares live vs training-table values for the same games, and scores both through the same bundle. Read-only (local MySQL + bundles). | **Root cause confirmed.** The live builder never produces 21 of the 252 model features (32 of 573 pre-prune), incl. **all four ELO columns (#1 and #2 in RF regressor importance), last-10 win %, DIFF slot/availability columns** → NaN → training median. 44.5% of RF regressor importance sits on never-produced columns. Same bundle, same 29 games (2025-26): RF margin SD 8.9 (table) → 4.0 (live); XGB 14.7 → 9.2. Early 2026-27 replay: RF SD 2.2 / mean +2.7, matching the logged 1.1 / +2.7. Rolling L5/L10 match the table exactly. No train/serve parity test exists. | **Investigation open 2026-11-13** — §E28 *(Note 2026-11-13, later: fix BUILT — serving now runs the training pipeline with games as placeholders; parity identical on all 573 columns across 6 dates; early 2026-27 replay RF margin SD 1.3 → 6.1, splits 16% → 7%. Not deployed; §E28 Step 2.)* |
+| **E29** | **Team defensive-matchup aggregates from `boxscoredefensivev2`** (proposed) | The schema review (2026-11-16) found this table stored for every game since 2019-20 (~1,200 games a season) and read by nothing. Defender-attributed matchup FG%, switches and partial possessions describe defensive scheme and quality; opponent shooting % only sees the outcome. | Aggregate player rows to team-games, roll L5/L10 inside `compute_team_game_features` (E28 single path), A/B vs the E22 incumbent with `loop_ab.py`: W5 10 seeds, pre-registered superiority gate, plus the 21-window diagnostic. Details §"Proposed experiments 2026-11-16". | — | **Proposed 2026-11-16** (data in hand, runnable now) |
+| **E30** | **Stored-but-unused box-score columns, grouped ablation** (proposed) | `docs/api_schema_report.md` §3 lists ~40 numeric team columns we store and never read (hustle splits, midrange/FT/assisted-split scoring shares, estimated ratings, contested/rim FG%). E22 found the feature pool saturated, but it was only ever drawn from the columns already read. | One grouped arm (the candidate list in the details section) vs the E22 incumbent, W5 10 seeds, superiority gate. Only if the group passes: E22-style permutation inside it. Housekeeping either way: drop team `speed` from the rolling list (NULL in all 81,728 rows). | — | **Proposed 2026-11-16** (runnable now; prior: null) |
+| **E31** | **Prior-season gravity roster aggregates (team)** (proposed) | `GravityLeaders` (nba_api 1.11.4+) measures how much a player pulls defenders, which box scores don't capture. Final 2025-26 values are fetchable now; earlier seasons don't exist. | Store the 2025-26 final table once. Build E25-style pregame-honest, MPG-weighted roster aggregates (HOME/AWAY/DIFF) for 2026-27 games. No history for a W5 A/B, so a pre-registered **residual screen** on post-E28-fix 2026-27 games comes first: partial correlation with the production margin residual, bootstrap CI. A full A/B only if the screen passes. | — | **Proposed 2026-11-16**; earliest ~2027-01-20 (≥400 post-fix games) |
+| **E32** | **In-season gravity from daily snapshots (team)** (proposed) | GravityLeaders is season-to-date with no date filter: as-of values exist only because `gravity_snapshot.py` saves one table per day (from 2026-11-15). | As-of-date roster aggregates (snapshot_date ≤ game date). End of 2026-27: residual screen as in E31. 2027-28: full W5 A/B, both arms trained only on snapshot-era games. | — | **Proposed 2026-11-16**; screen 2027-04, A/B 2028-04 |
+| **P8** | **Gravity in the player model: own gravity + vacated teammate gravity** (proposed) | P3 (prior-season eRAPTOR) was null, but gravity is closer to shot creation and defensive attention than an impact metric. When a high-gravity teammate sits, the others' open looks should shrink. | Player's own prior-season and as-of gravity (on/off-ball splits) plus "vacated gravity" (sum over Out teammates; extends group B vacated minutes/usage) for PTS/AST/3PA/3PM. `loop_player_ab.py` once a 2026-27 fold exists; screen first. | — | **Proposed 2026-11-16**; earliest end of 2026-27 regular season |
+| **P9** | **Defender matchups (`BoxScoreMatchupsV3`) for player projections** (proposed) | Not ingested. Available back to at least 2022-23 (probed 2026-11-16: 169-243 matchup rows a game) with partial possessions, points and FG allowed per offense/defense pair. | Data pilot first: do players' PTS residuals vs Marcel track the quality of the defenders who guarded them in recent meetings? Only if yes: ingest the endpoint (~5k calls home backfill + table + archive), build expected-primary-defender features, P-protocol A/B. | — | **Proposed 2026-11-16** (needs a new ingest; highest cost) |
 
 ---
 
@@ -2401,3 +2407,119 @@ invariant inside the built image and refuses to push `:latest` if it fails.
 Deploy steps and checks: `docs/preseason_checklist.md` "E28 — single serving path".
 Model redevelopment is deferred until ~3 weeks of fixed live predictions exist;
 the replay suggests the models are healthy when fed the right inputs.
+
+---
+
+## 2026-11-16 — Proposed experiments E29-E32, P8-P9 (from the nba_api 1.12.0 data review; not yet run)
+
+**Status: proposals only.** Nothing below has been run. Each one gets its own `##`
+section when it runs, with the gate below copied in as the pre-registration (or a
+dated deviation note if it changes). Source of the ideas: the 1.12.0 upgrade review
+(nba_api changelog 1.11.4-1.12.0, endpoint probes 2026-11-16) and the generated
+column map `docs/api_schema_report.md` (§3 = stored but unused columns).
+
+**Rules every proposal inherits**
+- Noise-aware evaluation (E12): multi-seed, paired tests; single-run deltas are noise.
+- Priors from earlier nulls: E22 found the team feature pool saturated; E25 (team) and
+  P3 (player) found prior-season impact metrics redundant with ELO + availability-aware
+  slot impacts. Expect nulls and size the effort accordingly.
+- E28 single serving path: a new team feature goes into
+  `feature_engineering.compute_team_game_features` and nowhere else;
+  `tests/test_serving_parity.py` and `scripts/check_serving_invariants.py` must pass.
+- Pregame honesty: as-of values only (`shift(1)` for box-score rolls,
+  `snapshot_date <= game date` for gravity, official Out/Doubtful for rosters, as in E25).
+- Public copy never names the features (articles.md disclosure line).
+
+### E29 — Team defensive-matchup aggregates (`boxscoredefensivev2_player`)
+- **Hypothesis:** rolling team aggregates of defender-attributed matchup data improve
+  W5 margin MAE / accuracy over the E22 incumbent. That data is matchup FG% and 3P%
+  allowed, switches per partial possession, and matchup turnovers forced.
+- **Data:** stored for every game since 2019-20 (1,055-1,230 games a season); the team
+  frame carries only ids, so aggregate the player rows (`matchupMinutes`,
+  `partialPossessions`, `switchesOn`, `playerPoints`, `matchupFieldGoalsMade/Attempted`,
+  `matchupThreePointersMade/Attempted`, `matchupTurnovers`, `matchupAssists`).
+  2026-27 coverage is lagging (defensive data posts days late; the schema check watches it).
+- **Method:** team-game sums → rates (FG% allowed, points per partial possession,
+  switch rate) → L5/L10 HOME/AWAY/DIFF; `loop_ab.py` W5 10 seeds + 21-window diagnostic.
+- **Gate (superiority):** augmented arm better on W5 margin MAE in ≥7/10 seeds with a
+  paired p<.05 on the pooled seeds, and no significant accuracy loss. Otherwise reject.
+- **Prior / risk:** moderate-low. Matchup FG% allowed overlaps opponent eFG% (already in);
+  switch rate is the genuinely new signal.
+
+### E30 — Stored-but-unused box-score columns, grouped ablation
+- **Hypothesis:** the E22 saturation result was bounded by the columns we happened to
+  read; adding the unread numeric team columns as one group does not improve W5.
+  This is a null-confirmation run. It is still worth doing because it closes the question cheaply.
+- **Candidate group** (team tables, L5/L10 rolls): hustle `screenAssistPoints`,
+  `offensiveBoxOuts`, `defensiveBoxOuts`, `looseBallsRecoveredOffensive/Defensive`,
+  `boxOutPlayerRebounds`; scoring `percentagePointsMidrange2pt`,
+  `percentagePointsFreeThrow`, `percentagePointsOffTurnovers`,
+  `percentageAssisted2pt/3pt`, `percentageUnassisted2pt/3pt`; advanced
+  `estimatedOffensiveRating/DefensiveRating/NetRating`, `estimatedPace`, `pacePer40`,
+  `reboundPercentage`, `assistRatio`, `estimatedTeamTurnoverPercentage`; playertrack
+  `contestedFieldGoalPercentage`, `uncontestedFieldGoalsPercentage`,
+  `defendedAtRimFieldGoalPercentage`, `freeThrowAssists`.
+- **Gate:** same superiority gate as E29 for the whole group. Only if it passes: E22
+  permutation importance inside the group to keep a subset.
+- **Housekeeping regardless of outcome:** team `speed` is NULL in all 81,728 stored rows
+  (the API never sends it). Remove it from `rolling_stats` so the frame stops carrying
+  all-NaN columns (not in the production set, so no model change).
+
+### E31 — Prior-season gravity roster aggregates (team)
+- **Hypothesis:** an MPG-weighted, pregame-available roster gravity (prior-season
+  `AVGGRAVITYSCORE`, on/off-ball splits) explains part of the production margin
+  residual on 2026-27 games.
+- **Data:** GravityLeaders exists from 2025-26 (2024-25 returns nothing). Store the final
+  2025-26 table once, labelled at season end:
+  `python data_engineering/gravity_snapshot.py --date 2026-07-31` (needs
+  `sql/create_gravity_leaders_daily.sql` first). Join on PLAYERID; no name matching needed.
+- **Why a residual screen, not an A/B:** prior-season values exist only for 2026-27
+  games, so there is no history to train an augmented arm on.
+- **Screen (pre-registered):** post-E28-fix 2026-27 games (≥400), partial correlation of
+  DIFF gravity with the production margin residual, controlling for ELO_DIFF;
+  bootstrap 95% CI must exclude 0 *and* |r| ≥ 0.08. Pass → design an A/B for 2027-28
+  with both arms trained on gravity-era games only.
+- **Earliest:** ~2027-01-20. **Prior:** low (E25 twin), but gravity measures attention /
+  spacing, which eRAPTOR does not, so the result is not a foregone conclusion.
+
+### E32 — In-season gravity from daily snapshots (team)
+- **Hypothesis:** as-of season-to-date gravity adds information that last-season values
+  (E31) and rolling box scores lack (role changes, trades, breakouts).
+- **Data:** `gravity_leaders_daily`, one snapshot per day from 2026-11-15 (the first ~4
+  weeks of 2026-27 are missing; early-season values are noisy small samples, so weight
+  by FRAMES or start the feature after ~15 games).
+- **Plan:** end of 2026-27: residual screen as in E31 (compare against E31's). 2027-28: full
+  W5 A/B, both arms trained only on snapshot-era games so the comparison stays clean.
+- **Earliest:** screen 2027-04, A/B 2028-04.
+
+### P8 — Gravity in the player model
+- **Hypotheses:** (a) a player's own gravity (prior-season, then as-of) improves
+  PTS / AST / 3PA / 3PM MAE beyond rolling usage and rates; (b) **vacated gravity** (sum
+  of Out teammates' gravity) explains how teammates' 3PA and efficiency move when a
+  star sits. This extends the adopted group B (vacated minutes / usage).
+- **Method:** screen first (residual vs the production P-model on 2026-27 player-games),
+  then `loop_player_ab.py` (P-protocol: folds × seeds [42,7,202]) once a 2026-27 fold exists.
+- **Gate:** significant MAE gain on ≥1 target in ≥2/3 seeds with no significant loss
+  elsewhere (P6-style non-inferiority on the rest).
+- **Earliest:** end of the 2026-27 regular season. **Prior:** P3 null; (b) is the more
+  promising half.
+
+### P9 — Defender matchups (`BoxScoreMatchupsV3`) for player projections
+- **Hypothesis:** the quality of the defenders a player is likely to draw (points / FG%
+  allowed per partial possession, rolling) improves PTS and 3PM projections.
+- **Data:** not ingested. Probed 2026-11-16: available for 2022-23 through 2026-27
+  (169-243 offense/defense pair rows a game) with `matchupMinutes`,
+  `partialPossessions`, `playerPoints`, `matchupFieldGoalsMade/Attempted`,
+  `switchesOn`, `helpBlocks`, `shootingFouls`.
+- **Step 1, data pilot (cheap):** fetch a sample season, test whether players' PTS
+  residuals vs Marcel track the quality of the defenders who guarded them in recent
+  meetings. Stop if not.
+- **Step 2, only if the pilot passes:** add the endpoint to the importer (table +
+  `ENDPOINT_FRAMES` + archive; ~5k-call home backfill), predict the likely primary
+  defender from previous meetings and positions, P-protocol A/B.
+- **Prior:** modest; assignments shift with lineups. This is the most expensive proposal.
+
+**Considered, not proposed:** the new `homeTeamId`/`awayTeamId` columns repeat
+`game_list`. The new `ist_round_nullable` filter (NBA Cup rounds) affects only league
+dashboards we don't use. The neutral-site Cup semifinals and final are 3 games a year, too
+few to model separately.

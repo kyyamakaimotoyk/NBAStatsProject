@@ -49,6 +49,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from data_engineering import raw_api_archive  # noqa: E402
+
 BASELINE_PATH = ROOT / "data_engineering" / "api_schema_baseline.json"
 DOC_PATH = ROOT / "docs" / "api_schema_report.md"
 KEEP_LIST_PATH = ROOT / "core" / "e22_keep_columns_top250.json"
@@ -74,7 +76,11 @@ ENDPOINT_FRAMES = [
 SKIPPED_FOR_NEW_GAMES = {t for m, c, f in ENDPOINT_FRAMES if m == "boxscoresummaryv2" for t in f.values()}
 # Columns the importer adds itself (add_game_id=True), so the API never sends them.
 ADDED_BY_IMPORTER = {"boxscoresummaryv2_summary": ["GAME_ID"], "boxscoresummaryv2_referee": ["GAME_ID"],
-                     "boxscoresummaryv2_inactive_players": ["GAME_ID"]}
+                     "boxscoresummaryv2_inactive_players": ["GAME_ID"],
+                     "gravity_leaders_daily": ["snapshot_date", "season", "season_type", "fetched_at_utc"]}
+# Season-level endpoints that legitimately return nothing in the offseason: a
+# failure there is a note, not an alert, unless games were played recently.
+SEASONAL = {"gravity_leaders_daily"}
 
 # Code whose SQL reads the stored tables, by consumer.
 CONSUMERS = {
@@ -140,7 +146,50 @@ def fetch_api_columns(game_id: str, game_date: str | None) -> dict:
         out["schedule (ScheduleLeagueV2)"] = {"columns": list(df.columns), "rows": len(df)}
     except Exception as e:  # noqa: BLE001
         out["schedule (ScheduleLeagueV2)"] = {"error": f"ScheduleLeagueV2: {type(e).__name__}: {str(e)[:150]}"}
+    time.sleep(0.6)
+    from nba_api.stats.endpoints import GravityLeaders
+    from data_engineering.gravity_snapshot import season_for, TABLE as GRAVITY_TABLE
+    try:
+        df = GravityLeaders(season=season_for(date.today()), timeout=60).get_data_frames()[0]
+        out[GRAVITY_TABLE] = {"columns": list(df.columns), "rows": len(df)}
+    except Exception as e:  # noqa: BLE001
+        out[GRAVITY_TABLE] = {"error": f"GravityLeaders: {type(e).__name__}: {str(e)[:150]}"}
     return out
+
+
+USE_SCAN_DIRS = ["data_engineering", "modeling", "orchestration", "api", "scripts", "visualization", "core"]
+
+
+def endpoint_inventory() -> tuple[list[str], list[str]]:
+    """(every endpoint module in the installed nba_api, the ones its source marks
+    deprecated). nba_api flags deprecation with warnings.warn(..., DeprecationWarning)
+    in the endpoint's module, so a text scan finds them without calling anything."""
+    import pkgutil
+    import nba_api.stats.endpoints as eps
+    pkg = Path(eps.__path__[0])
+    mods = sorted(m.name for m in pkgutil.iter_modules(eps.__path__) if not m.name.startswith("_"))
+    dep = sorted(m for m in mods
+                 if "DeprecationWarning" in (pkg / f"{m}.py").read_text(encoding="utf-8", errors="ignore"))
+    return mods, dep
+
+
+def endpoints_we_use() -> dict[str, list[str]]:
+    """{endpoint module: [files importing it]} across production code (deprecated/ and
+    experiments/ excluded)."""
+    out: dict[str, set] = {}
+    pat = re.compile(r"from\s+nba_api\.stats\.endpoints(?:\.(\w+))?\s+import\s+(\([^)]*\)|[^\n]+)")
+    for d in USE_SCAN_DIRS:
+        for f in (ROOT / d).rglob("*.py"):
+            if f.name == "api_schema_check.py":  # the checker's own probes don't count as use
+                continue
+            src = f.read_text(encoding="utf-8", errors="ignore")
+            for mod, names in pat.findall(src):
+                found = [mod] if mod else re.findall(r"\b(\w+)\b", names.replace("as ", " "))
+                for n in found:
+                    n = n.lower()
+                    if n and n not in {"import"}:
+                        out.setdefault(n, set()).add(str(f.relative_to(ROOT)).replace("\\", "/"))
+    return {k: sorted(v) for k, v in out.items()}
 
 
 def check_importer_coverage() -> list[str]:
@@ -318,6 +367,10 @@ def run_check(engine=None, game_id: str | None = None) -> dict:
     feats = team_feature_map(db_cols, usage, aliases)
     fill, rows = fill_rates(engine, db_cols, usage)
     baseline = json.loads(BASELINE_PATH.read_text()) if BASELINE_PATH.exists() else None
+    recent_games = int(pd.read_sql(
+        f"SELECT COUNT(DISTINCT GAME_ID) FROM game_list WHERE GAME_DATE >= "
+        f"'{date.today() - timedelta(days=RECENT_DAYS)}'", engine).iloc[0, 0])
+    in_season = recent_games >= MIN_RECENT_GAMES
 
     from data_engineering.home_ingest_push import SCHEDULE_COLS
     alerts, notes, tables = [], [], {}
@@ -342,8 +395,12 @@ def run_check(engine=None, game_id: str | None = None) -> dict:
         tables[t] = entry
 
         used = set(entry["used"]) if not t.startswith("schedule") else set(SCHEDULE_COLS)
+        if t not in db_cols and not t.startswith("schedule"):
+            notes.append(f"{t}: table not created yet (sql/ has its CREATE TABLE)")
         if a.get("error"):
-            if base is not None or baseline is None:
+            if t in SEASONAL and not in_season:
+                notes.append(f"{t}: no data ({a['error'][:60]}); offseason, not alerting")
+            elif base is not None or baseline is None:
                 alerts.append(f"API_SCHEMA_CHANGED {t}: endpoint failed for {game_id} ({a['error']})")
             continue
         if a.get("rows") == 0 and t not in SKIPPED_FOR_NEW_GAMES:
@@ -356,8 +413,8 @@ def run_check(engine=None, game_id: str | None = None) -> dict:
             alerts.append(f"API_SCHEMA_CHANGED {t}: removed {rem}"
                           + (f" - USED by the pipeline: {hit}" if hit else ""))
         if add:
-            alerts.append(f"API_SCHEMA_CHANGED {t}: new columns {add} (dropped at insert; "
-                          f"add to the table to keep them)")
+            alerts.append(f"API_SCHEMA_CHANGED {t}: new columns {add} (archived raw, dropped at "
+                          f"insert; to keep: ALTER TABLE + backfill_from_raw.py --columns)")
 
     for t, cols in fill.items():
         if t in SKIPPED_FOR_NEW_GAMES:
@@ -371,6 +428,27 @@ def run_check(engine=None, game_id: str | None = None) -> dict:
                    if ps is not None and rs is not None and ps >= FILL_DROP_PRIOR_MIN and rs < ps * FILL_DROP_RATIO]
         if stopped:
             alerts.append(f"API_DATA_GAP {t}: columns stopped filling in the last {RECENT_DAYS} days: {stopped}")
+
+    # --- endpoint inventory: new / removed / deprecated endpoints in the library ---
+    installed, deprecated = endpoint_inventory()
+    used = {m: f for m, f in endpoints_we_use().items() if m in installed or m in (baseline or {}).get("endpoints", [])}
+    for m, files in sorted(used.items()):
+        if m not in installed:
+            alerts.append(f"API_SCHEMA_CHANGED endpoint {m} removed from nba_api {nba_api.__version__} "
+                          f"(imported by {', '.join(files)})")
+        elif m in deprecated:
+            alerts.append(f"API_SCHEMA_CHANGED endpoint {m} is marked deprecated in nba_api "
+                          f"{nba_api.__version__} (imported by {', '.join(files)})")
+    if baseline and baseline.get("endpoints"):
+        new_eps = sorted(set(installed) - set(baseline["endpoints"]))
+        gone_eps = sorted(set(baseline["endpoints"]) - set(installed) - set(used))
+        newly_dep = sorted(set(deprecated) - set(baseline.get("deprecated", [])) - set(used))
+        if new_eps:
+            notes.append(f"new nba_api endpoints available: {new_eps} (candidates: docs/model_tuning_log.md, proposed rows)")
+        if gone_eps:
+            notes.append(f"endpoints removed from nba_api (unused by us): {gone_eps}")
+        if newly_dep:
+            notes.append(f"endpoints newly deprecated (unused by us): {newly_dep}")
 
     missing_cov = check_importer_coverage()
     if missing_cov:
@@ -386,6 +464,9 @@ def run_check(engine=None, game_id: str | None = None) -> dict:
         "alerts": alerts, "notes": notes,
         "tables": tables, "fill": {t: {c: list(v) for c, v in cs.items()} for t, cs in fill.items()},
         "rows": rows, "api": api,
+        "endpoints": {"installed": installed, "deprecated": deprecated, "used": used},
+        "archive": raw_api_archive.inventory(), "archive_dir": (str(raw_api_archive.raw_dir().relative_to(ROOT)).replace("\\", "/")
+                        if raw_api_archive.raw_dir().is_relative_to(ROOT) else "$NBA_RAW_API_DIR"),
     }
 
 
@@ -397,7 +478,9 @@ def accept(result: dict) -> None:
             tables.setdefault(t, cols)
     BASELINE_PATH.write_text(json.dumps({
         "nba_api": result["nba_api"], "accepted_at": result["checked_at_utc"],
-        "probe_game": result["probe_game"], "tables": tables}, indent=1) + "\n")
+        "probe_game": result["probe_game"], "tables": tables,
+        "endpoints": result["endpoints"]["installed"],
+        "deprecated": result["endpoints"]["deprecated"]}, indent=1) + "\n")
     print(f"baseline written: {BASELINE_PATH.relative_to(ROOT)} ({len(tables)} frames, nba_api {result['nba_api']})")
 
 
@@ -429,10 +512,30 @@ def write_doc(result: dict) -> None:
         L += [f"- {a}" for a in result["alerts"]]
         L.append("")
 
+    ep = result.get("endpoints") or {}
+    if ep:
+        L.append("## 0. Endpoints\n")
+        L.append(f"nba_api {result['nba_api']} ships {len(ep['installed'])} stats endpoints; "
+                 f"{len(ep['deprecated'])} are marked deprecated in its source. We import "
+                 f"{len(ep['used'])}:\n")
+        L.append("| Endpoint | Status | Imported by |")
+        L.append("|---|---|---|")
+        for m, files in sorted(ep["used"].items()):
+            st = ("**REMOVED**" if m not in ep["installed"] else
+                  "**DEPRECATED**" if m in ep["deprecated"] else "ok")
+            L.append(f"| `{m}` | {st} | {', '.join(f'`{f}`' for f in files)} |")
+        L.append("")
+        L.append("Deprecated in this version (we use none unless marked above): "
+                 + ", ".join(f"`{m}`" for m in ep["deprecated"]) + "\n")
+        unused = [m for m in ep["installed"] if m not in ep["used"] and m not in ep["deprecated"]]
+        L.append(f"<details><summary>{len(unused)} other endpoints available, not used</summary>\n\n"
+                 + ", ".join(f"`{m}`" for m in unused) + "\n\n</details>\n")
+
     L.append("## 1. Schema differences (API now vs MySQL table)\n")
-    L.append("New = the API sends it, the table has no column for it (dropped at insert; "
-             "candidate for experiments). Gone = the table has it, the API no longer sends it "
-             "(NULL for new games). **Bold** = the pipeline reads it.\n")
+    L.append("New = the API sends it, the table has no column for it: dropped at insert but kept "
+             "in the raw archive (§4), so `ALTER TABLE` + `backfill_from_raw.py --columns` "
+             "recovers it for every archived game. Gone = the table has it, the API no longer "
+             "sends it (NULL for new games). **Bold** = the pipeline reads it.\n")
     L.append("| Table | New in API | Gone from API | Endpoint status |")
     L.append("|---|---|---|---|")
     for t, e in result["tables"].items():
@@ -484,6 +587,18 @@ def write_doc(result: dict) -> None:
         unused = [c for c in api_cols if c not in e["used"]]
         if unused and not t.startswith("schedule"):
             L.append(f"| `{t}` | {', '.join(unused)} |")
+    L.append("")
+    L.append("## 4. Raw response archive\n")
+    L.append(f"Every fetched response is saved as received under `{result.get('archive_dir', 'data/raw_api')}` "
+             "(`raw_api_archive.py`, local only). Files per endpoint and season:\n")
+    arch = result.get("archive") or {}
+    if arch:
+        L.append("| Endpoint | Files by season |")
+        L.append("|---|---|")
+        for e, seasons in sorted(arch.items()):
+            L.append(f"| `{e}` | " + ", ".join(f"{s}: {n}" for s, n in sorted(seasons.items())) + " |")
+    else:
+        L.append("(empty: the archive starts with the first ingest after 2026-11-16)")
     L.append("")
     if result["notes"]:
         L.append("## Notes\n")

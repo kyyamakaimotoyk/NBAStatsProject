@@ -118,3 +118,6 @@ outputs/*
 
 # Experiment-loop frozen feature snapshot (regenerate via scripts/export_features_snapshot.py)
 nba_ml_features_frozen.csv
+
+# Raw nba_api response archive (data_engineering/raw_api_archive.py) - large, local only
+data/raw_api/

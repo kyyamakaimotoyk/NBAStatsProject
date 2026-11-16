@@ -15,6 +15,7 @@ from nba_api.stats.endpoints import (
     boxscorescoringv3, boxscoresummaryv2, boxscoresummaryv3, boxscoretraditionalv3,
     boxscoreusagev3, leaguegamefinder
 )
+from data_engineering import raw_api_archive
 from tqdm import tqdm
 import pandas as pd
 import sqlalchemy as sql
@@ -451,6 +452,11 @@ class NBADataImporter:
                     timeout=NBA_API_TIMEOUT_SECONDS,
                 )
                 gamefinder_df = gamefinder.get_data_frames()[0]
+                raw_api_archive.save_endpoint(
+                    gamefinder,
+                    f"{str(api_from).replace('/', '-')}_to_{str(api_to).replace('/', '-')}"
+                    f"_{datetime.datetime.now(datetime.timezone.utc):%Y%m%dT%H%M%SZ}",
+                    season="by_date")
                 break
             except Exception as e:
                 last_err = e
@@ -818,10 +824,15 @@ class NBADataImporter:
                 last_err = None
                 for attempt in range(NBA_API_MAX_RETRIES):
                     try:
-                        boxscore_data = endpoint_class(
+                        ep = endpoint_class(
                             game_id=str(game_id),
                             timeout=NBA_API_TIMEOUT_SECONDS,
-                        ).get_data_frames()
+                        )
+                        boxscore_data = ep.get_data_frames()
+                        # Raw response archive, before any column is dropped
+                        # (raw_api_archive.py; backfill_from_raw.py replays it).
+                        if raw_api_archive.save_endpoint(ep, str(game_id).zfill(10)) is None:
+                            self.logger.warning(f"raw archive: could not save {endpoint_name} for game {game_id}")
                         break
                     except Exception as fetch_err:
                         last_err = fetch_err
@@ -1304,6 +1315,13 @@ class NBADataImporter:
                 continue
 
             endpoint_class, db_table, df_index, add_game_id = endpoints[table_name]
+
+            # Rows already present (e.g. filled offline by backfill_from_raw.py
+            # --insert-missing): appending again would duplicate them.
+            if status.get(table_name) == 1:
+                self.logger.info(f"{table_name} already has rows for game {game_id}; marking done")
+                import_results[table_name] = 1
+                continue
 
             # Attempt import (with API caching)
             # Result: 0=failed, 1=success with data, 2=success but no data

@@ -67,6 +67,58 @@ class Coverage(unittest.TestCase):
         self.assertEqual(len(keep), len(set(keep)))
 
 
+class Endpoints(unittest.TestCase):
+    def test_inventory_and_usage(self):
+        installed, deprecated = asc.endpoint_inventory()
+        self.assertIn("boxscoretraditionalv3", installed)
+        self.assertIn("boxscoreadvancedv2", deprecated)      # marked in nba_api 1.12.0
+        used = asc.endpoints_we_use()
+        self.assertIn("gravityleaders", used)
+        self.assertNotIn("data_engineering/api_schema_check.py", {f for fs in used.values() for f in fs})
+        self.assertFalse(set(used) & set(deprecated), "we import a deprecated endpoint")
+
+
+class RawArchive(unittest.TestCase):
+    """Save -> read -> replay round trip, offline, with a synthetic resultSets response."""
+
+    def test_round_trip(self):
+        import os
+        import tempfile
+        from data_engineering import raw_api_archive as raw
+        from nba_api.stats.endpoints import LeagueGameFinder
+        from nba_api.stats.library.http import NBAStatsResponse
+        payload = json.dumps({"resultSets": [{"name": "LeagueGameFinderResults",
+                                              "headers": ["GAME_ID", "PTS", "NEW_COL"],
+                                              "rowSet": [["0022600001", 110, 7]]}]})
+        ep = LeagueGameFinder(get_request=False)
+        ep.nba_response = NBAStatsResponse(response=payload, status_code=200, url="u")
+        with tempfile.TemporaryDirectory() as d:
+            old = os.environ.get("NBA_RAW_API_DIR")
+            os.environ["NBA_RAW_API_DIR"] = d
+            try:
+                path = raw.save_endpoint(ep, "0022600001")
+                self.assertTrue(str(path).endswith(os.path.join("LeagueGameFinder", "2026-27", "0022600001.json.gz")))
+                body = raw.read(path)
+                self.assertEqual(body["response"], payload)        # byte-for-byte
+                df = raw.replay(LeagueGameFinder, body).get_data_frames()[0]
+                self.assertEqual(list(df.columns), ["GAME_ID", "PTS", "NEW_COL"])
+                self.assertEqual(raw.inventory(), {"LeagueGameFinder": {"2026-27": 1}})
+            finally:
+                if old is None:
+                    os.environ.pop("NBA_RAW_API_DIR", None)
+                else:
+                    os.environ["NBA_RAW_API_DIR"] = old
+
+    def test_season_and_gravity_season(self):
+        from datetime import date
+        from data_engineering.raw_api_archive import season_of_game
+        from data_engineering.gravity_snapshot import season_for
+        self.assertEqual(season_of_game("0022600236"), "2026-27")
+        self.assertEqual(season_of_game(22500007), "2025-26")
+        self.assertEqual(season_for(date(2026, 11, 15)), "2026-27")
+        self.assertEqual(season_for(date(2026, 7, 31)), "2025-26")
+
+
 class LoaderHook(unittest.TestCase):
     def _run(self, block):
         buf = io.StringIO()
@@ -77,6 +129,11 @@ class LoaderHook(unittest.TestCase):
     def test_alerts_print_error_token(self):
         out = self._run({"nba_api": "9.9", "alerts": ["API_SCHEMA_CHANGED t: removed ['x']", "API_DATA_GAP u"]})
         self.assertEqual(out.count("ERROR: API_"), 2)
+
+    def test_notes_never_use_error_token(self):
+        out = self._run({"nba_api": "9.9", "alerts": [], "notes": ["new nba_api endpoints available: ['x']"]})
+        self.assertIn("NOTE: api_schema: new nba_api endpoints", out)
+        self.assertNotIn("ERROR", out)
 
     def test_ok_and_missing_block_are_quiet(self):
         self.assertNotIn("ERROR", self._run({"nba_api": "9.9", "alerts": [], "probe_game": "1"}))

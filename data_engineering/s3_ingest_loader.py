@@ -55,6 +55,8 @@ def report_api_schema(stamp: str, block: dict | None) -> None:
     alerts = block.get("alerts") or []
     for a in alerts:
         _log(f"ERROR: {a} [drop {stamp}, nba_api {block.get('nba_api')}]")
+    for n in block.get("notes") or []:  # informational (new endpoints, ...): no email
+        _log(f"NOTE: api_schema: {n}")
     if not alerts:
         _log(f"{stamp}: api_schema OK (nba_api {block.get('nba_api')}, "
              f"probe game {block.get('probe_game')})")

@@ -413,6 +413,7 @@ contract. Then it compares three things:
 | API now vs the accepted baseline (`data_engineering/api_schema_baseline.json`) | columns added or removed, frames or endpoints that disappeared or fail | `API_SCHEMA_CHANGED` |
 | API now vs the MySQL table | new columns we drop at insert (candidates for experiments); stored columns the API stopped sending (NULL from now on) | report only |
 | Fill rate in MySQL, last 14 days vs the 60 before (columns the pipeline reads) | data that stopped arriving although the column still exists; tables with no rows while games were played | `API_DATA_GAP` |
+| Game coverage: regular-season / play-in / playoff games from the last 30 days, at least 3 days old, vs the rows in each box-score table; rows with a NULL game id | single games missing from a table the pipeline reads (alert; other tables: note); unpublished box scores stored as empty rows | `API_DATA_GAP` |
 | Installed nba_api endpoint list vs the baseline, and the endpoints our code imports | an endpoint we import marked deprecated or removed (alert); new endpoints in a release (note, no email) | `API_SCHEMA_CHANGED` / `NOTE:` |
 
 The result goes into the S3 drop's manifest. The cloud loader prints each alert as
@@ -434,6 +435,15 @@ in those files. A new consumer file has to be added to `CONSUMERS` in the check.
 2. `API_SCHEMA_CHANGED`, removed column: if the report marks it as read (bold / "In API now: NO"), the features built from it go NaN for new games. They are then median-filled at serving, the E28 failure mode. Find a replacement column or retrain without it.
 3. `API_SCHEMA_CHANGED`, new column: no data is lost. The table drops it at insert (`main_refactored._align_to_table`), but the raw archive keeps it. To keep it in the table, run `python data_engineering/backfill_from_raw.py --table T --columns C --dry-run`; it prints the `ALTER TABLE` to run on MySQL and RDS. Then run it without `--dry-run` to fill every archived game, and re-ship with `home_ingest_push.py --skip-fetch --window-days N` so RDS gets the values.
 4. `API_DATA_GAP`: first rule out an ingest outage (`logs\home_ingest.log`, `DB INSERT FAILED` lines). Otherwise the NBA stopped publishing that data. Check a few games with `--game-id`.
+   **Games missing from a table** (`N of M games ... have no rows`, or `rows with NULL game id`):
+   the importer records each table per game in `importedgamesmemory` (1 = rows stored,
+   2 = the NBA had nothing, 0 = failed; 0 is retried every run, 2 until the game is
+   10 days old). A game past that window with status 1 or 2 but no rows is never
+   fetched again. Check one with `--game-id` or a direct fetch; if the NBA has it now,
+   set that column to 0 for those games and run the ingest. Template (2026-11-16,
+   every table and season): `sql/recover_2026_11_missing_boxscores.sql`, which also
+   deletes the NULL-id rows. Empty answers for a table that is often empty by nature
+   (inactive players, last five meetings) are normal.
 5. Once the change is understood and handled: `python data_engineering/api_schema_check.py --accept` (rewrites the baseline; commit it). `API_DATA_GAP` clears by itself when data arrives again.
 
 **Raw response archive.** The importer saves every response as received before

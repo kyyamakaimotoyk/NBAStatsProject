@@ -134,6 +134,26 @@ Kai runs these, in order:
       nightly loader log should show `api_schema OK` and no `ERROR: API_DATA_GAP` (those
       fire until the box scores since 2026-10-28 have landed). Runbook: README "When
       nba_api or an endpoint changes".
+- [ ] **Recover skipped box scores (added 2026-11-16).** The catch-up showed games
+      the importer had given up on: empty rows stored for unpublished box scores
+      (gameId NULL, game marked done) and a 2-try limit on "no data". 515 games are
+      affected: ~230 in 2012-13, ~127 in 2024-25, 66 in 2026-27, a few elsewhere.
+      The importer fix is in the code (null-row filter, retries until a game is 10
+      days old), so run the SQL only once that code is on the PC:
+      1. `mysql -u <your_user> -p nba_data < sql/recover_2026_11_missing_boxscores.sql`
+         (deletes the NULL-id rows, sets the missing tables' status to 0; the
+         preview SELECTs at the top print the row counts first).
+      2. `.venv\Scripts\python data_engineering\home_ingest_push.py --window-days 30`
+         (re-fetches them: ~2,100 API calls, 30-45 min extra).
+      3. `python data_engineering/api_schema_check.py`: the `API_DATA_GAP` lines for
+         NULL game ids and missing games should be gone, except games the NBA never
+         published (those get status 2 and stay listed only while < 30 days old).
+      4. Decide on RDS: step 2 ships only the 30-day window, so the 2026-27 games
+         reach RDS but the recovered 2012-13 / 2024-25 games stay local. The
+         weekly features build reads RDS, so it still lacks them (~127 games of
+         2024-25 in its training window). To ship them: `home_ingest_push.py
+         --skip-fetch --window-days 700` (the loader replaces per game, so it's
+         safe, but it's a large drop; check the loader log afterwards).
 - [ ] **Gravity snapshots (added 2026-11-16).** Create the table once (local MySQL):
       `mysql -u <your_user> -p nba_data < sql/create_gravity_leaders_daily.sql`.
       Then store the final 2025-26 values once (needed for proposal E31):

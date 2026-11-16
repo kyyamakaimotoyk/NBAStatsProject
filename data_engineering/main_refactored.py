@@ -47,12 +47,49 @@ NBA_API_DEFAULT_WORKERS = 2    # parallel workers for run_import_parallel
 #       endpoint hadn't backfilled when we ran). Status 2 is *provisional* —
 #       we should re-call it on the next pipeline run, until the data appears
 #       or we've tried enough times.
-# We disambiguate by game date vs V3_ENDPOINT_CUTOFF_DATE, and cap retries at
-# MAX_STATUS2_RETRIES (using the existing number_reattempts column on
-# importedgamesmemory — no schema change required).
+# We disambiguate by game date vs V3_ENDPOINT_CUTOFF_DATE. Provisional status 2
+# is retried on every run until the game is STATUS2_RETRY_DAYS old: the NBA
+# posts player/tracking/defensive data a day or more late and sometimes returns
+# a transiently empty body, and a fixed cap of 2 attempts gave up on games
+# whose data appeared later (2026-11-16: 6 games lost their player box scores,
+# 70 their tracking/defensive player rows). Tables where an empty answer is
+# normal (OFTEN_EMPTY_TABLES, e.g. no inactive players) keep the attempt cap
+# MAX_STATUS2_RETRIES (number_reattempts on importedgamesmemory), as do games
+# whose date is unknown.
 # ---------------------------------------------------------------------------
 V3_ENDPOINT_CUTOFF_DATE = datetime.date(2025, 10, 1)
 MAX_STATUS2_RETRIES = 2
+STATUS2_RETRY_DAYS = 10
+OFTEN_EMPTY_TABLES = {
+    'nba_data.boxscoresummaryv3_inactive_players',
+    'nba_data.boxscoresummaryv3_last_five_meetings',
+}
+# Never fetched for games after V3_ENDPOINT_CUTOFF_DATE (recorded as status 2 by design).
+SUMMARY_V2_TABLES = {
+    'nba_data.boxscoresummaryv2_summary',
+    'nba_data.boxscoresummaryv2_referee',
+    'nba_data.boxscoresummaryv2_inactive_players',
+    'nba_data.boxscoresummaryv2_other_stats',
+    'nba_data.boxscoresummaryv2_game_info',
+}
+
+
+class EndpointNotPublished(Exception):
+    """The NBA answered, but the box score isn't there yet (null blocks, or
+    rows without ids). Recorded as status 2 so the time-based retry picks it up."""
+
+
+def _is_null_block_parse_error(exc):
+    """nba_api's V3 parsers call .get() on homeTeam/awayTeam/statistics and
+    crash when the NBA sends null for a box score that isn't published yet."""
+    if not isinstance(exc, (AttributeError, TypeError)):
+        return False
+    tb = exc.__traceback__
+    while tb is not None:
+        if '_parsers' in tb.tb_frame.f_code.co_filename:
+            return True
+        tb = tb.tb_next
+    return False
 
 
 def _is_transient_api_error(exc):
@@ -575,7 +612,7 @@ class NBADataImporter:
 
         Status values: 1=success, 2='API has no data right now', 0=failed.
         The disambiguation of status 2 is the whole point — see the module-level
-        comment above MAX_STATUS2_RETRIES.
+        comment above STATUS2_RETRY_DAYS.
 
         Returns (classification, retry_cols):
           ('done',          [])     - finished, skip on next run.
@@ -600,16 +637,26 @@ class NBADataImporter:
         if game_date is not None and game_date < V3_ENDPOINT_CUTOFF_DATE:
             return ('done', [])
         attempts = int(row.get('number_reattempts', 0) or 0)
-        if attempts >= MAX_STATUS2_RETRIES:
-            return ('done', [])
-        return ('retry_status2', status2_cols)
+        if game_date is None:
+            return ('done', []) if attempts >= MAX_STATUS2_RETRIES else ('retry_status2', status2_cols)
+        age_days = (datetime.date.today() - game_date).days
+        retry = []
+        for c in status2_cols:
+            if c in SUMMARY_V2_TABLES:
+                continue  # not fetched for post-cutoff games
+            if c in OFTEN_EMPTY_TABLES:
+                if attempts < MAX_STATUS2_RETRIES:
+                    retry.append(c)
+            elif age_days <= STATUS2_RETRY_DAYS:
+                retry.append(c)
+        return ('retry_status2', retry) if retry else ('done', [])
 
     def get_imported_games(self):
         """Return GAME_IDs whose processing is 'done' (no further attempts needed).
 
         See _classify_game_status for the rules. In particular, recent games with
         status-2 columns are NOT 'done' until either the data appears or
-        number_reattempts >= MAX_STATUS2_RETRIES.
+        the game is older than STATUS2_RETRY_DAYS.
         """
         try:
             df = pd.read_sql("SELECT * FROM nba_data.importedGamesMemory", self.connection)
@@ -663,8 +710,8 @@ class NBADataImporter:
                 n_retry = len(games_to_reimport) - n_failure
                 self.logger.info(
                     f"get_games_needing_reimport: {len(games_to_reimport)} games "
-                    f"({n_failure} with hard failures, {n_retry} status-2 retries within "
-                    f"cap of {MAX_STATUS2_RETRIES})"
+                    f"({n_failure} with hard failures, {n_retry} status-2 retries: games up to "
+                    f"{STATUS2_RETRY_DAYS} days old)"
                 )
             return games_to_reimport
         except sql.exc.ProgrammingError:
@@ -761,6 +808,21 @@ class NBADataImporter:
 
         return status
 
+    def _drop_rows_without_ids(self, df, table_name, game_id):
+        """Drop rows whose game id (or row id, e.g. teamId/personId) is NULL.
+        Ids come from table_config; a column the frame doesn't have is ignored."""
+        cfg = self.table_config.get(f'nba_data.{table_name}') or self.table_config.get(table_name)
+        id_cols = [c for c in dict.fromkeys(cfg[:2]) if c in df.columns] if cfg else []
+        if not id_cols:
+            return df
+        keep = df[id_cols].notna().all(axis=1)
+        dropped = int((~keep).sum())
+        if dropped:
+            self.logger.warning(
+                f"⚠️  {table_name}, game {game_id}: dropped {dropped} of {len(df)} rows with NULL "
+                f"{'/'.join(id_cols)} (box score not published yet)")
+        return df[keep]
+
     def _align_to_table(self, df, table_name):
         """Keep only the columns that already exist in `table_name`.
 
@@ -815,6 +877,8 @@ class NBADataImporter:
             if api_cache is not None and endpoint_name in api_cache:
                 # Reuse cached API response
                 boxscore_data = api_cache[endpoint_name]
+                if isinstance(boxscore_data, EndpointNotPublished):
+                    raise boxscore_data
                 self.logger.debug(f"Using cached API response for {endpoint_name}")
             else:
                 # Fetch from API with retry-on-transient-error (timeouts, connection drops).
@@ -827,13 +891,28 @@ class NBADataImporter:
                         ep = endpoint_class(
                             game_id=str(game_id),
                             timeout=NBA_API_TIMEOUT_SECONDS,
+                            get_request=False,
                         )
+                        try:
+                            ep.get_request()  # HTTP, then nba_api's parser
+                        except Exception as parse_err:
+                            if not _is_null_block_parse_error(parse_err):
+                                raise
+                            # Keep the raw body anyway (shows what the NBA sent).
+                            raw_api_archive.save_endpoint(ep, str(game_id).zfill(10))
+                            not_pub = EndpointNotPublished(
+                                f"null box-score blocks (nba_api parser: {parse_err})")
+                            if api_cache is not None:
+                                api_cache[endpoint_name] = not_pub
+                            raise not_pub
                         boxscore_data = ep.get_data_frames()
                         # Raw response archive, before any column is dropped
                         # (raw_api_archive.py; backfill_from_raw.py replays it).
                         if raw_api_archive.save_endpoint(ep, str(game_id).zfill(10)) is None:
                             self.logger.warning(f"raw archive: could not save {endpoint_name} for game {game_id}")
                         break
+                    except EndpointNotPublished:
+                        raise
                     except Exception as fetch_err:
                         last_err = fetch_err
                         if not _is_transient_api_error(fetch_err) or attempt == NBA_API_MAX_RETRIES - 1:
@@ -861,6 +940,14 @@ class NBADataImporter:
                 # Return 2 to indicate: API call succeeded but no data available
                 return 2
 
+            # Rows without ids: when a box score isn't published the parser can
+            # return all-NULL rows (gameId NULL). They used to be inserted and
+            # the game marked done, so the real data was never fetched
+            # (2026-11-16: 1,992 such rows in boxscoreplayertrackv3_team).
+            df = self._drop_rows_without_ids(df, table_name, game_id)
+            if len(df) == 0:
+                return 2
+
             # Save to database (only the columns the table already has; see
             # _align_to_table: nba_api 1.12.0 added homeTeamId/awayTeamId)
             df = self._align_to_table(df, table_name)
@@ -869,6 +956,10 @@ class NBADataImporter:
 
             # Return 1 to indicate: Success with data inserted
             return 1
+
+        except EndpointNotPublished as e:
+            self.logger.warning(f"⚠️  Not published yet: {table_name}, game {game_id} - {e}")
+            return 2  # retried until the game is STATUS2_RETRY_DAYS old
 
         except KeyError as e:
             # KeyError means API response is missing expected keys (resultSet, boxScoreSummary, etc.)

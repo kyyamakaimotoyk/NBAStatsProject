@@ -99,6 +99,15 @@ PRIOR_DAYS = 60
 FILL_DROP_PRIOR_MIN = 0.80   # a column this full before ...
 FILL_DROP_RATIO = 0.5        # ... that falls below half of it recently -> alert
 MIN_RECENT_GAMES = 20        # below this (offseason, outage) the data checks are skipped
+# Game coverage: every regular-season/play-in/playoff game in game_list from the
+# last COVERAGE_DAYS that is more than COVERAGE_GRACE_DAYS old must have rows in
+# each box-score table. Fill rates alone can't see a game with no rows at all
+# (2026-11-16: 6 games lost their player box scores without an alert).
+COVERAGE_DAYS = 30
+COVERAGE_GRACE_DAYS = 3
+COVERAGE_SEASON_PREFIXES = ("2", "4", "5")   # SEASON_ID / GAME_ID[2]: regular, playoffs, play-in
+# Empty for some games by nature (no inactive players, no prior meetings).
+OFTEN_EMPTY = {"boxscoresummaryv3_inactive_players", "boxscoresummaryv3_last_five_meetings"}
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +349,44 @@ def fill_rates(engine, db_cols, usage) -> tuple[dict, dict]:
     return fill, rows
 
 
+def _game_id_sql(insp, table):
+    """(game id column, formatter for ids in SQL) for a box-score table."""
+    tcols = {c["name"]: c for c in insp.get_columns(table)}
+    gid = "gameId" if "gameId" in tcols else "GAME_ID"
+    typ = str(tcols[gid]["type"]).upper()
+    is_text = "CHAR" in typ or "TEXT" in typ
+    return gid, ((lambda i: f"'{str(i).zfill(10)}'") if is_text else (lambda i: str(int(i))))
+
+
+def game_coverage(engine, tables) -> dict:
+    """cov[table] = {"checked": n_games, "missing": [game ids], "null_id_rows": n}.
+    Games: regular season, play-in and playoffs from the last COVERAGE_DAYS,
+    at least COVERAGE_GRACE_DAYS old."""
+    import pandas as pd
+    import sqlalchemy as sa
+    today = date.today()
+    games = pd.read_sql(
+        f"SELECT DISTINCT GAME_ID, SEASON_ID FROM game_list WHERE GAME_DATE >= '{today - timedelta(days=COVERAGE_DAYS)}' "
+        f"AND GAME_DATE <= '{today - timedelta(days=COVERAGE_GRACE_DAYS)}'", engine)
+    ids = sorted({int(g) for g, s in zip(games.GAME_ID, games.SEASON_ID)
+                  if str(s)[:1] in COVERAGE_SEASON_PREFIXES})
+    insp = sa.inspect(engine)
+    cov = {}
+    for t in tables:
+        try:
+            gid, fmt = _game_id_sql(insp, t)
+        except Exception:  # noqa: BLE001 - table missing; reported elsewhere
+            continue
+        nulls = int(pd.read_sql(f"SELECT COUNT(*) FROM `{t}` WHERE `{gid}` IS NULL", engine).iloc[0, 0])
+        have = set()
+        if ids:
+            got = pd.read_sql(f"SELECT DISTINCT `{gid}` AS g FROM `{t}` WHERE `{gid}` IN "
+                              f"({','.join(fmt(i) for i in ids)})", engine).g
+            have = {int(g) for g in got}
+        cov[t] = {"checked": len(ids), "missing": [i for i in ids if i not in have], "null_id_rows": nulls}
+    return cov
+
+
 # ---------------------------------------------------------------------------
 # Run + compare
 # ---------------------------------------------------------------------------
@@ -429,6 +476,29 @@ def run_check(engine=None, game_id: str | None = None) -> dict:
         if stopped:
             alerts.append(f"API_DATA_GAP {t}: columns stopped filling in the last {RECENT_DAYS} days: {stopped}")
 
+    # --- game coverage: whole games missing from a table, rows without a game id ---
+    box_tables = [t for t in api if t in db_cols and not t.startswith("schedule")
+                  and t not in SEASONAL and t not in SKIPPED_FOR_NEW_GAMES and t != "game_list"]
+    coverage = game_coverage(engine, box_tables)
+    gap_notes = []
+    for t, c in coverage.items():
+        read = t in usage and bool(usage[t])
+        if c["missing"] and t not in OFTEN_EMPTY:
+            shown = ", ".join(str(g) for g in c["missing"][:8]) + (" ..." if len(c["missing"]) > 8 else "")
+            msg = (f"{t}: {len(c['missing'])} of {c['checked']} games from the last {COVERAGE_DAYS} days "
+                   f"have no rows ({shown})")
+            if read:
+                alerts.append(f"API_DATA_GAP {msg} - fix: README runbook, \"Games missing from a table\"")
+            else:
+                gap_notes.append(f"{t}: {len(c['missing'])}")
+        if c["null_id_rows"]:
+            (alerts.append if read else notes.append)(
+                f"API_DATA_GAP {t}: {c['null_id_rows']} rows with NULL game id (unpublished box scores "
+                f"stored as empty rows; delete them and reset the games' status)")
+    if gap_notes:
+        notes.append(f"games missing from tables the pipeline doesn't read (last {COVERAGE_DAYS} days): "
+                     + ", ".join(gap_notes))
+
     # --- endpoint inventory: new / removed / deprecated endpoints in the library ---
     installed, deprecated = endpoint_inventory()
     used = {m: f for m, f in endpoints_we_use().items() if m in installed or m in (baseline or {}).get("endpoints", [])}
@@ -477,7 +547,7 @@ def run_check(engine=None, game_id: str | None = None) -> dict:
         "status": "changed" if alerts else "ok",
         "alerts": alerts, "notes": notes,
         "tables": tables, "fill": {t: {c: list(v) for c, v in cs.items()} for t, cs in fill.items()},
-        "rows": rows, "api": api,
+        "rows": rows, "api": api, "coverage": coverage,
         "endpoints": {"installed": installed, "deprecated": deprecated, "used": used},
         "archive": raw_api_archive.inventory(), "archive_dir": (str(raw_api_archive.raw_dir().relative_to(ROOT)).replace("\\", "/")
                         if raw_api_archive.raw_dir().is_relative_to(ROOT) else "$NBA_RAW_API_DIR"),
@@ -614,6 +684,24 @@ def write_doc(result: dict) -> None:
     else:
         L.append("(empty: the archive starts with the first ingest after 2026-11-16)")
     L.append("")
+    cov = result.get("coverage") or {}
+    if cov:
+        n = next(iter(cov.values()))["checked"]
+        L.append("## 5. Game coverage\n")
+        L.append(f"Regular-season, play-in and playoff games from the last {COVERAGE_DAYS} days that are at least "
+                 f"{COVERAGE_GRACE_DAYS} days old ({n} games), and the ones a table has no rows for. "
+                 "Rows with a NULL game id are unpublished box scores stored as empty rows. "
+                 "A gap in a table the pipeline reads raises `API_DATA_GAP`.\n")
+        L.append("| Table | Read by pipeline | Games missing | NULL game id rows |")
+        L.append("|---|---|---|---|")
+        for t, c in sorted(cov.items()):
+            read = "yes" if result["tables"].get(t, {}).get("used") else "no"
+            miss = (f"{len(c['missing'])}: " + ", ".join(str(g) for g in c["missing"][:6])
+                    + (" ..." if len(c["missing"]) > 6 else "")) if c["missing"] else "0"
+            if t in OFTEN_EMPTY and c["missing"]:
+                miss += " (often empty by nature)"
+            L.append(f"| `{t}` | {read} | {miss} | {c['null_id_rows'] or 0} |")
+        L.append("")
     if result["notes"]:
         L.append("## Notes\n")
         L += [f"- {n}" for n in result["notes"]]

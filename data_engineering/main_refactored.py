@@ -888,8 +888,13 @@ class NBADataImporter:
                 last_err = None
                 for attempt in range(NBA_API_MAX_RETRIES):
                     try:
+                        # Always the 10-digit id: the re-import pass passes the
+                        # bigint from importedgamesmemory (22400129), and for an
+                        # unpadded id the NBA returns no player rows and all-NULL
+                        # team rows. Every re-import got empty data until
+                        # 2026-11-16, so late-published games never recovered.
                         ep = endpoint_class(
-                            game_id=str(game_id),
+                            game_id=str(int(game_id)).zfill(10),
                             timeout=NBA_API_TIMEOUT_SECONDS,
                             get_request=False,
                         )

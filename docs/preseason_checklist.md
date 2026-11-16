@@ -138,8 +138,10 @@ Kai runs these, in order:
       the importer had given up on: empty rows stored for unpublished box scores
       (gameId NULL, game marked done) and a 2-try limit on "no data". 515 games are
       affected: ~230 in 2012-13, ~127 in 2024-25, 66 in 2026-27, a few elsewhere.
-      The importer fix is in the code (null-row filter, retries until a game is 10
-      days old), so run the SQL only once that code is on the PC:
+      Root cause, found after the first SQL run recovered 0 games: re-imports
+      fetched the game id unpadded (22400129), and for that id the NBA returns
+      empty box scores. The fix (zero-padded ids) is in the code. Run the SQL again
+      in cmd (PowerShell can't use `<`; see the `source` alternative):
       1. `mysql -u <your_user> -p nba_data < sql/recover_2026_11_missing_boxscores.sql`
          (deletes the NULL-id rows, sets the missing tables' status to 0; the
          preview SELECTs at the top print the row counts first).

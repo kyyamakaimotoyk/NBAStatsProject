@@ -1,11 +1,16 @@
 -- Recovery for box scores the importer skipped (found 2026-11-16).
 --
--- Two problems, fixed in main_refactored.py the same day:
---   1. When the NBA hadn't published a box score, nba_api returned all-NULL rows.
---      They were inserted (gameId NULL) and the game was marked done, so the real
---      data was never fetched: ~0.5% of games in 2012-13, 2024-25 and 2025-26.
---   2. "API returned no data" was retried only twice, then given up; the NBA
---      posts player/tracking data late, so 2026-27 games lost player rows.
+-- Root cause: the importer's re-import pass asked the NBA for the game id as a
+-- bigint (22400129, no leading zeros). For that id the NBA returns no player
+-- rows and all-NULL team rows. So any game whose first fetch failed or came
+-- back early never recovered: its player tables were recorded as "no data",
+-- its team tables got NULL rows marked as success. That's ~0.5% of games in
+-- 2012-13, 2024-25 and 2025-26, plus 2026-27 games fetched before publication.
+-- Fixed in main_refactored.py on 2026-11-16: ids are always zero-padded, rows
+-- without ids are dropped, and "no data" is retried until the game is 10 days old.
+--
+-- Safe to run more than once. The first run (2026-11-16, before the padding
+-- fix) re-fetched with the unpadded id and recovered nothing, so run it again.
 --
 -- What this does:
 --   A. Deletes the all-NULL rows (they join to nothing; no feature reads them).
@@ -16,8 +21,8 @@
 --      from 1996-97). If the NBA still has nothing, the new importer records
 --      status 2 and gives up (game older than 10 days).
 --
--- Run ONLY with the 2026-11-16 importer code in place (null-row filter);
--- the old code would store the empty rows again.
+-- Run ONLY with the importer from commit "Ingest: re-import with zero-padded
+-- game ids" or later in place; older code fetches the wrong id again.
 --
 --   mysql -u <your_user> -p nba_data < sql/recover_2026_11_missing_boxscores.sql
 --   .venv\Scripts\python data_engineering\home_ingest_push.py --window-days 30

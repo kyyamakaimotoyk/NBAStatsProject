@@ -102,5 +102,32 @@ class NullBlockParseError(unittest.TestCase):
         self.assertFalse(mr._is_null_block_parse_error(KeyError('x')))
 
 
+class GameIdPadding(unittest.TestCase):
+    def test_reimport_int_id_is_padded(self):
+        seen = []
+
+        class FakeEndpoint:
+            def __init__(self, game_id, timeout, get_request):
+                seen.append(game_id)
+                self.nba_response = None
+
+            def get_request(self):
+                pass
+
+            def get_data_frames(self):
+                return [pd.DataFrame()]
+
+        imp = importer()
+        orig_save, mr.raw_api_archive.save_endpoint = mr.raw_api_archive.save_endpoint, lambda *a, **k: True
+        orig_sleep, mr.time.sleep = mr.time.sleep, lambda s: None
+        try:
+            self.assertEqual(imp.process_boxscore_endpoint(FakeEndpoint, 'boxscoretraditionalv3_player', 22400129), 2)
+            imp.process_boxscore_endpoint(FakeEndpoint, 'boxscoretraditionalv3_player', '0022600001')
+        finally:
+            mr.time.sleep = orig_sleep
+            mr.raw_api_archive.save_endpoint = orig_save
+        self.assertEqual(seen, ['0022400129', '0022600001'])
+
+
 if __name__ == '__main__':
     unittest.main()

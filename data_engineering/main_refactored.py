@@ -493,6 +493,10 @@ class NBADataImporter:
           - Existing complete row (WL set, single copy) → leave alone.
         """
         try:
+            # Same guard as the box scores: a new LeagueGameFinder column would
+            # otherwise fail the INSERT, and on the refresh path AFTER the DELETE.
+            gamefinder_df = self._align_to_table(gamefinder_df.reset_index(drop=True), 'game_list')
+
             # Pull the existing snapshot once. Need count for dedup and WL for the
             # incomplete-game refresh.
             stmt = """SELECT GAME_ID, TEAM_ID, COUNT(*) AS n,
@@ -751,6 +755,38 @@ class NBADataImporter:
 
         return status
 
+    def _align_to_table(self, df, table_name):
+        """Keep only the columns that already exist in `table_name`.
+
+        nba_api 1.12.0 (2026-11) added `homeTeamId`/`awayTeamId` to every V3/V2
+        box-score frame; appending them failed with MySQL 1054 "Unknown column"
+        and every box score since the upgrade was rejected. The schema stays as
+        is: the extra columns repeat game_list, and the S3 drop and RDS loader
+        expect the existing columns. Each dropped column is logged once per
+        table per process. A table that doesn't exist yet is left to to_sql.
+        """
+        if not hasattr(self, '_table_columns'):
+            self._table_columns = {}
+            self._dropped_logged = set()
+        if table_name not in self._table_columns:
+            try:
+                cols = [c['name'] for c in sql.inspect(self.db_engine).get_columns(table_name)]
+            except sql.exc.NoSuchTableError:
+                cols = None
+            self._table_columns[table_name] = cols
+        cols = self._table_columns[table_name]
+        if not cols:
+            return df
+        known = set(cols)
+        extra = [c for c in df.columns if c not in known]
+        if extra:
+            key = (table_name, tuple(extra))
+            if key not in self._dropped_logged:
+                self._dropped_logged.add(key)
+                self.logger.info(f"{table_name}: dropping API columns not in the table: {extra}")
+            df = df[[c for c in df.columns if c in known]]
+        return df
+
     def process_boxscore_endpoint(self, endpoint_class, table_name, game_id, dataframe_index=0, add_game_id=False, api_cache=None):
         """
         Generic function to process any boxscore endpoint with API response caching (Solution 2)
@@ -814,7 +850,9 @@ class NBADataImporter:
                 # Return 2 to indicate: API call succeeded but no data available
                 return 2
 
-            # Save to database
+            # Save to database (only the columns the table already has; see
+            # _align_to_table: nba_api 1.12.0 added homeTeamId/awayTeamId)
+            df = self._align_to_table(df, table_name)
             df.to_sql(name=table_name, con=self.db_engine, if_exists='append', index=False)
             self.connection.commit()
 
@@ -860,6 +898,14 @@ class NBADataImporter:
                 return 2  # Failed - don't try again
 
         except Exception as e:
+            # Database errors first: their text embeds the INSERT statement and its
+            # parameter values, which can contain '429'/'403' by chance and used to
+            # be reported as "RATE LIMIT ERROR" (2026-11-16).
+            if isinstance(e, sql.exc.SQLAlchemyError):
+                orig = getattr(e, 'orig', None) or e
+                self.logger.error(f"DB INSERT FAILED for {table_name}, game {game_id}: {str(orig)[:300]}")
+                return 0
+
             error_msg = str(e).lower()
 
             # Detect rate limiting errors

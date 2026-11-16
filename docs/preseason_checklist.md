@@ -128,6 +128,12 @@ Kai runs these, in order:
       07:20 in November. Check `logs\home_injuries.log`; on the cloud the
       5:45 PM run should print `availability for <date>: N out/doubtful from the
       official report`. The PC must be awake at that time, like for the main ingest.
+- [ ] **nba_api schema check (added 2026-11-16).** The home side works as soon as the
+      code is on the PC: the next home ingest log shows `[api_schema] ... status: OK/CHANGED`.
+      Cloud email alerts need the image push. After the push and the catch-up rerun, the
+      nightly loader log should show `api_schema OK` and no `ERROR: API_DATA_GAP` (those
+      fire until the box scores since 2026-10-28 have landed). Runbook: README "When
+      nba_api or an endpoint changes".
 - [ ] Locally, before pushing: `python -m unittest tests.test_serving_parity -v`
       (2 tests, ~40 s, both must pass).
 - [ ] `git push`. CI rebuilds the pipeline image; the new **Serving invariant**

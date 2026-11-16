@@ -41,6 +41,25 @@ def _log(msg: str) -> None:
     print(f"[s3_ingest] {msg}", flush=True)
 
 
+def report_api_schema(stamp: str, block: dict | None) -> None:
+    """Surface the home-side nba_api schema check (data_engineering/api_schema_check.py).
+
+    Each alert is printed with the token ERROR, so it emails through the existing
+    pipeline-errors metric filter (infra/alarms.tf, Alarm 5). Alerts repeat on every
+    nightly drop until someone reviews them and runs `api_schema_check.py --accept`
+    (schema changes) or the data starts arriving again (API_DATA_GAP).
+    Drops without the block (injuries-only, older drops) are skipped silently.
+    """
+    if not block:
+        return
+    alerts = block.get("alerts") or []
+    for a in alerts:
+        _log(f"ERROR: {a} [drop {stamp}, nba_api {block.get('nba_api')}]")
+    if not alerts:
+        _log(f"{stamp}: api_schema OK (nba_api {block.get('nba_api')}, "
+             f"probe game {block.get('probe_game')})")
+
+
 def _table_exists(conn, name: str) -> bool:
     q = sa.text(
         "SELECT COUNT(*) FROM information_schema.tables "
@@ -120,6 +139,7 @@ def load_pending(engine=None, bucket: str | None = None, dry_run: bool = False) 
              f"{manifest.get('window_days')}d, fetch_ok={manifest.get('fetch_ok')}")
         if dry_run:
             continue
+        report_api_schema(stamp, manifest.get("api_schema"))
 
         try:
             drop_rows = 0

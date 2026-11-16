@@ -18,6 +18,7 @@ Jump to: [Project Overview](#project-overview) · [Key Documentation](#key-docum
 **[Part III — Data engineering: ETL](#part-iii--data-engineering-etl)**
 - [Database Connection](#database-connection)
 - [Scripts Overview](#scripts-overview)
+- [When nba_api or an endpoint changes](#when-nba_api-or-an-endpoint-changes) — nightly schema check, alerts, runbook, record of changes
 
 **[Part IV — Machine learning: feature engineering](#part-iv--machine-learning-feature-engineering)**
 - [Feature Engineering](#feature-engineering) — rolling stats · fatigue · player slots · pre-game injury source (E7) · projections · matchups
@@ -393,6 +394,71 @@ python data_engineering/player_impact.py -p -d 2023-01-01 -d 2023-07-01 -d 2024-
 # Show team impact report
 python data_engineering/player_impact.py --report --team 1610612747
 ```
+
+## When nba_api or an endpoint changes
+
+stats.nba.com endpoints change shape without notice, and nba_api releases follow
+them. Both can silently break the ingest. In November 2026 the box scores stopped
+loading for about three weeks: first every call timed out (fixed by nba_api 1.12.0),
+then every insert failed on two new columns. So the shape of the data is now checked
+on every nightly run.
+
+**What runs automatically.** `data_engineering/api_schema_check.py` runs inside the
+nightly home ingest (`home_ingest_push.py`). It fetches one finished game from every
+endpoint the importer stores, plus `LeagueGameFinder` and the `ScheduleLeagueV2`
+contract. Then it compares three things:
+
+| Comparison | Finds | Alert token |
+|---|---|---|
+| API now vs the accepted baseline (`data_engineering/api_schema_baseline.json`) | columns added or removed, frames or endpoints that disappeared or fail | `API_SCHEMA_CHANGED` |
+| API now vs the MySQL table | new columns we drop at insert (candidates for experiments); stored columns the API stopped sending (NULL from now on) | report only |
+| Fill rate in MySQL, last 14 days vs the 60 before (columns the pipeline reads) | data that stopped arriving although the column still exists; tables with no rows while games were played | `API_DATA_GAP` |
+
+The result goes into the S3 drop's manifest. The cloud loader prints each alert as
+`ERROR: API_...`, which sends email through the existing pipeline-errors alarm.
+Alerts repeat on every nightly drop until they are dealt with. The full result of
+the last run is in `logs/api_schema_last.json`. `--skip-schema-check` turns the
+check off for one run.
+
+**Where columns go: `docs/api_schema_report.md`** (generated, don't edit). For every
+stored column the pipeline reads, it shows which code reads it: team features,
+player impact (slot / availability features), player model, serving, or site API.
+It also shows how many production team-model features are built directly from the
+column, whether the API still sends it, and its recent fill rate. It ends with the
+stored columns nothing reads yet. The pipeline reads are found by scanning the SQL
+in those files. A new consumer file has to be added to `CONSUMERS` in the check.
+
+**When an alert arrives:**
+1. On the home PC: `python data_engineering/api_schema_check.py --write-doc`, then read the alerts and §1-2 of the report.
+2. `API_SCHEMA_CHANGED`, removed column: if the report marks it as read (bold / "In API now: NO"), the features built from it go NaN for new games. They are then median-filled at serving, the E28 failure mode. Find a replacement column or retrain without it.
+3. `API_SCHEMA_CHANGED`, new column: no data is lost (the importer drops it at insert, `main_refactored._align_to_table`). To keep it, add the column to the MySQL and RDS tables (Kai runs the `ALTER TABLE`s), then backfill if wanted.
+4. `API_DATA_GAP`: first rule out an ingest outage (`logs\home_ingest.log`, `DB INSERT FAILED` lines). Otherwise the NBA stopped publishing that data. Check a few games with `--game-id`.
+5. Once the change is understood and handled: `python data_engineering/api_schema_check.py --accept` (rewrites the baseline; commit it). `API_DATA_GAP` clears by itself when data arrives again.
+
+**Upgrading nba_api:** install the new version in a scratch venv and run the check
+with `--write-doc` against the local DB *before* changing `requirements.txt`. The
+"New in API" / "Gone from API" columns of §1 are the upgrade's diff. Testing that
+calls succeed is not enough: 1.12.0 fetched fine and still failed every insert.
+
+**Record of changes**
+
+nba_api 1.11.3 → 1.12.0 (2026-11-16, probe game `0022600042`):
+
+| Change | Where | Columns | Read by the pipeline? | Effect |
+|---|---|---|---|---|
+| New | every V3/V2 box-score frame (19 tables) | `homeTeamId`, `awayTeamId` | no (repeats `game_list`) | Every insert failed (MySQL 1054) until `_align_to_table`; now dropped at insert |
+| Renamed | `boxscoresummaryv2_other_stats` | `LAST_GAME_VISITOR_TEAM_CITY1` → `LAST_GAME_VISITOR_TEAM_ABBREVIATION` | no (V2 summary not fetched for 2025-26+ games) | Old column NULL from now on |
+| Removed | — | none | — | — |
+| Never sent (found by the check, predates 1.12.0) | `boxscoreplayertrackv3_team` | `speed` (NULL in all 81,728 stored rows) | team feature code, not in the production set | rolling `speed` features have always been empty |
+
+Production team model at the upgrade: 168 of its 252 features are rolling box-score
+stats traced to a single stored column. By table: `boxscoreadvancedv3_team` 42,
+`game_list` 33, `boxscoreplayertrackv3_team` 30, `boxscoremiscv3_team` 24,
+`boxscorefourfactorsv3_team` 15, `boxscorescoringv3_team` 15, `boxscorehustlev2_team` 9.
+The other 84 are built from several inputs: ELO, win % and streak from `game_list`
+results; rest and schedule from dates; slot / availability / impact features from the
+player box scores via `player_impact` plus the official injury report. None of the
+columns they read changed.
 
 ---
 

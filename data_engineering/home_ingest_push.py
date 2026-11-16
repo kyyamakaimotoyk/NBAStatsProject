@@ -159,6 +159,24 @@ def export_injury_report(conn, cutoff: str, out_dir: Path) -> dict:
                            "date_col": "game_date", "cutoff": cutoff}}
 
 
+def run_schema_check() -> dict:
+    """nba_api schema + data-arrival check (api_schema_check.py). Never blocks the
+    drop; the result rides in the manifest and the cloud loader turns each alert
+    into an ERROR line (email). Full result: logs/api_schema_last.json."""
+    try:
+        from data_engineering import api_schema_check as asc
+        result = asc.run_check()
+        asc.print_summary(result)
+        (ROOT / "logs").mkdir(exist_ok=True)
+        (ROOT / "logs" / "api_schema_last.json").write_text(
+            json.dumps(result, indent=1, default=str))
+        return asc.manifest_block(result)
+    except Exception as e:  # noqa: BLE001 - a broken check must alert, not crash the ingest
+        log(f"api_schema: check FAILED - {type(e).__name__}: {e}")
+        return {"status": "check_failed", "nba_api": None, "probe_game": None, "notes": [],
+                "alerts": [f"API_SCHEMA_CHECK_FAILED: {type(e).__name__}: {str(e)[:200]}"]}
+
+
 def run_fetch() -> bool:
     """Run the existing nba_api ingest (same command the pipeline stage uses)."""
     cmd = [sys.executable, str(ROOT / "data_engineering" / "main_refactored.py")]
@@ -270,6 +288,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="Export locally, don't upload.")
     ap.add_argument("--skip-injuries", action="store_true",
                     help="Skip the official injury-report scrape.")
+    ap.add_argument("--skip-schema-check", action="store_true",
+                    help="Skip the nba_api schema check (data_engineering/api_schema_check.py).")
     ap.add_argument("--injuries-only", action="store_true",
                     help="Pre-tip refresh: scrape TODAY's official injury report and ship "
                          "only that table (no box-score fetch, no schedule). Scheduled "
@@ -283,6 +303,7 @@ def main() -> int:
     fetch_ok = True if args.skip_fetch else run_fetch()
     if not args.skip_injuries:
         run_injury_scrape()
+    api_schema = None if args.skip_schema_check else run_schema_check()
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
     out_dir = Path(tempfile.mkdtemp(prefix=f"nba_ingest_{stamp}_"))
@@ -310,6 +331,8 @@ def main() -> int:
         "schedule_rows": schedule_rows,
         "tables": tables,
     }
+    if api_schema is not None:
+        manifest["api_schema"] = api_schema
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     total_rows = sum(t["rows"] for t in tables.values())
     log(f"export: {len(tables)} tables, {total_rows} rows total")

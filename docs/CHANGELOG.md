@@ -11,6 +11,10 @@ documented (commit)`. Areas: **model**, **eval**, **data**, **ops**, **infra**,
 
 ## 2026-11
 
+**2026-11-16**
+- data — nba_api schema check: `data_engineering/api_schema_check.py` runs in every home ingest. It compares the API's columns with an accepted baseline (`api_schema_baseline.json`, accepted at 1.12.0) and with MySQL, and checks that the columns the pipeline reads are still filling. Alerts ride in the drop manifest; the S3 loader prints them as `ERROR: API_SCHEMA_CHANGED` / `API_DATA_GAP` (email via the existing ERROR alarm; needs the image push). Column-to-consumer/feature map generated into `docs/api_schema_report.md`; runbook + record of the 1.12.0 changes in README "When nba_api or an endpoint changes". Found: team `speed` has never been filled (always-empty rolling features, not in production). `game_list` inserts get the same column guard
+- data — Box-score inserts fixed for nba_api 1.12.0: every V2/V3 frame gained `homeTeamId`/`awayTeamId`, so every box score since the upgrade failed with MySQL 1054 "Unknown column" (game_list itself loaded). The importer now keeps only columns the table already has, with no schema change. DB insert errors are no longer mislabelled "RATE LIMIT ERROR" (the INSERT parameters happened to contain "429") → `data_engineering/main_refactored.py` `_align_to_table`
+
 **2026-11-13**
 - data — Home ingest fix (built, Kai runs): nba_api 1.11.3 → 1.12.0 (NBA-side change made every stats.nba.com call time out since 2026-10-27; 1.12.0 works for all ingest endpoints); cp932 log crash that blocked every failed run from shipping anything fixed → `preseason_checklist.md` E28
 - data — Official injury reports: daily home ingest now backfills/re-scrapes `historical_injury_report` and ships it (date_window); new `home_ingest_push.py --injuries-only` + `scripts/home_injuries.bat` pre-tip task ships today's report before the 5:45 PM ET run; scraper gains `--replace` / `--force-dates` → `preseason_checklist.md` E28

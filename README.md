@@ -74,7 +74,7 @@ The README is the map; the deep dives live in `docs/`. **Start with [`docs/INDEX
 | [`docs/aws_deployment_plan.md`](docs/aws_deployment_plan.md) | The plan that took the project public on AWS |
 | [`docs/playoff_improvement_plan.md`](docs/playoff_improvement_plan.md) | Playoff-specific modeling improvements |
 | [`docs/preseason_checklist.md`](docs/preseason_checklist.md) | Calendar-bound ops — what must happen before opening night |
-| [`docs/DATABASE_SCHEMA.md`](docs/DATABASE_SCHEMA.md) | Table-by-table database schema reference |
+| [`docs/DATABASE_SCHEMA.md`](docs/DATABASE_SCHEMA.md) | Every table: where it lives (local / RDS), rows, coverage, purpose, columns. Regenerate with `python scripts/gen_db_schema_doc.py` |
 
 **Experiment & validation reports** (point-in-time write-ups; the tuning log stays canonical)
 

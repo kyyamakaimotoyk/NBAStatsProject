@@ -12,6 +12,7 @@ documented (commit)`. Areas: **model**, **eval**, **data**, **ops**, **infra**,
 ## 2026-11
 
 **2026-11-16**
+- docs — `DATABASE_SCHEMA.md` rebuilt (was May 2026; 23 of 51 tables missing, stale counts). Hand-written conventions / relationships / queries on top; table index (where it lives, exact rows, coverage, purpose, referencing code) and columns + indexes generated from local MySQL by `scripts/gen_db_schema_doc.py`. `--check` and a nightly schema-check note flag tables without a description
 - data — Raw nba_api response archive: the importer saves every response as received (`data/raw_api/`, `raw_api_archive.py`, local), and `backfill_from_raw.py` replays it offline (`--columns` for a newly added column, `--insert-missing` for failed inserts). The importer's re-import pass no longer re-appends tables that already have rows → README "When nba_api or an endpoint changes"
 - data — Daily `GravityLeaders` snapshot (`gravity_snapshot.py`, new table `gravity_leaders_daily`, local only; Kai creates it from `sql/create_gravity_leaders_daily.sql`). The endpoint is season-to-date with no date filter, so history exists only from the day we start saving → README
 - data — Schema check now also covers endpoints: installed nba_api endpoints vs baseline (new ones as notes), alerts if an endpoint we import is marked deprecated or removed, GravityLeaders shape, raw-archive inventory; loader prints notes as `NOTE:` (no email). Baseline re-accepted → `docs/api_schema_report.md` §0/§4

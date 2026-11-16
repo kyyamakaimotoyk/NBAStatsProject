@@ -450,6 +450,20 @@ def run_check(engine=None, game_id: str | None = None) -> dict:
         if newly_dep:
             notes.append(f"endpoints newly deprecated (unused by us): {newly_dep}")
 
+    # Tables with no description in the schema-doc generator (docs/DATABASE_SCHEMA.md)
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("gen_db_schema_doc", ROOT / "scripts" / "gen_db_schema_doc.py")
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        undocumented = [t for t in sa.inspect(engine).get_table_names()
+                        if t not in gen.TABLE_INFO and gen.auto_info(t) is None]
+        if undocumented:
+            notes.append(f"tables without a description in scripts/gen_db_schema_doc.py: {undocumented} "
+                         f"(add to TABLE_INFO, then regenerate docs/DATABASE_SCHEMA.md)")
+    except Exception as e:  # noqa: BLE001 - doc hygiene must never fail the check
+        notes.append(f"schema-doc coverage not checked ({type(e).__name__}: {e})")
+
     missing_cov = check_importer_coverage()
     if missing_cov:
         alerts.append(f"API_SCHEMA_CHANGED checker: importer tables not covered by ENDPOINT_FRAMES: {missing_cov}")

@@ -11,6 +11,9 @@ documented (commit)`. Areas: **model**, **eval**, **data**, **ops**, **infra**,
 
 ## 2026-11
 
+**2026-11-17**
+- data — Skipped box scores recovered locally: 3,082 of 3,379 missing (game, table) pairs, NULL-id rows deleted, 9 never-imported 2025-11-21 games imported. 2024-11-17 onward re-shipped to RDS (drop `2026-11-17T034656Z`); 2012-13 and older recoveries stay local (Kai's call). The next weekly retrain sees ~127 more 2024-25 games. `sql/dedupe_importedgamesmemory.sql` removes 791 duplicate status rows and adds the table's first primary key (Kai runs). Open items → `docs/preseason_checklist.md` "Ingest follow-ups (2026-11-17)"
+
 **2026-11-16**
 - data — Root cause of the skipped box scores: the importer's re-import pass fetched the game id unpadded (`22400129`, the bigint from `importedgamesmemory`), and for that id the NBA returns no player rows and all-NULL team rows. So no re-import ever recovered a game. Ids are now always zero-padded. The first recovery run recovered 0 of 515 games; the SQL is idempotent and gets re-run → `docs/preseason_checklist.md`
 - data — Importer no longer gives up on box scores the NBA posts late: all-NULL rows (unpublished box score, `gameId` NULL) are dropped instead of stored as success; nba_api's parser crash on null blocks is recorded as "not published yet" (warning, not ERROR); "no data" is retried until the game is 10 days old instead of twice. Schema check gains a game-coverage test (games missing from a table, NULL-id rows → `API_DATA_GAP`). Found: 515 games with skipped tables (mostly 2012-13, 2024-25, 2026-27); recovery in `sql/recover_2026_11_missing_boxscores.sql` (Kai runs) → README "When nba_api or an endpoint changes", `docs/preseason_checklist.md`

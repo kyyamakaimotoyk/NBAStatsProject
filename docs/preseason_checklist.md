@@ -134,7 +134,15 @@ Kai runs these, in order:
       nightly loader log should show `api_schema OK` and no `ERROR: API_DATA_GAP` (those
       fire until the box scores since 2026-10-28 have landed). Runbook: README "When
       nba_api or an endpoint changes".
-- [ ] **Recover skipped box scores (added 2026-11-16).** The catch-up showed games
+- [x] **Recover skipped box scores (added 2026-11-16; done locally 2026-11-17).**
+      Result: 3,082 of 3,379 missing (game, table) pairs recovered, all NULL-id rows
+      deleted, 2012-13 and 2024-25 complete. Left: ~26 older games where the NBA has
+      no defensive/tracking data (status 2, correct) and 22600189 tracking (never
+      published). The 9 never-imported 2025-11-21 games were imported separately.
+      `--skip-fetch --window-days 730` shipped 2024-11-17 onward (2,807 games,
+      904,843 rows, drop `2026-11-17T034656Z`). Follow-ups are in "Ingest follow-ups
+      (2026-11-17)" below. Original steps, for reference:
+      The catch-up showed games
       the importer had given up on: empty rows stored for unpublished box scores
       (gameId NULL, game marked done) and a 2-try limit on "no data". 515 games are
       affected: ~230 in 2012-13, ~127 in 2024-25, 66 in 2026-27, a few elsewhere.
@@ -190,6 +198,46 @@ Kai runs these, in order:
       played games (`playoff_series_context`), so a scheduled playoff game would
       get zeros. They are not in the production column set today; build series
       context for scheduled games before any model uses them.
+
+## Ingest follow-ups (2026-11-17)
+Open items from the nba_api 1.12 / skipped-box-score session (CHANGELOG 2026-11-16,
+README "When nba_api or an endpoint changes"). Kai runs the DB/AWS steps.
+Closed by Kai on 2026-11-17 and not tracked: shipping 2012-13 and older recovered
+games to RDS, the schema check's network-failure alerts (the outage was known and
+scheduled), why the 2025-11-21 games were never imported, and 1995-96.
+- [ ] **Verify the RDS load of the re-ship** (drop `2026-11-17T034656Z`):
+      `aws logs filter-log-events --log-group-name /ecs/nba-game-predictor-pipeline --start-time 1763351000000 --filter-pattern "\"2026-11-17T034656Z\"" --query "events[].message" --output text`
+      Expect one `<table> <- N rows` line per table and `loaded (904843 rows) and
+      moved to processed/`. `ERROR loading drop` = still in `pending/`, retried.
+      That drop also carries ~35 false `ERROR: API_SCHEMA_CHANGED ... endpoint
+      failed` lines (DNS failure on the PC during its schema check): ignore.
+- [ ] **RDS probably has the same NULL-gameId rows** (RDS was migrated from local;
+      ~133k rows across the team tables locally). The re-ship doesn't remove them:
+      the loader deletes `WHERE gameId IN (<shipped ids>)`, which never matches
+      NULL. They join to nothing, so no feature is affected (optional cleanup).
+      Check on RDS (`SELECT COUNT(*) FROM boxscorehustlev2_team WHERE gameId IS NULL`)
+      and run section A of `sql/recover_2026_11_missing_boxscores.sql` there if so.
+      The nightly schema check only looks at local MySQL.
+- [ ] **Gravity table + 2025-26 snapshot** (see "Gravity snapshots" above), then
+      `python scripts/gen_db_schema_doc.py` so the table is documented.
+- [ ] **CI image build:** confirm the latest "Build pipeline image" run is green in
+      GitHub Actions (pushes `865b7fd` → `a9a52d0` all touched `data_engineering/`).
+      The loader's `ERROR:`/`NOTE:` schema-alert lines depend on it.
+- [ ] **Clean up `importedgamesmemory` duplicates.** 791 games have two identical
+      rows (mostly 2022-23, an old double insert; the table had no key at all). Run,
+      with no ingest running:
+      `mysql -u <your_user> -p nba_data < sql\dedupe_importedgamesmemory.sql` (cmd)
+      It keeps one row per game, adds `PRIMARY KEY (gameId)`, and keeps the old
+      table as `importedgamesmemory_backup_20261117`. Expect the last preview to show
+      40,800 rows, 0 extra. After a clean nightly ingest:
+      `DROP TABLE importedgamesmemory_backup_20261117;`
+- [ ] **Local research DB is behind RDS** (found 2026-11-16): local
+      `team_elo_pregame` stops at 2026-05-13; `features`, `model_predictions`,
+      `vegas_lines` stop at 2026-06-13. Refresh before running the local
+      experiments (E29-E32, P8-P9 in the tuning log).
+- [ ] **Training data changed**: the next weekly retrain after the RDS load includes
+      ~127 recovered 2024-25 games. Registry rows before and after are not strictly
+      comparable; mention it if a metric shifts that week.
 
 ## Deferred decisions on record
 - Retrospective `wf_` rows are deliberately unbadged on the site (user decision

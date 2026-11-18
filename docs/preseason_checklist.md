@@ -128,6 +128,37 @@ Kai runs these, in order:
       07:20 in November. Check `logs\home_injuries.log`; on the cloud the
       5:45 PM run should print `availability for <date>: N out/doubtful from the
       official report`. The PC must be awake at that time, like for the main ingest.
+- [x] **Can the injury scrape move to the cloud? Probe first (added 2026-11-18).**
+      **RESULT 2026-11-18: GO.** From Fargate both PDFs returned HTTP 200 + valid PDF in
+      0.1s (same byte counts as from home), `stats_ctrl` timed out at 30s (confirms AWS
+      egress), `java` missing (expected). **Move BUILT 2026-11-18** (next item).
+      Nobody ever tested the PDF host (`ak-static.cms.nba.com`) from AWS; the
+      "residential only" note was carried over from stats.nba.com. From home it
+      answers as plain `AmazonS3`, with no browser headers needed. To check from AWS
+      (~2 min, a few cents; uses the current image, no push needed):
+      `aws ecs run-task --cli-input-json file://infra/injury-probe-runtask.json --query "tasks[0].taskArn"`
+      then `aws logs tail /ecs/nba-game-predictor-pipeline --since 5m --format short`.
+      Go = both `pdf_*` lines read `HTTP 200 ... pdf=True` (`stats_ctrl` should time
+      out, which shows the task really is on an AWS IP; `java` reads `missing`, as
+      expected). On a go, the move is: JRE + `nbainjuries` in the pipeline image,
+      the scraper run against RDS inside `batch_predict_today` (before availability
+      is built), and then retire `home_injuries.bat`. See CHANGELOG 2026-11-18.
+- [ ] **Injury scrape now runs in the cloud (built 2026-11-18).** `Dockerfile.pipeline`
+      adds a Java runtime, `requirements-pipeline.txt` adds `nbainjuries`, and
+      `batch_predict_today` scrapes today's (ET) official report into RDS right after
+      the S3 load, on every non-backfill run (`--skip-injury-scrape` turns it off).
+      Checked locally: the image builds, and 434 report rows over 3 dates parse
+      identically in the container (Java 21) and on the PC (Java 8).
+      1. Commit and `git push`. CI rebuilds the pipeline image; no terraform change.
+      2. The 11 AM ET run logs `injuries: scraping the official report for <date>`,
+         and often `no report found` (normal: the first game-day report comes
+         later). The 5:45 PM ET run should log `-> ts=17:xx rows=N` and then
+         `availability for <date>: N out/doubtful from the official report`. An
+         `ERROR: official injury scrape ...` line emails through the ERROR alarm.
+      3. After one good 5:45 PM run, retire the home pre-tip task:
+         `schtasks /Delete /TN "NBA Injuries PreTip" /F`
+         Keep the nightly home ingest's injury backfill: it re-ships each finished
+         date's final (latest) report, which is what training uses.
 - [ ] **nba_api schema check (added 2026-11-16).** The home side works as soon as the
       code is on the PC: the next home ingest log shows `[api_schema] ... status: OK/CHANGED`.
       Cloud email alerts need the image push. After the push and the catch-up rerun, the

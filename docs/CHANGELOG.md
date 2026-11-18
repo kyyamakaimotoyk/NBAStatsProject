@@ -11,6 +11,10 @@ documented (commit)`. Areas: **model**, **eval**, **data**, **ops**, **infra**,
 
 ## 2026-11
 
+**2026-11-18**
+- data — Official injury report scraped in the cloud: the pipeline image gains a Java runtime + `nbainjuries`, and `batch_predict_today` scrapes today's report into RDS after the S3 load (parse parity with the home scraper: 434/434 rows identical). Replaces the home `NBA Injuries PreTip` task once verified → `preseason_checklist.md` E28
+- infra — Injury scrape to the cloud: the PDF host was never actually tested from AWS (the residential-only note came from stats.nba.com); new `scripts/egress_probe_injuries.py` + `infra/injury-probe-runtask.json` settle it; ran 2026-11-18: GO (PDFs 200 from Fargate, stats.nba.com control timed out) → `preseason_checklist.md` E28
+
 **2026-11-17**
 - data — Skipped box scores recovered locally: 3,082 of 3,379 missing (game, table) pairs, NULL-id rows deleted, 9 never-imported 2025-11-21 games imported. 2024-11-17 onward re-shipped to RDS (drop `2026-11-17T034656Z`); 2012-13 and older recoveries stay local (Kai's call). The next weekly retrain sees ~127 more 2024-25 games. `sql/dedupe_importedgamesmemory.sql` removes 791 duplicate status rows and adds the table's first primary key (Kai runs). Open items → `docs/preseason_checklist.md` "Ingest follow-ups (2026-11-17)"
 

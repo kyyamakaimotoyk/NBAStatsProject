@@ -200,6 +200,36 @@ def _run_drift_check(engine) -> None:
 # Injury fetch — live for today, point-in-time for backfill
 # ---------------------------------------------------------------------------
 
+INJURY_SCRAPE_TIMEOUT_SEC = 600
+
+
+def _refresh_official_injury_report() -> bool:
+    """Scrape today's (US Eastern) official injury report into
+    historical_injury_report, replacing that date's rows only when a report is
+    found. Runs the scraper as a subprocess so its in-process JVM (jpype) never
+    shares this process with torch, and a crash there can't take predictions
+    down. Failures print ERROR (the CloudWatch alarm emails on it); "no report
+    found" (the 11 AM ET run, before the first game-day report) is normal."""
+    import subprocess
+    from zoneinfo import ZoneInfo
+    et_today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    script = _os.path.join(_PROJECT_ROOT, 'data_engineering', 'historical_injury_scraper.py')
+    print(f"injuries: scraping the official report for {et_today} (ET)", flush=True)
+    try:
+        proc = subprocess.run(
+            [sys.executable, script, '--force-dates', et_today, '--replace'],
+            cwd=_PROJECT_ROOT, timeout=INJURY_SCRAPE_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        print(f"ERROR: official injury scrape timed out after "
+              f"{INJURY_SCRAPE_TIMEOUT_SEC}s (predicting with existing rows)")
+        return False
+    if proc.returncode != 0:
+        print(f"ERROR: official injury scrape failed with exit code "
+              f"{proc.returncode} (predicting with existing rows)")
+        return False
+    return True
+
+
 def _build_injury_lookup_for_date(engine, game_date: str, mode: str) -> dict:
     """Return a {team_abbrev: [injury dict, ...]} lookup for the given date.
 
@@ -484,6 +514,9 @@ def parse_args(argv=None):
                    help='Skip loading pending home-ingest drops from S3 (INGEST_S3_BUCKET)')
     p.add_argument('--skip-vegas', action='store_true',
                    help='Skip refreshing today\'s market lines from ESPN')
+    p.add_argument('--skip-injury-scrape', action='store_true',
+                   help='Skip scraping today\'s official NBA injury report into '
+                        'historical_injury_report (needs nbainjuries + Java)')
     p.add_argument('--skip-backfill', action='store_true',
                    help='Skip grading past predictions against final scores')
     p.add_argument('--backfill-lookback', type=int, default=30,
@@ -546,6 +579,15 @@ def main(argv=None) -> int:
                 print(f"vegas: {n_lines} new rows for {v_start}..{v_end}")
             except Exception as exc:
                 print(f"WARN: vegas refresh failed — {exc}")
+
+        # Official pre-game injury report for today's slate (the availability
+        # source the models trained on; serving_features reads it). Before
+        # 2026-11-18 a home scheduled task scraped it and shipped it through S3;
+        # the PDF host answers from AWS, so the cloud scrapes it here, AFTER the
+        # S3 load so nothing older overwrites it. The home drop still re-ships
+        # each finished date's final report overnight. Not for backfills.
+        if not args.skip_injury_scrape and not args.start_date:
+            _refresh_official_injury_report()
 
         # After loading, check the data is actually fresh — prints
         # DATA_FRESHNESS_ALERT lines that the CloudWatch alarm emails on.

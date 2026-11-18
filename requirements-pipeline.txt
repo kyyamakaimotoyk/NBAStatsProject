@@ -14,3 +14,12 @@
 
 xgboost==3.2.0
 shap==0.50.0
+
+# Official injury-report scraper (historical_injury_scraper.py), run by
+# batch_predict_today before predicting. tabula-py needs Java: the Dockerfile
+# installs default-jre-headless. Pins match the dev venv (2026-11-18).
+nbainjuries==1.0.0
+tabula-py==2.10.0
+jpype1==1.5.2
+PyPDF2==3.0.1
+aiohttp==3.13.2

@@ -103,7 +103,7 @@ The README is the map; the deep dives live in `docs/`. **Start with [`docs/INDEX
 
 ## The public site — hoopmodel.com
 
-The production system is this repo's code, containerized and scheduled on AWS. The one architectural quirk that shapes everything: **stats.nba.com and cdn.nba.com block datacenter IPs**, so raw data is fetched at home on a residential IP and handed to the cloud through S3 — the cloud makes zero nba.com calls.
+The production system is this repo's code, containerized and scheduled on AWS. The one architectural quirk that shapes everything: **stats.nba.com and cdn.nba.com block datacenter IPs**, so raw data is fetched at home on a residential IP and handed to the cloud through S3. The one nba.com host the cloud does call is `ak-static.cms.nba.com` (the official injury-report PDFs, a plain S3 bucket that answers from AWS; probed 2026-11-18).
 
 ```
 HOME PC (residential IP)                AWS (us-east-1)
@@ -159,7 +159,7 @@ pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu   # Py
 
 **Why torch is a separate line**: it is deliberately absent from every requirements file — plain PyPI serves the multi-GB CUDA build, so `Dockerfile.pipeline` installs the CPU wheel from PyTorch's own index in its own layer, and local installs do the same by hand. If you have a GPU, pick your build at [pytorch.org](https://pytorch.org/get-started/locally/) instead.
 
-**Why `requirements-dev.txt` is separate**: `requirements.txt` is baked into the pipeline Docker image, so packages needed only on a dev machine (plotting, the residential-IP-only injury scraper and its Java-backed PDF parser, Athena) live in `requirements-dev.txt` to keep the image lean. Note `nbainjuries` needs a Java runtime on PATH.
+**Why `requirements-dev.txt` is separate**: `requirements.txt` is baked into the pipeline Docker image, so packages needed only on a dev machine (plotting, Athena) live in `requirements-dev.txt` to keep the image lean. The injury scraper's `nbainjuries` is in both: it needs a Java runtime on PATH locally, and `Dockerfile.pipeline` installs one for the cloud run.
 
 **Windows Note**: PyTorch must be imported before NumPy/Pandas due to DLL conflicts. This is handled automatically in `predict_games.py`. If you encounter `OSError: [WinError 1114] DLL initialization failed`, ensure PyTorch is imported first in your scripts.
 

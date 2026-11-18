@@ -1,0 +1,29 @@
+{
+  "cluster": "nba-game-predictor-cluster",
+  "taskDefinition": "nba-game-predictor-pipeline",
+  "launchType": "FARGATE",
+  "count": 1,
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": [
+        "subnet-0654a110961e20555"
+      ],
+      "securityGroups": [
+        "sg-0f2779ed5363c863b"
+      ],
+      "assignPublicIp": "ENABLED"
+    }
+  },
+  "overrides": {
+    "containerOverrides": [
+      {
+        "name": "pipeline",
+        "command": [
+          "python",
+          "-c",
+          "\"\"\"Egress probe: can a cloud task fetch the NBA's official injury-report PDFs?\n\nThe injury scraper (historical_injury_scraper.py) runs at home because every\nnba.com host was ASSUMED to block datacenter IPs. That was only ever measured for\nstats.nba.com (hard block) and cdn.nba.com (403, even from home since 2026-06).\nThe PDFs live on ak-static.cms.nba.com, which answers as plain `Server: AmazonS3`\nwith no browser headers needed (checked from home 2026-11-18). This probe settles\nit from inside a one-off Fargate task, same pattern as egress_probe_scores.py:\n\n    pdf_<slot>   - GET a report PDF for yesterday's ET slate (5:00 PM and 7:30 PM\n                   slots). Success = HTTP 200 + a %PDF body.\n    stats_ctrl   - stats.nba.com scoreboardv3, the known AWS block (negative\n                   control: expect a timeout from Fargate; it also drops plain\n                   urllib from home, so only its Fargate result means anything).\n    java         - is a JRE on PATH? (the parser, tabula-py, needs one; the\n                   current pipeline image has none, so \"missing\" is expected)\n\nStdlib only, so it runs in the current image as a `python -c` override (see\ninfra/injury-probe-runtask.json, generated from this file).\n\nUsage (local, residential baseline):\n    python scripts/egress_probe_injuries.py [YYYY-MM-DD]\n\"\"\"\nimport shutil\nimport sys\nimport time\nimport urllib.request\nfrom datetime import datetime, timedelta, timezone\n\nUA = \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36\"\nday = sys.argv[1] if len(sys.argv) > 1 else (datetime.now(timezone.utc) - timedelta(hours=5, days=1)).strftime(\"%Y-%m-%d\")\n\n\ndef get(name, url, headers=None, timeout=20):\n    t = time.time()\n    try:\n        req = urllib.request.Request(url, headers=headers or {\"User-Agent\": UA})\n        with urllib.request.urlopen(req, timeout=timeout) as r:\n            body = r.read()\n            print(f\"[{name}] HTTP {r.status} in {time.time() - t:.1f}s, {len(body)} bytes, \"\n                  f\"pdf={body[:4] == b'%PDF'}, server={r.headers.get('Server')}\", flush=True)\n    except Exception as e:\n        print(f\"[{name}] FAILED {type(e).__name__} after {time.time() - t:.1f}s: {str(e)[:140]}\", flush=True)\n\n\nprint(f\"probe date (ET slate): {day}\", flush=True)\nfor slot in (\"05_00PM\", \"07_30PM\"):\n    get(f\"pdf_{slot}\", f\"https://ak-static.cms.nba.com/referee/injury/Injury-Report_{day}_{slot}.pdf\")\nget(\"stats_ctrl\", f\"https://stats.nba.com/stats/scoreboardv3?GameDate={day}&LeagueID=00\",\n    {\"User-Agent\": UA, \"Referer\": \"https://stats.nba.com/\", \"Accept\": \"application/json\"}, timeout=30)\nprint(f\"[java] {shutil.which('java') or 'missing'}\", flush=True)\n"
+        ]
+      }
+    ]
+  }
+}

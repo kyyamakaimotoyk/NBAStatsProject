@@ -431,4 +431,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    _sys.exit(main())  # 1 when nbainjuries/Java is missing; None (0) otherwise

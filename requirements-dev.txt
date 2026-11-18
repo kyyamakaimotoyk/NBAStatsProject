@@ -5,9 +5,9 @@
 #   - matplotlib is omitted from the pipeline image on purpose (the headless
 #     batch path never plots -- see the guarded import in modeling/predict_games.py).
 #   - nbainjuries drags in tabula-py + jpype1, which need a Java runtime (JRE)
-#     to parse the injury-report PDFs -- and the scraper can only run from a
-#     residential IP anyway (nba.com blocks datacenter IPs), so it must never
-#     be part of the cloud image.
+#     to parse the injury-report PDFs. Listed here for local installs; the
+#     cloud image gets it (plus a JRE) from requirements-pipeline.txt since
+#     2026-11-18, when the PDF host proved reachable from AWS.
 #
 # PyTorch is intentionally absent from EVERY requirements file: plain PyPI
 # serves the multi-GB CUDA build. Install the CPU wheel by hand (matches the

@@ -29,12 +29,19 @@ WORKDIR /app
 #    `mysqlclient` wheel (the project's mysql:// driver). pymysql would avoid this,
 #    but core/db.py uses mysqlclient project-wide, so we install the build deps.
 #  - libgomp1: OpenMP runtime required by xgboost/lightgbm at import time.
+#  - default-jre-headless: Java for the official injury-report scraper
+#    (nbainjuries -> tabula-py, whose PDF table parser is a Java jar, started
+#    in-process through jpype). Same parser that built the training rows, so
+#    the cloud scrape matches them. Added 2026-11-18; ~200 MB.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         pkg-config \
         default-libmysqlclient-dev \
         libgomp1 \
+        default-jre-headless \
     && rm -rf /var/lib/apt/lists/*
+# jpype finds the JVM through JAVA_HOME; default-jre-headless provides this link.
+ENV JAVA_HOME=/usr/lib/jvm/default-java
 
 # 1) Install CPU-only torch FIRST from the dedicated PyTorch index. Plain PyPI
 #    would pull the multi-GB CUDA build, which we don't need (no GPU on Fargate).
